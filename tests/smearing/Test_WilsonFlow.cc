@@ -67,6 +67,12 @@ int main(int argc, char **argv) {
   Grid_init(&argc, &argv);
   GridLogLayout();
 
+  /*
+    Define Grid_default_latt, etc
+    Set them using void GridParseLayout(char **argv,int argc,
+
+    /Users/CoffeeBreak/BNL/src/Grid_sy3394/Grid/util/Init.cc
+   */
   auto latt_size   = GridDefaultLatt();
   auto simd_layout = GridDefaultSimd(Nd, vComplex::Nsimd());
   auto mpi_layout  = GridDefaultMpi();
@@ -105,7 +111,7 @@ int main(int argc, char **argv) {
 
   RealD WFlow_plaq = WilsonLoops<PeriodicGimplR>::avgPlaquette(Uflow);
   RealD WFlow_TC   = WilsonLoops<PeriodicGimplR>::TopologicalCharge(Uflow);
-  RealD WFlow_T0   = WF.energyDensityPlaquette(t,Uflow);
+  RealD WFlow_T0   = WF.energyDensityPlaquette(t,Uflow); // t is ued here!!!!!!
   std::cout << GridLogMessage << "Plaquette          "<< conf << "   " << WFlow_plaq << std::endl;
   std::cout << GridLogMessage << "T0                 "<< conf << "   " << WFlow_T0 << std::endl;
   std::cout << GridLogMessage << "TopologicalCharge  "<< conf << "   " << WFlow_TC   << std::endl;

@@ -8,7 +8,8 @@
 // * Normalisation for the fundamental generators: 
 //   trace ta tb = 1/2 delta_ab = T_F delta_ab
 //   T_F = 1/2  for SU(N) groups
-//
+//    - s.y.) diff from the convention in https://en.wikipedia.org/wiki/Gell-Mann_matrices
+//    - s.y.) tb = i T^b of Luscher (\because tb = \lambda/2 from SUn.impl.h)
 //
 //   base for NxN hermitian traceless matrices
 //   normalized to 1:
@@ -17,6 +18,9 @@
 //
 //   then the real, antisymmetric generators for the adjoint representations
 //   are computed ( shortcut: e^a == (e_Adj)^a )
+//     - s.y.) If basis matrices of adj. rep. are real & anti-symmetric, it cannot be Hermitian
+//     - s.y.) If T_adj is purely imaginary & antisymmetric, then  Hermitian
+//     - s.y.) Here, it computes: i*(T^c)_adj^{Grid} = - (T^c)_adj^{Lushcer}   
 //
 //   (iT_adj)^d_ba = i tr[e^a t^d e^b - t^d e^a e^b]
 //
@@ -53,13 +57,16 @@ public:
 
 
   template <typename vtype>
-  using iSUnMatrix = iScalar<iScalar<iMatrix<vtype, ncolour> > >;
+  using iSUnMatrix = iScalar<iScalar<iMatrix<vtype, ncolour> > >; // SU_N = [1][1][ncolour x ncolour][len(vtype)]
 
   typedef Lattice<iScalar<iScalar<iVector<vComplex, Dimension> > > >  LatticeAdjVector;
 
   template <class cplx>
   static void generator(int Index, iSUnAdjointMatrix<cplx> &iAdjTa) {
     // returns i(T_Adj)^index necessary for the projectors
+    // s.y.:
+    //  - T_Adj^a is the adj rep of t^a in the basis t^a's
+    //   => i(T_Adj) is -(adj rep) in Luscher's basis (T^a = -it^a) => i(T_Adj) is adj rep in the basis -T^a
     // see definitions above
     iAdjTa = Zero();
     Vector<iSUnMatrix<cplx> > ta(ncolour * ncolour - 1);
@@ -69,12 +76,13 @@ public:
     for (int a = 0; a < Dimension; a++) SU<ncolour>::generator(a, ta[a]);
 
     for (int a = 0; a < Dimension; a++) {
-      tmp = ta[a] * ta[Index] - ta[Index] * ta[a];
-      for (int b = 0; b < (ncolour * ncolour - 1); b++) {
-        iSUnMatrix<cplx> tmp1 = 2.0 * tmp * ta[b];  // 2.0 from the normalization
+      tmp = ta[a] * ta[Index] - ta[Index] * ta[a]; // = -[t^c, t^a] = -(T^c)_adj[T^a] <- [(T^c)_adj]^{ab} = - [(T^c)_adj]^{ba} = - <(T^c)_adj T^a, T^b> 
+      for (int b = 0; b < (ncolour * ncolour - 1); b++) { // ncolour * ncolour - 1 = #basis in su(N)
+        iSUnMatrix<cplx> tmp1 = 2.0 * tmp * ta[b];  // 2.0 from the normalization; <A, B> = -2 Tr[AB]_Luscher = 2 Tr[AB]_here <- tb = i T^b of Luscher
+	// s.y.) Up to this point, basis of su(3) follow Grid's convention
         Complex iTr = TensorRemove(timesI(trace(tmp1)));
-        //iAdjTa()()(b, a) = iTr;
-        iAdjTa()()(a, b) = iTr;
+        //iAdjTa()()(b, a) = iTr;<-?
+        iAdjTa()()(a, b) = iTr; // = i*(T^c)_adj^{Grid} = - (T^c)_adj^{Lushcer}
       }
     }
   }

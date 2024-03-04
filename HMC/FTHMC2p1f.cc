@@ -33,18 +33,27 @@ using namespace Grid;
 int main(int argc, char **argv)
 {
   std::cout << std::setprecision(12);
-  
+
   Grid_init(&argc, &argv);
   int threads = GridThread::GetThreads();
   // here make a routine to print all the relevant information on the run
   std::cout << GridLogMessage << "Grid is setup to use " << threads << " threads" << std::endl;
 
    // Typedefs to simplify notation
-  typedef WilsonImplR FermionImplPolicy;
-  typedef MobiusFermionD FermionAction;
+  /* 
+     Note:
+       Impl: implementation
+
+     Source:
+       /Users/CoffeeBreak/BNL/src/Grid_sy3394/Grid/qcd/action/fermion/WilsonImpl.h: 242
+       /Users/CoffeeBreak/BNL/src/Grid_sy3394/Grid/qcd/action/fermion/Fermion.h
+       Depends: /Users/CoffeeBreak/BNL/src/Grid_sy3394/Grid/qcd/representations/fundamental.h
+  */
+  typedef WilsonImplR FermionImplPolicy; // typedef WilsonImpl<vComplex,  FundamentalRepresentation, CoeffReal > WilsonImplR;
+  typedef MobiusFermionD FermionAction;  // typedef MobiusFermion<WilsonImplD> MobiusFermionD;
   typedef typename FermionAction::FermionField FermionField;
 
-  typedef Grid::XmlReader       Serialiser;
+  typedef Grid::XmlReader       Serialiser; // skipped for now; it is a reader from a file in xml format
 
   //::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
   IntegratorParameters MD;
@@ -52,6 +61,11 @@ int main(int argc, char **argv)
   //  MD.name    = std::string("Leap Frog");
   //  typedef GenericHMCRunner<ForceGradient> HMCWrapper;
   //  MD.name    = std::string("Force Gradient");
+
+  /*
+    template <template <typename, typename, typename> class Integrator>
+    using GenericHMCRunner = HMCWrapperTemplate<PeriodicGimplR, Integrator>;
+   */
   typedef GenericHMCRunner<MinimumNorm2> HMCWrapper;
   MD.name    = std::string("MinimumNorm2");
   MD.MDsteps = 12;
@@ -128,7 +142,7 @@ int main(int argc, char **argv)
   ConjugateGradient<FermionField>  CG(StoppingCondition,MaxCGIterations);
 
   bool ApplySmearing = true;
-  
+
   ////////////////////////////////////
   // Collect actions
   ////////////////////////////////////
@@ -142,11 +156,11 @@ int main(int argc, char **argv)
 
   MobiusEOFAFermionD Strange_Op_L (U , *FGrid , *FrbGrid , *GridPtr , *GridRBPtr , strange_mass, strange_mass, pv_mass, 0.0, -1, M5, b, c);
   MobiusEOFAFermionD Strange_Op_R (U , *FGrid , *FrbGrid , *GridPtr , *GridRBPtr , pv_mass, strange_mass,      pv_mass, -1.0, 1, M5, b, c);
-  ExactOneFlavourRatioPseudoFermionAction<FermionImplPolicy> 
-    EOFA(Strange_Op_L, Strange_Op_R, 
+  ExactOneFlavourRatioPseudoFermionAction<FermionImplPolicy>
+    EOFA(Strange_Op_L, Strange_Op_R,
 	 CG,
 	 CG, CG,
-	 CG, CG, 
+	 CG, CG,
 	 OFRp, false);
 
   EOFA.is_smeared = ApplySmearing;
@@ -219,6 +233,3 @@ int main(int argc, char **argv)
 
   Grid_finalize();
 } // main
-
-
-

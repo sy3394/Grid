@@ -211,7 +211,7 @@ accelerator_inline Integer div (Integer a,Integer y) { return a/y;}
 //accelerator_inline Integer abs (Integer &a) { return a%y;}
 
 //////////////////////////////////////////////////////////
-// Permute
+// Permute bits in a lane divided into chunks of diff sizes
 // Permute 0 every ABCDEFGH -> BA DC FE HG
 // Permute 1 every ABCDEFGH -> CD AB GH EF
 // Permute 2 every ABCDEFGH -> EFGH ABCD

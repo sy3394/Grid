@@ -116,7 +116,7 @@ namespace Grid {
     // Counter for resized EigenTensors (poor man's substitute for allocator)
     // Defined in BinaryIO.cc
     extern std::uint64_t EigenResizeCounter;
-  }
+  }////////////////////////  END: namespace EigenIO  /////////////////////////////////////////////////
 
   // Abstract writer/reader classes ////////////////////////////////////////////
   // static polymorphism implemented using CRTP idiom

@@ -34,11 +34,19 @@ NAMESPACE_BEGIN(Grid);
 /////////////////////////////////////////////////////////////////////////////
 // Single flavour four spinors with colour index
 /////////////////////////////////////////////////////////////////////////////
+/*
+  S: precision
+
+  PeriodicGaugeImpl 
+                in /Users/CoffeeBreak/BNL/src/Grid_sy3394/Grid/qcd/action/gauge/GaugeImplementations.h
+    template <class S, int Nrepresentation = Nc, int Nexp = 12, class Group = SU<Nc> > class GaugeImplTypes 
+                in /Users/CoffeeBreak/BNL/src/Grid_sy3394/Grid/qcd/action/gauge/GaugeImplTypes.h
+ */
 template <class S, class Representation = FundamentalRepresentation,class Options = CoeffReal >
 class WilsonImpl : public PeriodicGaugeImpl<GaugeImplTypes<S, Representation::Dimension > > {
 public:
   
-  static const int Dimension = Representation::Dimension;
+  static const int Dimension = Representation::Dimension; // = Nc = 3
   static const bool isFundamental = Representation::isFundamental;
   static const bool LsVectorised=false;
   static const bool isGparity=false;

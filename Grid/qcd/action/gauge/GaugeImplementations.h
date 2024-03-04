@@ -31,6 +31,37 @@ directory
 
 #include "GaugeImplTypes.h"
 
+/*
+typedef GaugeImplTypes<vComplex, Nc> GimplTypesR;
+typedef GaugeImplTypes<vComplexF, Nc> GimplTypesF;
+typedef GaugeImplTypes<vComplexD, Nc> GimplTypesD;
+
+typedef GaugeImplTypes<vComplex, Nc, 12, Sp<Nc> > SpGimplTypesR;
+typedef GaugeImplTypes<vComplexF, Nc, 12, Sp<Nc> > SpGimplTypesF;
+typedef GaugeImplTypes<vComplexD, Nc, 12, Sp<Nc> > SpGimplTypesD;
+
+typedef GaugeImplTypes<vComplex, SU<Nc>::AdjointDimension> GimplAdjointTypesR;
+typedef GaugeImplTypes<vComplexF, SU<Nc>::AdjointDimension> GimplAdjointTypesF;
+typedef GaugeImplTypes<vComplexD, SU<Nc>::AdjointDimension> GimplAdjointTypesD;
+
+#define INHERIT_GIMPL_TYPES(GImpl)                  \
+  typedef typename GImpl::Simd Simd;                \
+  typedef typename GImpl::Scalar Scalar;            \
+  typedef typename GImpl::LinkField GaugeLinkField; \
+  typedef typename GImpl::Field GaugeField;         \
+  typedef typename GImpl::ComplexField ComplexField;\
+  typedef typename GImpl::SiteField SiteGaugeField; \
+  typedef typename GImpl::SiteComplex SiteComplex;  \
+  typedef typename GImpl::SiteLink SiteGaugeLink;
+
+#define INHERIT_FIELD_TYPES(Impl)                   \
+  typedef typename Impl::Simd Simd;                 \
+  typedef typename Impl::ComplexField ComplexField; \
+  typedef typename Impl::SiteField SiteField;       \
+  typedef typename Impl::Field Field;
+
+ */
+
 NAMESPACE_BEGIN(Grid);
 
 // Composition with smeared link, bc's etc.. probably need multiple inheritance

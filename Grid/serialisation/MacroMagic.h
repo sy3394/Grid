@@ -113,6 +113,9 @@ THE SOFTWARE.
 #define GRID_MACRO_READ_MEMBER(A,B) ::Grid::read(RD,#B,obj. B);
 #define GRID_MACRO_WRITE_MEMBER(A,B) ::Grid::write(WR,#B,obj. B);
 
+
+
+// Defines: methods and a few variables
 #define GRID_SERIALIZABLE_CLASS_MEMBERS(cname,...)\
 static inline std::string SerialisableClassName(void) {return std::string(#cname);}	\
 static constexpr bool isEnum = false; \

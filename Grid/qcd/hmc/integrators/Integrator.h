@@ -38,6 +38,8 @@ NAMESPACE_BEGIN(Grid);
 
 class IntegratorParameters: Serializable {
 public:
+  // ~/BNL/src/Grid_sy3394/Grid/serialisation/MacroMagic.h
+  // Defines: methods and a few variables 
   GRID_SERIALIZABLE_CLASS_MEMBERS(IntegratorParameters,
 				  std::string, name,      // name of the integrator
 				  unsigned int, MDsteps,  // number of outer steps
@@ -47,6 +49,9 @@ public:
   : MDsteps(MDsteps_),
     trajL(trajL_) {};
 
+  // If isReader<ReaderClass>::value == true, std::enable_if contains typedef'ed type member, and
+  //  this method exists as a candidate for the result of overload resultion
+  // https://medium.com/@sidbhasin82/c-templates-what-is-std-enable-if-and-how-to-use-it-fd76d3abbabe
   template <class ReaderClass, typename std::enable_if<isReader<ReaderClass>::value, int >::type = 0 >
   IntegratorParameters(ReaderClass & Reader)
   {

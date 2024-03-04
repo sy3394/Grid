@@ -13,6 +13,16 @@ template< class Impl >
 class NoSmearing : public ConfigurationBase<typename Impl::Field>
 {
 public:
+  /*
+#define INHERIT_FIELD_TYPES(Impl)                   \
+  typedef typename Impl::Simd Simd;                 \
+  typedef typename Impl::ComplexField ComplexField; \
+  typedef typename Impl::SiteField SiteField;       \
+  typedef typename Impl::Field Field;
+
+  /Users/CoffeeBreak/BNL/src/Grid_sy3394/Grid/qcd/action/gauge/GaugeImplTypes.h 
+   */
+  
   INHERIT_FIELD_TYPES(Impl);
 
   Field* ThinLinks;
@@ -42,10 +52,31 @@ public:
 
   It stores a list of smeared configurations.
 */
+
+/*
+template< class Field >
+class ConfigurationBase <- ABC
+
+  /Users/CoffeeBreak/BNL/src/Grid_sy3394/Grid/qcd/action/ActionBase.h
+ */
 template <class Gimpl>
 class SmearedConfiguration : public ConfigurationBase<typename Gimpl::Field>
 {
 public:
+  /*
+    #define INHERIT_GIMPL_TYPES(GImpl)                  \
+  typedef typename GImpl::Simd Simd;                \
+  typedef typename GImpl::Scalar Scalar;            \
+  typedef typename GImpl::LinkField GaugeLinkField; \
+  typedef typename GImpl::Field GaugeField;         \
+  typedef typename GImpl::ComplexField ComplexField;\
+  typedef typename GImpl::SiteField SiteGaugeField; \
+  typedef typename GImpl::SiteComplex SiteComplex;  \
+  typedef typename GImpl::SiteLink SiteGaugeLink;
+
+    /Users/CoffeeBreak/BNL/src/Grid_sy3394/Grid/qcd/action/gauge/GaugeImplTypes.h
+   */
+  
   INHERIT_GIMPL_TYPES(Gimpl);
 
 protected:
@@ -237,10 +268,10 @@ public:
   // attach the smeared routines to the thin links U and fill the smeared set
   virtual void set_Field(GaugeField &U)
   {
-    double start = usecond();
+    double start = usecond(); // <- where is defined?????????
     fill_smearedSet(U);
     double end = usecond();
-    double time = (end - start)/ 1e3;
+    double time = (end - start)/ 1e3; 
     std::cout << GridLogMessage << "Smearing in " << time << " ms" << std::endl;  
   }
 

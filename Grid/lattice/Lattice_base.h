@@ -266,7 +266,7 @@ public:
     }
   }
   ///////////////////////////////////////////
-  // copy constructor
+  // copy constructor <- Shallow copy
   ///////////////////////////////////////////
   Lattice(const Lattice& r){ 
     this->_grid = r.Grid();
