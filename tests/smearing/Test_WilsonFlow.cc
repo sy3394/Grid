@@ -88,11 +88,11 @@ int main(int argc, char **argv) {
   SU<Nc>::HotConfiguration(pRNG, Umu);
   
   typedef Grid::XmlReader       Serialiser;
-  Serialiser Reader("input.xml");
+  Serialiser Reader("input.xml", false, "root");
   WFParameters WFPar(Reader);
   ConfParameters CPar(Reader);
   CheckpointerParameters CPPar(CPar.conf_prefix, CPar.rng_prefix);
-  BinaryHmcCheckpointer<PeriodicGimplR> CPBin(CPPar);
+  NerscHmcCheckpointer<PeriodicGimplR> CPBin(CPPar);
 
   for (int conf = CPar.StartConfiguration; conf <= CPar.EndConfiguration; conf+= CPar.Skip){
 

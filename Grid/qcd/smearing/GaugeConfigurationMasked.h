@@ -125,7 +125,7 @@ private:
       for(int a=0;a<Ngen;a++) {
 	SU3::generator(a, ta);
 	///Users/CoffeeBreak/BNL/src/Grid_sy3394/Grid/lattice/Lattice_ET.h; forces to eval the expr
-	auto tmp =closure( -trace(ci*ta*Nx));
+	auto tmp =closure( trace((-1.0)*ci*ta*Nx));
 	PokeIndex<ColourIndex>(NxAd,tmp,a,b); 
       }
     }
@@ -455,11 +455,12 @@ public:
 	std::cout << GridLogMessage << "ComputeNxy (occurs 6x) took "<<time<< " us"<<std::endl;
 
 	time=-usecond();
-	PlaqL=(-1.0)*PlaqR; 
+	PlaqL=(-1.0)*adj(PlaqR);
+	PlaqR=Ident;
 	Compute_MpInvJx_dNxxdSy(PlaqL,PlaqR,MpInvJx,FdetV);
 	Fdet2_nu = FdetV;
 	time+=usecond();
-	std::cout << GridLogMessage << "Compute_MpInvJx_dNxxSy (occurs 6x) took "<<time<< " us"<<std::endl;
+	std::cout << GridLogMessage << "Compute_MpInvJx_dNxxSy s.y. (occurs 6x) took "<<time<< " us"<<std::endl;
 	
 	//    ___
 	//    |  :
@@ -598,7 +599,7 @@ public:
     InsertForce(Fdet1,Fdet1_mu,mu);
     InsertForce(Fdet2,Fdet2_mu,mu);
 
-    force=  Fdet1 + Fdet2;
+    force=  (-1.0)*(Fdet1 + Fdet2);
     RealD t1 = usecond();
     std::cout << GridLogMessage << " logDetJacobianForce level took "<<t1-t0<<" us "<<std::endl;
     std::cout << GridLogMessage << " logDetJacobianForce t3-t0 "<<t3a-t0<<" us "<<std::endl;
