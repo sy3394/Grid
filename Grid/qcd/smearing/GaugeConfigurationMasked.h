@@ -455,7 +455,7 @@ public:
 	std::cout << GridLogMessage << "ComputeNxy (occurs 6x) took "<<time<< " us"<<std::endl;
 
 	time=-usecond();
-	PlaqL=(-1.0)*adj(PlaqR);
+	PlaqL=adj(PlaqR);
 	PlaqR=Ident;
 	Compute_MpInvJx_dNxxdSy(PlaqL,PlaqR,MpInvJx,FdetV);
 	Fdet2_nu = FdetV;
