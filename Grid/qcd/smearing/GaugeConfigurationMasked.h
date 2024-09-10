@@ -16,6 +16,8 @@ template<class T> void Dump(const Lattice<T> & lat,
   peekSite(tmp,lat,site);
   std::cout << " Dump "<<s<<" "<<tmp<<std::endl;
 }
+
+
 /*!
   @brief Smeared configuration masked container
   Modified for a multi-subset smearing (aka Luscher Flowed HMC)
@@ -39,6 +41,18 @@ private:
   typedef typename SU3Adjoint::AMatrix AdjMatrix;
   typedef typename SU3Adjoint::LatticeAdjMatrix  AdjMatrixField;
   typedef typename SU3Adjoint::LatticeAdjVector  AdjVectorField;
+
+  // Assume: lat = full lattice
+  template<class T>  void printCheckerboards2norm(T &lat, int cb=-1)
+  {
+    T lat_0(UrbGrid); lat_0 = Zero();
+    T lat_1(UrbGrid); lat_1 = Zero();
+    pickCheckerboard(0,lat_0,lat);
+    pickCheckerboard(1,lat_1,lat);
+
+    std::string parity = (cb==0)? "Even" : "Odd";
+    std::cout << GridLogMessage << " printCheckerboards2norm for " << parity << cb << ": Even Part: " << norm2(lat_0) << " Odd Part: " << norm2(lat_1) << std::endl;
+  }
 
   void BaseSmearDerivative(GaugeField& SigmaTerm,
 			   const GaugeField& iLambda,
@@ -125,7 +139,7 @@ private:
     }
 
     t+=usecond();
-    std::cout << GridLogPerformance << " BaseSmearDerivative " << t/1e3 << " ms " << std::endl;
+    std::cout << GridLogMessage << " BaseSmearDerivative " << t/1e3 << " ms " << std::endl;
     
   }
   
@@ -145,8 +159,9 @@ private:
       }
     }
     t+=usecond();
-    std::cout << GridLogPerformance << " BaseSmear " << t/1e3 << " ms " << std::endl;
+    std::cout << GridLogMessage << " BaseSmear " << t/1e3 << " ms " << std::endl;
   }
+
   // Adjoint vector to GaugeField force
   void InsertForce(GaugeField &Fdet,AdjVectorField &Fdet_nu,int nu)
   {
@@ -165,7 +180,7 @@ private:
     pokeLorentz(Fdet, Fdet_pol, nu);
 
     t+=usecond();
-    std::cout << GridLogPerformance << " InsertForce " << t/1e3 << " ms " << std::endl;
+    std::cout << GridLogMessage << " InsertForce " << t/1e3 << " ms " << std::endl;
   }
   void Compute_MpInvJx_dNxxdSy(int cb,
 			       const GaugeLinkField &PlaqL,
@@ -173,6 +188,8 @@ private:
                                AdjMatrixField MpInvJx,
                                AdjVectorField &Fdet2 )
   {
+    RealD time = -usecond();
+    Fdet2 = Zero();
     GaugeLinkField PlaqLeo(UrbGrid);
     GaugeLinkField PlaqReo(UrbGrid);
     AdjMatrixField MpInvJxeo(UrbGrid);
@@ -181,8 +198,12 @@ private:
     pickCheckerboard(cb,PlaqReo,PlaqR);
     pickCheckerboard(cb,MpInvJxeo,MpInvJx);
     Fdet2eo.Checkerboard()=cb;
+    time+=usecond();
     Compute_MpInvJx_dNxxdSy(PlaqLeo,PlaqReo,MpInvJxeo,Fdet2eo);
+    time-=usecond();
     setCheckerboard(Fdet2,Fdet2eo);
+    time+=usecond();
+    std::cout << GridLogMessage << " Checkerboarding_MpInvJx_dNxxdSy " << time/1e3 << " ms " << std::endl;
   }
   void Compute_MpInvJx_dNxxdSy(const GaugeLinkField &PlaqL,const GaugeLinkField &PlaqR, AdjMatrixField MpInvJx,AdjVectorField &Fdet2 )
   {
@@ -236,7 +257,7 @@ private:
       tpk+=usecond();
     }
     t+=usecond();
-    std::cout << GridLogPerformance << " Compute_MpInvJx_dNxxdSy " << t/1e3 << " ms  proj "<<tp/1e3<< " ms"
+    std::cout << GridLogMessage << " Compute_MpInvJx_dNxxdSy " << t/1e3 << " ms  proj "<<tp/1e3<< " ms"
 	      << " ta "<<tta/1e3<<" ms" << " poke "<<tpk/1e3<< " ms"<<std::endl;
   }
   
@@ -271,7 +292,7 @@ private:
       tp+=usecond();
     }
     t+=usecond();
-    std::cout << GridLogPerformance << " ComputeNxy " << t/1e3 << " ms  proj "<<tp/1e3<< " ms"
+    std::cout << GridLogMessage << " ComputeNxy " << t/1e3 << " ms  proj "<<tp/1e3<< " ms"
               << " ta "<<tta/1e3<<" ms tgen "<< tgen/1e3 << std::endl;
   }
   
@@ -362,7 +383,7 @@ public:
     Zx  = Ta(Cmu * adj(Umu[mu]));
     time+=usecond();
     std::cout << GridLogMessage << "Z took "<<time<< " us"<<std::endl;
-
+    
     time=-usecond();
     // Move Z to the Adjoint Rep == make_adjoint_representation
     ZxAd = Zero();
@@ -376,7 +397,7 @@ public:
     }
     time+=usecond();
     std::cout << GridLogMessage << "ZxAd took "<<time<< " us"<<std::endl;
-
+    
     //////////////////////////////////////
     // J(x) = 1 + Sum_k=1..N (-Zac)^k/(k+1)!
     //////////////////////////////////////
@@ -392,7 +413,7 @@ public:
     }
     time+=usecond();
     std::cout << GridLogMessage << "Jx took "<<time<< " us"<<std::endl;
-
+    
     //////////////////////////////////////
     // dJ(x)/dxe
     //////////////////////////////////////
@@ -557,9 +578,10 @@ public:
 
 	time=-usecond(); tMJx -= usecond();
 	PlaqR=(-1.0)*PlaqR;
-	Compute_MpInvJx_dNxxdSy(PlaqL,PlaqR,MpInvJx,FdetV);
+	Compute_MpInvJx_dNxxdSy(cb,PlaqL,PlaqR,MpInvJx,FdetV);
 	Fdet2_nu = FdetV;
 	time+=usecond(); tMJx += usecond();
+	printCheckerboards2norm(FdetV,cb);
 	std::cout << GridLogMessage << "Compute_MpInvJx_dNxxSy (occurs 6x) took "<<time<< " us"<<std::endl;
 	
 	//    x==
@@ -582,9 +604,10 @@ public:
 
 	tMJx -= usecond();
 	MpInvJx_nu = Cshift(MpInvJx,mu,-1);
-	Compute_MpInvJx_dNxxdSy(PlaqL,PlaqR,MpInvJx_nu,FdetV);
+	Compute_MpInvJx_dNxxdSy((cb+1)%2,PlaqL,PlaqR,MpInvJx_nu,FdetV);
 	Fdet2_nu = Fdet2_nu+FdetV;
 	tMJx += usecond();
+	printCheckerboards2norm(FdetV,(cb+1)%2);
 	
 	///////////////// -ve nu /////////////////
 	//  __
@@ -607,9 +630,10 @@ public:
 
 	tMJx -= usecond();
 	MpInvJx_nu = Cshift(MpInvJx,nu,1);
-	Compute_MpInvJx_dNxxdSy(PlaqL,PlaqR,MpInvJx_nu,FdetV);
+	Compute_MpInvJx_dNxxdSy((cb+1)%2,PlaqL,PlaqR,MpInvJx_nu,FdetV);
 	Fdet2_nu = Fdet2_nu+FdetV;
 	tMJx += usecond();
+	printCheckerboards2norm(FdetV,(cb+1)%2);
 	
 	// x==
 	// |  |
@@ -634,9 +658,10 @@ public:
 	tMJx -= usecond();
 	MpInvJx_nu = Cshift(MpInvJx,mu,-1);
 	MpInvJx_nu = Cshift(MpInvJx_nu,nu,1);
-	Compute_MpInvJx_dNxxdSy(PlaqL,PlaqR,MpInvJx_nu,FdetV);
+	Compute_MpInvJx_dNxxdSy(cb,PlaqL,PlaqR,MpInvJx_nu,FdetV);
 	Fdet2_nu = Fdet2_nu+FdetV;
 	tMJx += usecond();
+	printCheckerboards2norm(FdetV,cb);
 	
 	/////////////////////////////////////////////////////////////////////
 	// Set up the determinant force contribution in 3x3 algebra basis
@@ -669,10 +694,10 @@ public:
 	tMJx -= usecond();
 	MpInvJx_nu = Cshift(MpInvJx,nu,-1);
 
-	Compute_MpInvJx_dNxxdSy(PlaqL,PlaqR,MpInvJx_nu,FdetV);
+	Compute_MpInvJx_dNxxdSy((cb+1)%2,PlaqL,PlaqR,MpInvJx_nu,FdetV);
 	Fdet2_mu = Fdet2_mu+FdetV;
 	tMJx += usecond();
-
+	printCheckerboards2norm(FdetV,(cb+1)%2);
 	//  __
 	// "  |
 	// x__|          // mu polarisation
@@ -694,9 +719,10 @@ public:
 	tMJx -= usecond();
 	MpInvJx_nu = Cshift(MpInvJx,nu,1);
 
-	Compute_MpInvJx_dNxxdSy(PlaqL,PlaqR,MpInvJx_nu,FdetV);
+	Compute_MpInvJx_dNxxdSy((cb+1)%2,PlaqL,PlaqR,MpInvJx_nu,FdetV);
 	Fdet2_mu = Fdet2_mu+FdetV;
 	tMJx += usecond();
+	printCheckerboards2norm(FdetV,(cb+1)%2);
       }
     }
     RealD t5 = usecond();
@@ -712,7 +738,7 @@ public:
     std::cout << GridLogMessage << " logDetJacobianForce t4-t3 dJdXe_nMpInv "<<t4-t3a<<" us "<<std::endl;
     std::cout << GridLogMessage << " logDetJacobianForce t5-t4 mu nu loop "<<t5-t4<<" us Plaq "
 	      <<tLR/1e3<<" ms Nxy "<<tNxy/1e3<<" ms MpInvJx_dNxxdSy "<<tMJx/1e3<<" ms"<<std::endl;
-    std::cout << GridLogMessage << " logDetJacobianForce t1-t5 "<<t1-t5<<" us "<<std::endl; // turn adj vec to SU3 force 
+    std::cout << GridLogMessage << " logDetJacobianForce t1-t5 "<<t1-t5<<" us "<<std::endl; // turn adj vec to SU3 force
     std::cout << GridLogMessage << " logDetJacobianForce level took "<<t1-t0<<" us "<<std::endl;
   }
   void logDetJacobianForceLevel(int old, const GaugeField &U, GaugeField &force ,int smr)
@@ -787,7 +813,7 @@ public:
     // Ta so Z lives in Lie algabra
     Zx  = Ta(Cmu * adj(Umu[mu]));
     time+=usecond();
-    std::cout << GridLogMessage << "Z took "<<time<< " us"<<std::endl;
+    std::cout << GridLogMessage << "Full: Z took "<<time<< " us"<<std::endl;
 
     time=-usecond();
     // Move Z to the Adjoint Rep == make_adjoint_representation
@@ -801,7 +827,7 @@ public:
       ZxAd = ZxAd + cplx * TRb; // is this right? YES - Guido used Anti herm Ta's and with bloody wrong sign.
     }
     time+=usecond();
-    std::cout << GridLogMessage << "ZxAd took "<<time<< " us"<<std::endl;
+    std::cout << GridLogMessage << "Full: ZxAd took "<<time<< " us"<<std::endl;
 
     //////////////////////////////////////
     // J(x) = 1 + Sum_k=1..N (-Zac)^k/(k+1)!
@@ -817,7 +843,7 @@ public:
       JxAd = JxAd + X * kpfac;
     }
     time+=usecond();
-    std::cout << GridLogMessage << "Jx took "<<time<< " us"<<std::endl;
+    std::cout << GridLogMessage << "Full: Jx took "<<time<< " us"<<std::endl;
 
     //////////////////////////////////////
     // dJ(x)/dxe
@@ -878,7 +904,7 @@ public:
     }
 #endif  
     time+=usecond();
-    std::cout << GridLogMessage << "dJx took "<<time<< " us"<<std::endl;
+    std::cout << GridLogMessage << "Full: dJx took "<<time<< " us"<<std::endl;
     /////////////////////////////////////////////////////////////////
     // Mask Umu for this link
     /////////////////////////////////////////////////////////////////
@@ -887,7 +913,7 @@ public:
     PlaqR = Utmp*adj(Cmu);
     ComputeNxy(PlaqL,PlaqR,NxxAd);
     time+=usecond();
-    std::cout << GridLogMessage << "ComputeNxy took "<<time<< " us"<<std::endl;
+    std::cout << GridLogMessage << "Full: ComputeNxy took "<<time<< " us"<<std::endl;
     
     ////////////////////////////
     // Mab
@@ -901,7 +927,7 @@ public:
     time=-usecond();
     MpAdInv = Inverse(MpAd);
     time+=usecond();
-    std::cout << GridLogMessage << "MpAdInv took "<<time<< " us"<<std::endl;
+    std::cout << GridLogMessage << "Full: MpAdInv took "<<time<< " us"<<std::endl;
     
     RealD t3a = usecond();
     /////////////////////////////////////////////////////////////////
@@ -966,21 +992,21 @@ public:
 	         Gimpl::CovShiftBackward(Umu[nu], nu,
 		   Gimpl::CovShiftIdentityBackward(Utmp, mu))));
 	time+=usecond(); tLR += usecond();
-	std::cout << GridLogMessage << "PlaqLR took "<<time<< " us"<<std::endl;
+	std::cout << GridLogMessage << "Full: PlaqLR took "<<time<< " us"<<std::endl;
 
 	time=-usecond(); tNxy -= usecond();
 	dJdXe_nMpInv_y =   dJdXe_nMpInv;
 	ComputeNxy(PlaqL,PlaqR,Nxy);
 	Fdet1_nu = transpose(Nxy)*dJdXe_nMpInv_y;
 	time+=usecond(); tNxy += usecond();
-	std::cout << GridLogMessage << "ComputeNxy (occurs 6x) took "<<time<< " us"<<std::endl;
+	std::cout << GridLogMessage << "Full: ComputeNxy (occurs 6x) took "<<time<< " us"<<std::endl;
 
 	time=-usecond(); tMJx -= usecond();
 	PlaqR=(-1.0)*PlaqR;
 	Compute_MpInvJx_dNxxdSy(PlaqL,PlaqR,MpInvJx,FdetV);
 	Fdet2_nu = FdetV;
 	time+=usecond(); tMJx += usecond();
-	std::cout << GridLogMessage << "Compute_MpInvJx_dNxxSy (occurs 6x) took "<<time<< " us"<<std::endl;
+	std::cout << GridLogMessage << "Full: Compute_MpInvJx_dNxxSy (occurs 6x) took "<<time<< " us"<<std::endl;
 	
 	//    x==
 	//    |  |
@@ -1128,12 +1154,12 @@ public:
 
     force= (-0.5)*( Fdet1 + Fdet2);
     RealD t1 = usecond();
-    std::cout << GridLogMessage << " logDetJacobianForce t3-t0 "<<t3a-t0<<" us "<<std::endl;
-    std::cout << GridLogMessage << " logDetJacobianForce t4-t3 dJdXe_nMpInv "<<t4-t3a<<" us "<<std::endl;
-    std::cout << GridLogMessage << " logDetJacobianForce t5-t4 mu nu loop "<<t5-t4<<" us Plaq "
+    std::cout << GridLogMessage << " Full: logDetJacobianForce t3-t0 "<<t3a-t0<<" us "<<std::endl;
+    std::cout << GridLogMessage << " Full: logDetJacobianForce t4-t3 dJdXe_nMpInv "<<t4-t3a<<" us "<<std::endl;
+    std::cout << GridLogMessage << " Full: logDetJacobianForce t5-t4 mu nu loop "<<t5-t4<<" us Plaq "
 	      <<tLR/1e3<<" ms Nxy "<<tNxy/1e3<<" ms MpInvJx_dNxxdSy "<<tMJx/1e3<<" ms"<<std::endl;
-    std::cout << GridLogMessage << " logDetJacobianForce t1-t5 "<<t1-t5<<" us "<<std::endl; // turn adj vec to SU3 force 
-    std::cout << GridLogMessage << " logDetJacobianForce level took "<<t1-t0<<" us "<<std::endl;
+    std::cout << GridLogMessage << " Full: logDetJacobianForce t1-t5 "<<t1-t5<<" us "<<std::endl; // turn adj vec to SU3 force
+    std::cout << GridLogMessage << " Full: logDetJacobianForce level took "<<t1-t0<<" us "<<std::endl;
   }
   RealD logDetJacobianLevel(const GaugeField &U,int smr)
   {
@@ -1256,11 +1282,30 @@ public:
     ln_det = ln_det * mask;
     tlnDetM += usecond();
     time += usecond();
-    std::cout << GridLogPerformance << " logDetJacobianLevel " << time/1e3 << " ms ta "<<tta/1e3<<" ms" << " poke "<<tpk/1e3<< " ms"
+    std::cout << GridLogMessage << " logDetJacobianLevel " << time/1e3 << " ms ta "<<tta/1e3<<" ms" << " poke "<<tpk/1e3<< " ms"
 	      <<" N "<<tN/1e3<<" ms Z "<<tZ/1e3<<" ms J " <<tJ/1e3<<" ms lnDetM "<<tlnDetM/1e3<<" ms" <<std::endl;
     
     Complex result = sum(ln_det);
     return result.real();
+  }
+  
+public:
+  RealD logDetJacobian(void)
+  {
+    RealD ln_det = 0;
+    if (this->smearingLevels > 0)
+    {
+      double start = usecond();
+      for (int ismr = this->smearingLevels - 1; ismr > 0; --ismr) {
+	ln_det+= logDetJacobianLevel(this->get_smeared_conf(ismr-1),ismr);
+      }
+      ln_det +=logDetJacobianLevel(*(this->ThinLinks),0);
+
+      double end = usecond();
+      double time = (end - start)/ 1e3;
+      std::cout << GridLogMessage << "GaugeConfigurationMasked: logDetJacobian took " << time << " ms" << std::endl;  
+    }
+    return ln_det;
   }
   void logDetJacobianForce(int old, GaugeField &force)
   {
@@ -1325,25 +1370,6 @@ public:
       
     }  // if smearingLevels = 0 do nothing
     std::cout << GridLogMessage << " DEBUG: logDetJacobianForce " << std::endl;
-  }
-  
-public:
-  RealD logDetJacobian(void)
-  {
-    RealD ln_det = 0;
-    if (this->smearingLevels > 0)
-    {
-      double start = usecond();
-      for (int ismr = this->smearingLevels - 1; ismr > 0; --ismr) {
-	ln_det+= logDetJacobianLevel(this->get_smeared_conf(ismr-1),ismr);
-      }
-      ln_det +=logDetJacobianLevel(*(this->ThinLinks),0);
-
-      double end = usecond();
-      double time = (end - start)/ 1e3;
-      std::cout << GridLogMessage << "GaugeConfigurationMasked: logDetJacobian took " << time << " ms" << std::endl;  
-    }
-    return ln_det;
   }
   
   void logDetJacobianForce(GaugeField &force)
