@@ -249,7 +249,10 @@ private:
       SU3::generator(a, ta);
       ta = 2.0 * ci * ta;
       // Qlat Tb = 2i Tb^Grid
-      UtaU= adj(PlaqL)*ta*PlaqR; // 6ms
+      {
+	GRID_TRACE("UtaU");
+	UtaU= adj(PlaqL)*ta*PlaqR; // 6ms
+      }
       tta+=usecond();
       ////////////////////////////////////////////
       // Could add this entire C-loop to a projection routine
@@ -260,9 +263,15 @@ private:
 	SU3::generator(c, tc);
 	tc = 2.0*ci*tc;
 	tp-=usecond(); 
-	D = Ta( tc *UtaU); // 2ms
+	{
+	  GRID_TRACE("D = Ta tc*UtaU");
+	  D = Ta( tc *UtaU); // 2ms
+	}
 #if 1
-	SU3::LieAlgebraProject(Dbc_opt,D,c); // 5.5ms
+	{
+	  GRID_TRACE("LieAlgebraProject");
+	  SU3::LieAlgebraProject(Dbc_opt,D,c); // 5.5ms
+	}
 #else
 	for(int b=0;b<Ngen;b++){
 	  SU3::generator(b, tb);
@@ -275,8 +284,14 @@ private:
       //      Dump(Dbc_opt,"Dbc_opt");
       //      Dump(Dbc,"Dbc");
       tpk-=usecond();
-      tmp = trace(MpInvJx * Dbc_opt);
-      PokeIndex<ColourIndex>(Fdet2,tmp,a);
+      {
+	GRID_TRACE("traceMpDbc");
+	tmp = trace(MpInvJx * Dbc_opt);
+      }
+      {
+	GRID_TRACE("pokeIndecx");
+	PokeIndex<ColourIndex>(Fdet2,tmp,a);
+      }
       tpk+=usecond();
     }
     t+=usecond();
@@ -301,16 +316,25 @@ private:
       tgen+=usecond();
       tb = 2.0 * ci * tb;
       tta-=usecond();
-      Nx = Ta( adj(PlaqL)*tb * PlaqR );
+      {
+        GRID_TRACE("UtaU");
+	Nx = Ta( adj(PlaqL)*tb * PlaqR );
+      }
       tta+=usecond();
       tp-=usecond();
 #if 1
-      SU3::LieAlgebraProject(NxAd,Nx,b);
+      {
+	GRID_TRACE("LieAlgebraProject");
+	SU3::LieAlgebraProject(NxAd,Nx,b);
+      }
 #else
       for(int c=0;c<Ngen;c++) {
 	SU3::generator(c, tc);
 	auto tmp =closure( -trace(ci*tc*Nx));
-	PokeIndex<ColourIndex>(NxAd,tmp,c,b);
+	{
+	  GRID_TRACE("pokeIndecx");
+	  PokeIndex<ColourIndex>(NxAd,tmp,c,b);
+	}
       }
 #endif
       tp+=usecond();
@@ -335,7 +359,7 @@ public:
 
   void logDetJacobianForceLevel(const GaugeField &U, GaugeField &force ,int smr)
   {
-    GRID_TRACE("logDetJacobianFOrceLevel");
+    GRID_TRACE("logDetJacobianForceLevel");
     GridBase* grid = U.Grid();
     GridBase* hgrid = UrbGrid; // For now, assume masking is based on red-black checkerboarding
     ColourMatrix   tb;
@@ -417,13 +441,13 @@ public:
     // Computes ALL the staples -- could compute one only and do it here
     RealD time;
     time=-usecond();
-    BaseSmear_cb(Cmu, U, mu, rho); // Changed //
+    BaseSmear_cb(Cmu, U, mu, rho);
     
     //////////////////////////////////////////////////////////////////
     // Assemble Luscher exp diff map J matrix 
     //////////////////////////////////////////////////////////////////
     // Ta so Z lives in Lie algabra
-    Zx  = Ta(Cmu * adj(Ueo)); // CHANGED //
+    Zx  = Ta(Cmu * adj(Ueo));
     time+=usecond();
     std::cout << GridLogMessage << "Z took "<<time<< " us"<<std::endl;
     
@@ -431,6 +455,7 @@ public:
     // Move Z to the Adjoint Rep == make_adjoint_representation
     ZxAd = Zero();
     for(int b=0;b<8;b++) {
+      GRID_TRACE("ZxAd_b");
       // Adj group sets traceless antihermitian T's -- Guido, really????
       SU3::generator(b, tb);         // Fund group sets traceless hermitian T's
       SU3Adjoint::generator(b,TRb);
@@ -446,10 +471,11 @@ public:
     //////////////////////////////////////
     time=-usecond();
     X=1.0; 
-    JxAd = X; // can be halved
+    JxAd = X;
     mZxAd = (-1.0)*ZxAd; 
     RealD kpfac = 1;
     for(int k=1;k<12;k++){
+      GRID_TRACE("JxAd_k");
       X=X*mZxAd;
       kpfac = kpfac /(k+1);
       JxAd = JxAd + X * kpfac;
@@ -471,7 +497,8 @@ public:
     AdjMatrixField t3(hgrid);                                   t3.Checkerboard() = cb;
     AdjMatrixField dt3(hgrid);                                  dt3.Checkerboard() = cb;
     AdjMatrixField aunit(hgrid);                                aunit.Checkerboard() = cb;
-
+    {
+      GRID_TRACE("dJx");
     for(int b=0;b<8;b++){
       SU3Adjoint::generator(b, TRb_s[b]);
       dJdX[b] = TRb_s[b];
@@ -490,6 +517,7 @@ public:
     }
     for(int b=0;b<8;b++){
       dJdX[b] = -dJdX[b];
+    }
     }
 #else
     std::vector<AdjMatrixField>  dJdX;    dJdX.resize(8,grid);
@@ -518,8 +546,9 @@ public:
 #endif  
     time+=usecond();
     std::cout << GridLogMessage << "dJx took "<<time<< " us"<<std::endl;
+    
     /////////////////////////////////////////////////////////////////
-    // Mask Umu for this link
+    // NxxAd
     /////////////////////////////////////////////////////////////////
     time=-usecond();
     PlaqL = Ident;
@@ -563,11 +592,11 @@ public:
     AdjVectorField  Fdet1_mu_oe(hgrid); Fdet1_mu_oe = Zero(); Fdet1_mu_oe.Checkerboard() = (cb+1)%2;
     AdjVectorField  Fdet2_mu_oe(hgrid); Fdet2_mu_oe = Zero(); Fdet2_mu_oe.Checkerboard() = (cb+1)%2;
     
-    AdjMatrixField nMpInv(hgrid);     nMpInv.Checkerboard() = cb;
+    AdjMatrixField nMpInv(hgrid);       nMpInv.Checkerboard() = cb;
     nMpInv= NxxAd *MpAdInv;
 
-    AdjMatrixField MpInvJx(hgrid);    MpInvJx.Checkerboard() = cb; 
-    AdjMatrixField MpInvJx_nu(hgrid); MpInvJx_nu.Checkerboard() = cb;
+    AdjMatrixField MpInvJx(hgrid);      MpInvJx.Checkerboard() = cb; 
+    AdjMatrixField MpInvJx_nu(hgrid);   MpInvJx_nu.Checkerboard() = cb;
     MpInvJx = (-1.0)*MpAdInv * JxAd;// rho is on the plaq factor
 
     LatticeComplexD tr(hgrid); tr.Checkerboard() = cb;
@@ -605,11 +634,13 @@ public:
 
 	time=-usecond(); tLR -= usecond();
 	PlaqL=Ident;
-
+	{
+	  GRID_TRACE("Staple");
 	pickCheckerboard(cb,PlaqR,(GaugeLinkField) ((-rho)*Gimpl::CovShiftForward(Umu[nu], nu,
 				          Gimpl::CovShiftForward(Umu[mu], mu,
 				           Gimpl::CovShiftBackward(Umu[nu], nu,
 					    Gimpl::CovShiftIdentityBackward(Utmp, mu))))));
+	}
 	time+=usecond(); tLR += usecond();
 	std::cout << GridLogMessage << "PlaqLR took "<<time<< " us"<<std::endl;
 
@@ -634,11 +665,14 @@ public:
 	//    .__|    // nu polarisation -- anticlockwise
 
 	tLR -= usecond();
+	{
+	  GRID_TRACE("Staple");
 	pickCheckerboard((cb+1)%2,PlaqR,(GaugeLinkField) ((rho)*Gimpl::CovShiftForward(Umu[nu], nu,
 					       Gimpl::CovShiftBackward(Umu[mu], mu,
 								       Gimpl::CovShiftIdentityBackward(Umu[nu], nu)))));
 
 	pickCheckerboard((cb+1)%2,PlaqL, (GaugeLinkField) (Gimpl::CovShiftIdentityBackward(Utmp, mu)));
+	}
 	tLR += usecond();
 
 	tNxy -= usecond();
@@ -660,11 +694,14 @@ public:
 	// |  |
 	// x==          // nu polarisation -- clockwise
 	tLR -= usecond();
+	{
+	  GRID_TRACE("Staple");
 	pickCheckerboard((cb+1)%2,PlaqL,(GaugeLinkField) ((rho)* Gimpl::CovShiftForward(Umu[mu], mu,
 						Gimpl::CovShiftForward(Umu[nu], nu,
 								       Gimpl::CovShiftIdentityBackward(Utmp, mu)))));
 
         pickCheckerboard((cb+1)%2,PlaqR, (GaugeLinkField) (Gimpl::CovShiftIdentityForward(Umu[nu], nu)));
+	}
 	tLR += usecond();
 
 	tNxy -= usecond();
@@ -683,11 +720,14 @@ public:
 	// |  |
 	// |__|         // nu polarisation
 	tLR -= usecond();
+	{
+	  GRID_TRACE("Staple");
 	pickCheckerboard(cb,PlaqL,(GaugeLinkField) ((-rho)*Gimpl::CovShiftForward(Umu[nu], nu,
 										  Gimpl::CovShiftIdentityBackward(Utmp, mu))));
 
 	pickCheckerboard(cb,PlaqR,(GaugeLinkField) (Gimpl::CovShiftBackward(Umu[mu], mu,
 									    Gimpl::CovShiftIdentityForward(Umu[nu], nu))));
+	}
 	tLR += usecond();
 
 	tNxy -= usecond();
@@ -726,11 +766,14 @@ public:
 	//    |  "
 	//    |__"x    // mu polarisation
 	tLR -= usecond();
+	{
+	  GRID_TRACE("Staple");
 	pickCheckerboard((cb+1)%2,PlaqL,(GaugeLinkField) ((-rho)*Gimpl::CovShiftForward(Umu[mu], mu,
 						Gimpl::CovShiftBackward(Umu[nu], nu,
 									Gimpl::CovShiftIdentityBackward(Utmp, mu)))));
 
 	pickCheckerboard((cb+1)%2,PlaqR,(GaugeLinkField) (Gimpl::CovShiftIdentityBackward(Umu[nu], nu)));
+	}
 	tLR += usecond();
 
 	tNxy -= usecond();
@@ -750,11 +793,14 @@ public:
 	// "  |
 	// x__|          // mu polarisation
 	tLR -= usecond();
+	{
+	  GRID_TRACE("Staple");
 	pickCheckerboard((cb+1)%2,PlaqL,(GaugeLinkField) ((-rho)*Gimpl::CovShiftForward(Umu[mu], mu,
 						Gimpl::CovShiftForward(Umu[nu], nu,
 								       Gimpl::CovShiftIdentityBackward(Utmp, mu)))));
 
 	pickCheckerboard((cb+1)%2,PlaqR,(GaugeLinkField) (Gimpl::CovShiftIdentityForward(Umu[nu], nu)));
+	}
 	tLR += usecond();
 
 	tNxy -= usecond();
