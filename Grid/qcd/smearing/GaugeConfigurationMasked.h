@@ -13,6 +13,8 @@ template<class T> void Dump(const Lattice<T> & lat,
 			    Coordinate site = Coordinate({0,0,0,0}))
 {
   typename T::scalar_object tmp;
+  if (lat.Checkerboard() != lat.Grid()->CheckerBoard(site))
+    site = Coordinate({0,0,0,1});
   peekSite(tmp,lat,site);
   std::cout << " Dump "<<s<<" "<<tmp<<std::endl;
 }
@@ -227,6 +229,61 @@ private:
     time+=usecond();
     std::cout << GridLogMessage << " Checkerboarding_MpInvJx_dNxxdSy " << time/1e3 << " ms " << std::endl;
   }
+  void Compute_MpInvJx_dNxxdSy_fused(const GaugeLinkField &PlaqL,const GaugeLinkField &PlaqR, AdjMatrixField MpInvJx,AdjVectorField &Fdet2 )
+  {
+    GRID_TRACE("Compute_MpInvJx_dNxxdSy_fused");
+    int cb = PlaqL.Checkerboard();
+    GaugeLinkField UtaU(PlaqL.Grid());         UtaU.Checkerboard() = cb;
+    GaugeLinkField D(PlaqL.Grid());            D.Checkerboard() = cb;
+    AdjMatrixField Dbc(PlaqL.Grid());          Dbc.Checkerboard() = cb;
+    AdjMatrixField Dbc_opt(PlaqL.Grid());      Dbc_opt.Checkerboard() = cb;
+    LatticeComplex tmp(PlaqL.Grid());          tmp.Checkerboard() = cb;
+    const int Ngen = SU3Adjoint::Dimension;
+    Complex ci(0,1);
+    ColourMatrix   ta,tb,tc;
+    RealD t=0;
+    RealD tp=0, tpl=0;
+    RealD tta=0;
+    RealD tpk=0;
+    t-=usecond();
+    for(int a=0;a<Ngen;a++) {
+      // Qlat Tb = 2i Tb^Grid
+      SU3::generator(a, ta);
+      ta = 2.0 * ci * ta;
+      {
+        GRID_TRACE("UtaU");
+        UtaU= adj(PlaqL)*ta*PlaqR; // 6ms
+      }
+      {
+        GRID_TRACE("FusedLieAlgebraProject");
+	tp-=usecond();
+	SU3::LieAlgebraProject(Dbc_opt,UtaU);
+	tp+=usecond();
+      }
+      tpk-=usecond();
+      {
+        GRID_TRACE("traceMpDbc");
+        tmp = trace(MpInvJx * Dbc_opt);
+      }
+#if 0
+      if (a==0){
+	GRID_TRACE("traceMpDbc2");
+	LatticeComplex tmp2(PlaqL.Grid()); tmp2.Checkerboard() = cb;
+	SU3::trace(tmp2,MpInvJx,Dbc_opt);
+	std::cout << GridLogMessage <<  "DEBUG: Compute_MpInvJx_dNxxdSy_fused trace " << norm2(tmp2-tmp)<<std::endl;
+      }
+	
+#endif	
+      {
+	GRID_TRACE("pokeIndecx");
+	PokeIndex<ColourIndex>(Fdet2,tmp,a);
+      }
+      tpk+=usecond();
+    }
+    t+=usecond();
+    std::cout << GridLogMessage << " Compute_MpInvJx_dNxxdSy_fused " << t/1e3 << " ms  proj "<<tp/1e3<< " ms"
+	      << " ta "<<tta/1e3<<" ms" << " poke "<<tpk/1e3<< " ms LieAlgebraProject "<<tpl/1e3<<" ms"<<std::endl;
+  }
   void Compute_MpInvJx_dNxxdSy(const GaugeLinkField &PlaqL,const GaugeLinkField &PlaqR, AdjMatrixField MpInvJx,AdjVectorField &Fdet2 )
   {
     GRID_TRACE("Compute_MpInvJx_dNxxdSy");
@@ -239,8 +296,8 @@ private:
     const int Ngen = SU3Adjoint::Dimension;
     Complex ci(0,1);
     ColourMatrix   ta,tb,tc;
-    RealD t=0;
-    RealD tp=0;
+    RealD t=0, time;
+    RealD tp=0, tpl=0;
     RealD tta=0;
     RealD tpk=0;
     t-=usecond();
@@ -270,7 +327,11 @@ private:
 #if 1
 	{
 	  GRID_TRACE("LieAlgebraProject");
+	  time=-usecond();
 	  SU3::LieAlgebraProject(Dbc_opt,D,c); // 5.5ms
+	  time+=usecond();
+	  tpl+=time;
+	  //std::cout << GridLogMessage << " LieAlgebraProject_in_Compute_MpInvJx " << a << " " << c << " "<<time/1e3<<" ms"<<std::endl;
 	}
 #else
 	for(int b=0;b<Ngen;b++){
@@ -281,8 +342,8 @@ private:
 #endif
 	tp+=usecond();
       }
-      //      Dump(Dbc_opt,"Dbc_opt");
-      //      Dump(Dbc,"Dbc");
+      //Dump(Dbc_opt,"Dbc_opt");
+      //Dump(Dbc,"Dbc");
       tpk-=usecond();
       {
 	GRID_TRACE("traceMpDbc");
@@ -296,7 +357,7 @@ private:
     }
     t+=usecond();
     std::cout << GridLogMessage << " Compute_MpInvJx_dNxxdSy " << t/1e3 << " ms  proj "<<tp/1e3<< " ms"
-	      << " ta "<<tta/1e3<<" ms" << " poke "<<tpk/1e3<< " ms"<<std::endl;
+	      << " ta "<<tta/1e3<<" ms" << " poke "<<tpk/1e3<< " ms LieAlgebraProject "<<tpl/1e3<<" ms"<<std::endl;
   }
   
   void ComputeNxy(const GaugeLinkField &PlaqL,const GaugeLinkField &PlaqR,AdjMatrixField &NxAd)
@@ -610,6 +671,11 @@ public:
     setCheckerboard(Fdet1_mu, (AdjVectorField) (transpose(NxxAd)*dJdXe_nMpInv)); 
     Compute_MpInvJx_dNxxdSy(PlaqL,PlaqR,MpInvJx,FdetV);
     setCheckerboard(Fdet2_mu,FdetV);
+#if 1
+    AdjVectorField  FdetV2(hgrid);     FdetV2.Checkerboard() = cb; FdetV2=Zero();
+    Compute_MpInvJx_dNxxdSy_fused(PlaqL,PlaqR,MpInvJx,FdetV2);
+    std::cout << GridLogMessage << " DEBUG: logDetJacobianForce_F_detVdiff " <<smr<<" "<<mu<<" "<<cb<<" "<<" simd "<<AdjMatrix::Nsimd()<<" "<<norm2(FdetV-FdetV2)<<" "<<norm2(FdetV)<<" " <<norm2(FdetV2)<<std::endl;
+#endif
 
     //    dJdXe_nMpInv needs to multiply:
     //       Nxx_mu (site local)                           (1)
@@ -1462,7 +1528,7 @@ public:
       force=Ta(force); // Ta
       
     }  // if smearingLevels = 0 do nothing
-    std::cout << GridLogMessage << " DEBUG: logDetJacobianForce " << std::endl;
+    std::cout << GridLogMessage << " DEBUG: logDetJacobianForce Full " << std::endl;
   }
   
   void logDetJacobianForce(GaugeField &force)
@@ -1526,7 +1592,7 @@ public:
 
       force=Ta(force); // Ta
       
-#if 0 // debug
+#if 1 // debug
       GaugeField force_debug(force.Grid()); 
       logDetJacobianForce(1,force_debug);
       std::cout << GridLogMessage << " DEBUG: logDetJacobianForce_diff " << norm2(force-force_debug) << std::endl;

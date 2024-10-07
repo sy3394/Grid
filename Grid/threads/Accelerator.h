@@ -497,11 +497,11 @@ inline void *acceleratorAllocDevice(size_t bytes)
 
 inline void acceleratorFreeShared(void *ptr){ auto discard=hipFree(ptr);};
 inline void acceleratorFreeDevice(void *ptr){ auto discard=hipFree(ptr);};
-inline void acceleratorCopyToDevice(void *from,void *to,size_t bytes)  { auto discard=hipMemcpy(to,from,bytes, hipMemcpyHostToDevice);}
-inline void acceleratorCopyFromDevice(void *from,void *to,size_t bytes){ auto discard=hipMemcpy(to,from,bytes, hipMemcpyDeviceToHost);}
+inline void acceleratorCopyToDevice(void *from,void *to,size_t bytes)  { GRID_TRACE("acceleratorCopyToDevice"); auto discard=hipMemcpy(to,from,bytes, hipMemcpyHostToDevice);}
+inline void acceleratorCopyFromDevice(void *from,void *to,size_t bytes){ GRID_TRACE("acceleratorCopyFromDevice");auto discard=hipMemcpy(to,from,bytes, hipMemcpyDeviceToHost);}
 //inline void acceleratorCopyDeviceToDeviceAsynch(void *from,void *to,size_t bytes)  { hipMemcpy(to,from,bytes, hipMemcpyDeviceToDevice);}
 //inline void acceleratorCopySynchronise(void) {  }
-inline void acceleratorMemSet(void *base,int value,size_t bytes) { auto discard=hipMemset(base,value,bytes);}
+inline void acceleratorMemSet(void *base,int value,size_t bytes) { GRID_TRACE("acceleratorMemset");auto discard=hipMemset(base,value,bytes);}
 
 inline void acceleratorCopyDeviceToDeviceAsynch(void *from,void *to,size_t bytes) // Asynch
 {

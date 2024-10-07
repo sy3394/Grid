@@ -1,8 +1,9 @@
 . /autofs/nccs-svm1_home1/paboyle/Crusher/Grid/spack/share/spack/setup-env.sh
 spack load c-lime
 module load emacs 
-module load PrgEnv-gnu
-module load rocm
+#module load PrgEnv-gnu
+module load PrgEnv-cray-amd/8.5.0
+module load rocm #/6.2.0
 module load cray-mpich
 module load gmp
 module load cray-fftw
