@@ -450,7 +450,82 @@ static void LieAlgebraProject(LatticeAlgebraMatrix &out,const LatticeMatrix &in,
       }
     });
 }
-  
+
+  // Work with traceless anti-hermitian matrices for Lie algebra elements with Luscher's normalization convention
+  // Explicitly, T^a = -i t^a where t^a is hermitian generators in Grid convention, c.f., Compute_MpInvJx_dNxxdSy
+  //  in GaugeConfigurationMasked.h
+  // To be used inside of accelarator_for
+  static accelerator_inline void LieAlgebraProject(int ss, vAlgebraMatrix &out_v,const vMatrix &in_v){
+    int N = ncolour;
+    int NNm1 = N * (N - 1);
+    int hNNm1= NNm1/2;
+    
+    // Compute N_{ab}
+    for(int su2Index_b=0;su2Index_b<hNNm1;su2Index_b++){
+      int ib1, ib2;
+      su2SubGroupIndex(ib1, ib2, su2Index_b);
+      int bx = su2Index_b*2;
+      int by = su2Index_b*2+1;
+      for(int su2Index=0;su2Index<hNNm1;su2Index++){
+	int i1, i2;
+	su2SubGroupIndex(i1, i2, su2Index); //i1<i2
+	int ax = su2Index*2;
+	int ay = su2Index*2+1;
+	// Compute: tr(T^a P) where P is traceless anti-hermitian
+	// Here, P = Ta(M) where M is defined below
+	// Note: T^b appearing in M (c.f. below) is 2it^b where t^b in Grid's convention, c.f. original def UtaU in the earlier version
+	
+	// real( 0.5*[M - M^\dag]_(i2, i1) )=real( 0.5*[T^b*in + in^\dag*T^b]_(i2, i1) ) <- M = T^b*in <- T^b: suN matrix in Luchang's convention; in: input matrix
+	//    sign flip of the complex part of the 2nd term is neglected, as real is taken
+	coalescedWrite(out_v[ss]()()(ax,bx),0.5*real( !(ib2^i2)*in_v(ss)()()(ib1,i1)-!(ib1^i2)*in_v(ss)()()(ib2,i1)
+						      +!(ib1^i1)*in_v(ss)()()(ib2,i2)-!(ib2^i1)*in_v(ss)()()(ib1,i2) ));
+	// imag( 0.5*[M - M^\dag]_(i1, i2) )
+	//    sign flip of the complex part of the 2nd term due to dagger
+	coalescedWrite(out_v[ss]()()(ay,bx),0.5*imag(  !(ib2^i1)*in_v(ss)()()(ib1,i2)-!(ib1^i1)*in_v(ss)()()(ib2,i2)
+						       -!(ib1^i2)*in_v(ss)()()(ib2,i1)+!(ib2^i2)*in_v(ss)()()(ib1,i1) ));
+	
+	//    sign flip of the complex part of the 2nd term due to dagger <- imag turns into real due to i from T^b
+	coalescedWrite(out_v[ss]()()(ax,by),-0.5*imag(  !(ib2^i2)*in_v(ss)()()(ib1,i1)+!(ib1^i2)*in_v(ss)()()(ib2,i1)
+							-!(ib1^i1)*in_v(ss)()()(ib2,i2)-!(ib2^i1)*in_v(ss)()()(ib1,i2) ));
+	
+	coalescedWrite(out_v[ss]()()(ay,by), 0.5*real(  !(ib2^i1)*in_v(ss)()()(ib1,i2)+!(ib1^i1)*in_v(ss)()()(ib2,i2)
+							+!(ib1^i2)*in_v(ss)()()(ib2,i1)+!(ib2^i2)*in_v(ss)()()(ib1,i1) ));  
+      }
+      for(int diagIndex=0;diagIndex<N-1;diagIndex++){
+	int k = diagIndex + 1; // diagIndex starts from 0
+	int a = NNm1+diagIndex;
+	RealD scale = 1.0/sqrt(2.0*k*(k+1));
+	coalescedWrite(out_v[ss]()()(a,bx), scale*imag(-((ib1<k)-k*(ib1==k))*in_v(ss)()()(ib2,ib1) + ((ib2<k)-k*(ib2==k))*in_v(ss)()()(ib1,ib2) ));
+	coalescedWrite(out_v[ss]()()(a,by), scale*real( ((ib1<k)-k*(ib1==k))*in_v(ss)()()(ib2,ib1) + ((ib2<k)-k*(ib2==k))*in_v(ss)()()(ib1,ib2) ));
+      }
+    }
+    for(int diagIndex_b=0;diagIndex_b<N-1;diagIndex_b++){
+      int k_b = diagIndex_b + 1; // diagIndex starts from 0
+      int b = NNm1+diagIndex_b;
+      RealD scale_b = 2.0/sqrt(2.0*k_b*(k_b+1));
+      for(int su2Index=0;su2Index<hNNm1;su2Index++){
+	int i1, i2;
+	su2SubGroupIndex(i1, i2, su2Index);
+	int ax = su2Index*2;
+	int ay = su2Index*2+1;
+	coalescedWrite(out_v[ss]()()(ax,b),-0.5*scale_b*imag( ((i2<k_b)-k_b*(i2==k_b))*in_v(ss)()()(i2,i1) - ((i1<k_b)-k_b*(i1==k_b))*in_v(ss)()()(i1,i2) ));
+	coalescedWrite(out_v[ss]()()(ay,b), 0.5*scale_b*real( ((i1<k_b)-k_b*(i1==k_b))*in_v(ss)()()(i1,i2) + ((i2<k_b)-k_b*(i2==k_b))*in_v(ss)()()(i2,i1) ));
+      }
+      for(int diagIndex=0;diagIndex<N-1;diagIndex++){
+	int k = diagIndex + 1; // diagIndex starts from 0
+	int a = NNm1+diagIndex;
+	RealD scale = 1.0/sqrt(2.0*k*(k+1));
+	auto tmp = in_v(ss)()()(0,0);
+	int k_min = (k < k_b)? k:k_b;
+	for(int i=1;i<k_min;i++){
+	  tmp=tmp+in_v(ss)()()(i,i);
+	}
+	int c = (k==k_b)? -k:1;
+	tmp = tmp - in_v(ss)()()(k_min,k_min)*k_min*c;
+	coalescedWrite(out_v[ss]()()(a,b),real(tmp) * scale * scale_b);
+      }
+      }
+  }
   // Work with traceless anti-hermitian matrices for Lie algebra elements with Luscher's normalization convention
   // Explicitly, T^a = -i t^a where t^a is hermitian generators in Grid convention, c.f., Compute_MpInvJx_dNxxdSy
   //  in GaugeConfigurationMasked.h
@@ -534,7 +609,17 @@ static void LieAlgebraProject(LatticeAlgebraMatrix &out,const LatticeMatrix &in)
       }
     });
 }
-  static void trace(LatticeComplex &out, const LatticeAlgebraMatrix &in1, const LatticeAlgebraMatrix &in2){
+  static accelerator_inline void trace_product(int ss, vAlgebraVector &out_v, const vAlgebraMatrix &in1_v, const vAlgebraMatrix &in2_v, int a){
+        typedef decltype(coalescedRead(out_v[0])) scal;
+        scal tmp;
+        tmp = Zero();
+        for(int i=0;i<AlgebraDimension;i++)
+          for(int j=0;j<AlgebraDimension;j++)
+            tmp()()() = tmp()()() + in1_v(ss)()()(i,j)*in2_v(ss)()()(j,i);
+        coalescedWrite(out_v[ss](a),tmp);
+  }
+
+  static void trace_product(LatticeComplex &out, const LatticeAlgebraMatrix &in1, const LatticeAlgebraMatrix &in2){
     conformable(in1, in2);
     GridBase *grid = out.Grid();
     autoView(out_v,out,AcceleratorWrite);
@@ -543,13 +628,13 @@ static void LieAlgebraProject(LatticeAlgebraMatrix &out,const LatticeMatrix &in)
 
     const int nsimd=  vMatrix::Nsimd();
     accelerator_for(ss,grid->oSites(),nsimd,{
-	//decltype(coalescedRead(typename LatticeComplex::vector_object())) tmp;
-	auto tmp = in1_v(ss)()()(0,0)-in1_v(ss)()()(0,0);
+	typedef decltype(coalescedRead(out_v[0])) scal;
+	scal tmp;
+	tmp = Zero();
 	for(int i=0;i<AlgebraDimension;i++)
 	  for(int j=0;j<AlgebraDimension;j++)
-	    tmp = tmp + in1_v(ss)()()(i,j)*in2_v(ss)()()(j,i);
-	//coalescedWrite(out_v[ss],tmp);
-	out_v[ss]=tmp;
+	    tmp()()() = tmp()()() + in1_v(ss)()()(i,j)*in2_v(ss)()()(j,i);
+	coalescedWrite(out_v[ss],tmp);
       });
   }
 

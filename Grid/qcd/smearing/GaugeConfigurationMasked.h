@@ -233,56 +233,31 @@ private:
   {
     GRID_TRACE("Compute_MpInvJx_dNxxdSy_fused");
     int cb = PlaqL.Checkerboard();
-    GaugeLinkField UtaU(PlaqL.Grid());         UtaU.Checkerboard() = cb;
-    GaugeLinkField D(PlaqL.Grid());            D.Checkerboard() = cb;
-    AdjMatrixField Dbc(PlaqL.Grid());          Dbc.Checkerboard() = cb;
-    AdjMatrixField Dbc_opt(PlaqL.Grid());      Dbc_opt.Checkerboard() = cb;
-    LatticeComplex tmp(PlaqL.Grid());          tmp.Checkerboard() = cb;
     const int Ngen = SU3Adjoint::Dimension;
+    vAlgebraMatrix Dbc;
     Complex ci(0,1);
-    ColourMatrix   ta,tb,tc;
-    RealD t=0;
-    RealD tp=0, tpl=0;
-    RealD tta=0;
-    RealD tpk=0;
-    t-=usecond();
-    for(int a=0;a<Ngen;a++) {
-      // Qlat Tb = 2i Tb^Grid
-      SU3::generator(a, ta);
-      ta = 2.0 * ci * ta;
-      {
-        GRID_TRACE("UtaU");
-        UtaU= adj(PlaqL)*ta*PlaqR; // 6ms
-      }
-      {
-        GRID_TRACE("FusedLieAlgebraProject");
-	tp-=usecond();
-	SU3::LieAlgebraProject(Dbc_opt,UtaU);
-	tp+=usecond();
-      }
-      tpk-=usecond();
-      {
-        GRID_TRACE("traceMpDbc");
-        tmp = trace(MpInvJx * Dbc_opt);
-      }
-#if 0
-      if (a==0){
-	GRID_TRACE("traceMpDbc2");
-	LatticeComplex tmp2(PlaqL.Grid()); tmp2.Checkerboard() = cb;
-	SU3::trace(tmp2,MpInvJx,Dbc_opt);
-	std::cout << GridLogMessage <<  "DEBUG: Compute_MpInvJx_dNxxdSy_fused trace " << norm2(tmp2-tmp)<<std::endl;
-      }
-	
-#endif	
-      {
-	GRID_TRACE("pokeIndecx");
-	PokeIndex<ColourIndex>(Fdet2,tmp,a);
-      }
-      tpk+=usecond();
-    }
+    ColourMatrix ta;
+    RealD t;
+
+    t=-usecond();
+    autoView(Fdet2_v,Fdet2,AcceleratorWrite);
+    autoView(PlaqL_v,PlaqL,AcceleratorRead);
+    autoView(PlaqR_v,PlaqR,AcceleratorRead);
+    autoView(MpInvJx_v,MpInvJx,AcceleratorRead);
+    const int nsimd = vMatrix::Nsimd();
+    accelerator_for(ss,grid->oSites(),nsimd,{
+	for(int a=0;a<Ngen;a++) {
+	  // Qlat Tb = 2i Tb^Grid
+	  SU3::generator(a, ta);
+	  ta = 2.0 * ci * ta;
+	  //typedef decltype(coalescedRead(out_v[0])) scal;
+	  auto UtaU = adj(PlaqL_v(ss)()())*ta*PlaqR_v(ss)()(); // 6ms
+	  SU3::LieAlgebraProject(ss,Dbc,UtaU);
+	  trace_product(ss,Fdet2_,vMpInvJx_v,Dbc,a);
+	}
+      });
     t+=usecond();
-    std::cout << GridLogMessage << " Compute_MpInvJx_dNxxdSy_fused " << t/1e3 << " ms  proj "<<tp/1e3<< " ms"
-	      << " ta "<<tta/1e3<<" ms" << " poke "<<tpk/1e3<< " ms LieAlgebraProject "<<tpl/1e3<<" ms"<<std::endl;
+    std::cout << GridLogMessage << " Compute_MpInvJx_dNxxdSy_fused " << t/1e3 << <<std::endl;
   }
   void Compute_MpInvJx_dNxxdSy(const GaugeLinkField &PlaqL,const GaugeLinkField &PlaqR, AdjMatrixField MpInvJx,AdjVectorField &Fdet2 )
   {
@@ -349,6 +324,15 @@ private:
 	GRID_TRACE("traceMpDbc");
 	tmp = trace(MpInvJx * Dbc_opt);
       }
+#if 0
+      if (a==0){
+	GRID_TRACE("traceMpDbc2");
+	LatticeComplex tmp2(PlaqL.Grid()); tmp2.Checkerboard() = cb;
+	SU3::trace_product(tmp2,MpInvJx,Dbc_opt);
+	std::cout << GridLogMessage <<  "DEBUG: Compute_MpInvJx_dNxxdSy_fused trace " << norm2(tmp2-tmp)<<std::endl;
+      }
+	
+#endif	
       {
 	GRID_TRACE("pokeIndecx");
 	PokeIndex<ColourIndex>(Fdet2,tmp,a);
