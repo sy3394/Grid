@@ -43,7 +43,9 @@ private:
   typedef typename SU3Adjoint::AMatrix AdjMatrix;
   typedef typename SU3Adjoint::LatticeAdjMatrix  AdjMatrixField;
   typedef typename SU3Adjoint::LatticeAdjVector  AdjVectorField;
-
+  typedef typename SU3::vAlgebraMatrix vAlgebraMatrix;
+  
+  
   // Assume: lat = full lattice
   template<class T>  void printCheckerboards2norm(T &lat, int cb=-1)
   {
@@ -233,8 +235,9 @@ private:
   {
     GRID_TRACE("Compute_MpInvJx_dNxxdSy_fused");
     int cb = PlaqL.Checkerboard();
+    GridBase *grid = PlaqL.Grid();
     const int Ngen = SU3Adjoint::Dimension;
-    vAlgebraMatrix Dbc;
+    //AdjMatrix Dbc;
     Complex ci(0,1);
     ColourMatrix ta;
     RealD t;
@@ -244,20 +247,21 @@ private:
     autoView(PlaqL_v,PlaqL,AcceleratorRead);
     autoView(PlaqR_v,PlaqR,AcceleratorRead);
     autoView(MpInvJx_v,MpInvJx,AcceleratorRead);
-    const int nsimd = vMatrix::Nsimd();
+    const int nsimd = vAlgebraMatrix::Nsimd();
     accelerator_for(ss,grid->oSites(),nsimd,{
+	typedef decltype(coalescedRead(MpInvJx_v[0])) adj_mat;
+	adj_mat Dbc;
 	for(int a=0;a<Ngen;a++) {
 	  // Qlat Tb = 2i Tb^Grid
 	  SU3::generator(a, ta);
 	  ta = 2.0 * ci * ta;
-	  //typedef decltype(coalescedRead(out_v[0])) scal;
-	  auto UtaU = adj(PlaqL_v(ss)()())*ta*PlaqR_v(ss)()(); // 6ms
-	  SU3::LieAlgebraProject(ss,Dbc,UtaU);
-	  trace_product(ss,Fdet2_,vMpInvJx_v,Dbc,a);
+	  auto UtaU = adj(PlaqL_v(ss))*ta*PlaqR_v(ss); // 6ms
+	  SU3::LieAlgebraProject(Dbc,UtaU);
+	  SU3::trace_product(Fdet2_v[ss],MpInvJx_v(ss),Dbc,a);
 	}
       });
     t+=usecond();
-    std::cout << GridLogMessage << " Compute_MpInvJx_dNxxdSy_fused " << t/1e3 << <<std::endl;
+    std::cout << GridLogMessage << " Compute_MpInvJx_dNxxdSy_fused " << t/1e3 <<" ms"<<std::endl;
   }
   void Compute_MpInvJx_dNxxdSy(const GaugeLinkField &PlaqL,const GaugeLinkField &PlaqR, AdjMatrixField MpInvJx,AdjVectorField &Fdet2 )
   {
@@ -656,7 +660,7 @@ public:
     Compute_MpInvJx_dNxxdSy(PlaqL,PlaqR,MpInvJx,FdetV);
     setCheckerboard(Fdet2_mu,FdetV);
 #if 1
-    AdjVectorField  FdetV2(hgrid);     FdetV2.Checkerboard() = cb; FdetV2=Zero();
+    AdjVectorField  FdetV2(hgrid);     FdetV2.Checkerboard() = cb; //FdetV2=Zero();
     Compute_MpInvJx_dNxxdSy_fused(PlaqL,PlaqR,MpInvJx,FdetV2);
     std::cout << GridLogMessage << " DEBUG: logDetJacobianForce_F_detVdiff " <<smr<<" "<<mu<<" "<<cb<<" "<<" simd "<<AdjMatrix::Nsimd()<<" "<<norm2(FdetV-FdetV2)<<" "<<norm2(FdetV)<<" " <<norm2(FdetV2)<<std::endl;
 #endif
@@ -1308,7 +1312,7 @@ public:
   {
     GridBase* grid = U.Grid();
     GaugeField C(grid);
-    GaugeLinkField Nb(grid);
+    GaugeLinkField Nb(grid), Nb_opt(grid);
     GaugeLinkField Z(grid);
     GaugeLinkField Umu(grid), Cmu(grid);
     ColourMatrix   Tb;
@@ -1350,8 +1354,8 @@ public:
       Nb = (2.0)*Ta( ci*Tb * Umu * adj(Cmu));
       tta += usecond();
       // FIXME -- replace this with LieAlgebraProject
-#if 0
-      SU3::LieAlgebraProject(Ncb,tmp,b);
+#if 1
+      SU3::LieAlgebraProject(Ncb_opt,Nb,b);
 #else
       for(int c=0;c<Ngen;c++) {
 	SU3::generator(c, Tc);
@@ -1361,7 +1365,9 @@ public:
 	tpk += usecond();
       }
 #endif
-    }      
+    }
+    Dump(Ncb_opt,"Ncb_opt");
+    Dump(Ncb,"Ncb");
     tN += usecond();
     
     //////////////////////////////////////////////////////////////////
