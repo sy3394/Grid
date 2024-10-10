@@ -160,8 +160,11 @@ public:
       pokeColour(h_out, tmp, a);
     }
   }
+#if 0
+  static void express_su_as_AdjMat() {
 
-
+  }
+#endif
 };
 
 

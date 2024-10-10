@@ -615,13 +615,14 @@ static void LieAlgebraProject(LatticeAlgebraMatrix &out,const LatticeMatrix &in)
 }
   template<class T_out, class T_in>
   static accelerator_inline void trace_product(T_out &out_v, const T_in &in1_v, const T_in &in2_v, int a){
-    typedef decltype(coalescedRead(out_v)) scal;//the same as T_out?
-    scal tmp;// not really a scalar...
-    tmp = Zero();
+    //typedef decltype(out_v()()(0)) scal;
+    //scal tmp=0;
+    out_v()()(a) = 0;
     for(int i=0;i<AlgebraDimension;i++)
       for(int j=0;j<AlgebraDimension;j++)
-	tmp()()(a) = tmp()()(a) + in1_v()()(i,j)*in2_v()()(j,i);
-    coalescedWrite(out_v()()(a),tmp()()(a));
+	//tmp()()(a) = tmp()()(a) + in1_v()()(i,j)*in2_v()()(j,i);
+	out_v()()(a) = out_v()()(a) + in1_v()()(i,j)*in2_v()()(j,i);  //is this slower than dealing with a POD scalar or simple obj like thrust::complex?
+    //out_v()()(a)=tmp;//tmp()()(a));
   }
 
   static void trace_product(LatticeComplex &out, const LatticeAlgebraMatrix &in1, const LatticeAlgebraMatrix &in2){

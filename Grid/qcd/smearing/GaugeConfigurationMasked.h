@@ -231,13 +231,12 @@ private:
     time+=usecond();
     std::cout << GridLogMessage << " Checkerboarding_MpInvJx_dNxxdSy " << time/1e3 << " ms " << std::endl;
   }
-  void Compute_MpInvJx_dNxxdSy_fused(const GaugeLinkField &PlaqL,const GaugeLinkField &PlaqR, AdjMatrixField MpInvJx,AdjVectorField &Fdet2 )
+  void Compute_MpInvJx_dNxxdSy(const GaugeLinkField &PlaqL,const GaugeLinkField &PlaqR, AdjMatrixField MpInvJx,AdjVectorField &Fdet2 )
   {
-    GRID_TRACE("Compute_MpInvJx_dNxxdSy_fused");
+    GRID_TRACE("Compute_MpInvJx_dNxxdSy");
     int cb = PlaqL.Checkerboard();
     GridBase *grid = PlaqL.Grid();
     const int Ngen = SU3Adjoint::Dimension;
-    //AdjMatrix Dbc;
     Complex ci(0,1);
     ColourMatrix ta;
     RealD t;
@@ -250,22 +249,26 @@ private:
     const int nsimd = vAlgebraMatrix::Nsimd();
     accelerator_for(ss,grid->oSites(),nsimd,{
 	typedef decltype(coalescedRead(MpInvJx_v[0])) adj_mat;
+	typedef decltype(coalescedRead(Fdet2_v[0]))   adj_vec;
 	adj_mat Dbc;
+	adj_vec Fdet;
 	for(int a=0;a<Ngen;a++) {
 	  // Qlat Tb = 2i Tb^Grid
 	  SU3::generator(a, ta);
 	  ta = 2.0 * ci * ta;
-	  auto UtaU = adj(PlaqL_v(ss))*ta*PlaqR_v(ss); // 6ms
+	  auto UtaU = adj(PlaqL_v(ss))*ta*PlaqR_v(ss);
 	  SU3::LieAlgebraProject(Dbc,UtaU);
-	  SU3::trace_product(Fdet2_v[ss],MpInvJx_v(ss),Dbc,a);
+	  //	  SU3::trace_product(Fdet2_v[ss],MpInvJx_v(ss),Dbc,a);
+	  SU3::trace_product(Fdet,MpInvJx_v(ss),Dbc,a);
 	}
+	coalescedWrite(Fdet2_v[ss],Fdet);
       });
     t+=usecond();
-    std::cout << GridLogMessage << " Compute_MpInvJx_dNxxdSy_fused " << t/1e3 <<" ms"<<std::endl;
+    std::cout << GridLogMessage << " Compute_MpInvJx_dNxxdSy " << t/1e3 <<" ms"<<std::endl;
   }
-  void Compute_MpInvJx_dNxxdSy(const GaugeLinkField &PlaqL,const GaugeLinkField &PlaqR, AdjMatrixField MpInvJx,AdjVectorField &Fdet2 )
+  void Compute_MpInvJx_dNxxdSy_old(const GaugeLinkField &PlaqL,const GaugeLinkField &PlaqR, AdjMatrixField MpInvJx,AdjVectorField &Fdet2 )
   {
-    GRID_TRACE("Compute_MpInvJx_dNxxdSy");
+    GRID_TRACE("Compute_MpInvJx_dNxxdSy_old");
     int cb = PlaqL.Checkerboard();
     GaugeLinkField UtaU(PlaqL.Grid());         UtaU.Checkerboard() = cb;
     GaugeLinkField D(PlaqL.Grid());            D.Checkerboard() = cb;
@@ -344,7 +347,7 @@ private:
       tpk+=usecond();
     }
     t+=usecond();
-    std::cout << GridLogMessage << " Compute_MpInvJx_dNxxdSy " << t/1e3 << " ms  proj "<<tp/1e3<< " ms"
+    std::cout << GridLogMessage << " Compute_MpInvJx_dNxxdSy_old " << t/1e3 << " ms  proj "<<tp/1e3<< " ms"
 	      << " ta "<<tta/1e3<<" ms" << " poke "<<tpk/1e3<< " ms LieAlgebraProject "<<tpl/1e3<<" ms"<<std::endl;
   }
   
@@ -501,16 +504,17 @@ public:
     std::cout << GridLogMessage << "Z took "<<time<< " us"<<std::endl;
     
     time=-usecond();
+    {GRID_TRACE("ZxAd");
     // Move Z to the Adjoint Rep == make_adjoint_representation
     ZxAd = Zero();
     for(int b=0;b<8;b++) {
-      GRID_TRACE("ZxAd_b");
       // Adj group sets traceless antihermitian T's -- Guido, really????
       SU3::generator(b, tb);         // Fund group sets traceless hermitian T's
       SU3Adjoint::generator(b,TRb);
       TRb=-TRb;
       cplx = 2.0*trace(ci*tb*Zx); // my convention 1/2 delta ba
       ZxAd = ZxAd + cplx * TRb; // is this right? YES - Guido used Anti herm Ta's and with bloody wrong sign.
+    }
     }
     time+=usecond();
     std::cout << GridLogMessage << "ZxAd took "<<time<< " us"<<std::endl;
@@ -535,7 +539,6 @@ public:
     //////////////////////////////////////
     // dJ(x)/dxe
     //////////////////////////////////////
-    time=-usecond();
 #if 1
     std::vector<AdjMatrixField>  dJdX;    dJdX.resize(8,hgrid); for(auto &M : dJdX) M.Checkerboard() = cb; 
     std::vector<AdjMatrix> TRb_s; TRb_s.resize(8);              
@@ -548,11 +551,34 @@ public:
     AdjMatrixField aunit(hgrid);                                aunit.Checkerboard() = cb;
     {
       GRID_TRACE("dJx");
+    time=-usecond();
     for(int b=0;b<8;b++){
       SU3Adjoint::generator(b, TRb_s[b]);
       dJdX[b] = TRb_s[b];
     }
     aunit = ComplexD(1.0);
+#if 0
+    autoView(Fdet2_v,Fdet2,AcceleratorWrite);
+    autoView(ZxAd_v,ZxAd,AcceleratorRead);
+    const int nsimd = vAlgebraMatrix::Nsimd();
+    accelerator_for(ss,hgrid->oSites(),nsimd,{
+        typedef decltype(coalescedRead(MpInvJx_v[0])) adj_mat;
+        typedef decltype(coalescedRead(Fdet2_v[0]))   adj_vec;
+      	adj_mat Dbc;
+        adj_vec Fdet;
+        for(int a=0;a<Ngen;a++) {
+          // Qlat Tb = 2i Tb^Grid                                                                                                                                                    
+          SU3::generator(a, ta);
+          ta = 2.0 * ci * ta;
+          auto UtaU = adj(PlaqL_v(ss))*ta*PlaqR_v(ss);
+          SU3::LieAlgebraProject(Dbc,UtaU);
+          //      SU3::trace_product(Fdet2_v[ss],MpInvJx_v(ss),Dbc,a);                                                                                                               
+          SU3::trace_product(Fdet,MpInvJx_v(ss),Dbc,a);
+        }
+        coalescedWrite(Fdet2_v[ss],Fdet);
+      });
+    
+#endif
 
     // Could put into an accelerator_for
     X  = (-1.0)*ZxAd; 
@@ -600,8 +626,11 @@ public:
     // NxxAd
     /////////////////////////////////////////////////////////////////
     time=-usecond();
+    {
+      GRID_TRACE("Plaq_for_Nxy");
     PlaqL = Ident;
     PlaqR = Ueo*adj(Cmu);
+    }
     ComputeNxy(PlaqL,PlaqR,NxxAd);
     time+=usecond();
     std::cout << GridLogMessage << "ComputeNxy took "<<time<< " us"<<std::endl;
@@ -609,18 +638,21 @@ public:
     ////////////////////////////
     // Mab
     ////////////////////////////
-    MpAd = Complex(1.0,0.0);std::cout << GridLogMessage <<"after MpAd def"<<std::endl;Coordinate lcoor,lcoor1;int site=0;hgrid->LocalIndexToLocalCoor(site, lcoor);int site1=1;hgrid->LocalIndexToLocalCoor(site1, lcoor1);
-    MpAd = MpAd - JxAd * NxxAd; std::cout << GridLogMessage <<"after MpAd apxy "<< MpAd.Checkerboard()<<" " <<cb<< " "<<hgrid->CheckerBoard(lcoor) << " "<<hgrid->CheckerBoard(lcoor1)<<std::endl;
+    MpAd = Complex(1.0,0.0);//std::cout << GridLogMessage <<"after MpAd def"<<std::endl;Coordinate lcoor,lcoor1;int site=0;hgrid->LocalIndexToLocalCoor(site, lcoor);int site1=1;hgrid->LocalIndexToLocalCoor(site1, lcoor1);
+    MpAd = MpAd - JxAd * NxxAd; //std::cout << GridLogMessage <<"after MpAd apxy "<< MpAd.Checkerboard()<<" " <<cb<< " "<<hgrid->CheckerBoard(lcoor) << " "<<hgrid->CheckerBoard(lcoor1)<<std::endl;
 
     /////////////////////////
     // invert the 8x8
     /////////////////////////
+    {
+      GRID_TRACE("MpAdInv");
     time=-usecond();
     //temporary
     AdjMatrixField tmp(grid);setCheckerboard(tmp,MpAd);
     tmp = Inverse(tmp);
     pickCheckerboard(cb,MpAdInv,tmp);
     time+=usecond();
+    }
     std::cout << GridLogMessage << "MpAdInv took "<<time<< " us"<<std::endl;
     
     RealD t3a = usecond();
@@ -659,7 +691,7 @@ public:
     setCheckerboard(Fdet1_mu, (AdjVectorField) (transpose(NxxAd)*dJdXe_nMpInv)); 
     Compute_MpInvJx_dNxxdSy(PlaqL,PlaqR,MpInvJx,FdetV);
     setCheckerboard(Fdet2_mu,FdetV);
-#if 1
+#if 0
     AdjVectorField  FdetV2(hgrid);     FdetV2.Checkerboard() = cb; //FdetV2=Zero();
     Compute_MpInvJx_dNxxdSy_fused(PlaqL,PlaqR,MpInvJx,FdetV2);
     std::cout << GridLogMessage << " DEBUG: logDetJacobianForce_F_detVdiff " <<smr<<" "<<mu<<" "<<cb<<" "<<" simd "<<AdjMatrix::Nsimd()<<" "<<norm2(FdetV-FdetV2)<<" "<<norm2(FdetV)<<" " <<norm2(FdetV2)<<std::endl;
@@ -1093,7 +1125,7 @@ public:
     AdjMatrixField MpInvJx_nu(grid);
     MpInvJx = (-1.0)*MpAdInv * JxAd;// rho is on the plaq factor
 
-    Compute_MpInvJx_dNxxdSy(PlaqL,PlaqR,MpInvJx,FdetV);
+    Compute_MpInvJx_dNxxdSy_old(PlaqL,PlaqR,MpInvJx,FdetV);
     Fdet2_mu=FdetV;
     Fdet1_mu=Zero();
     
@@ -1150,7 +1182,7 @@ public:
 
 	time=-usecond(); tMJx -= usecond();
 	PlaqR=(-1.0)*PlaqR;
-	Compute_MpInvJx_dNxxdSy(PlaqL,PlaqR,MpInvJx,FdetV);
+	Compute_MpInvJx_dNxxdSy_old(PlaqL,PlaqR,MpInvJx,FdetV);
 	Fdet2_nu = FdetV;
 	time+=usecond(); tMJx += usecond();
 	std::cout << GridLogMessage << "Full: Compute_MpInvJx_dNxxSy (occurs 6x) took "<<time<< " us"<<std::endl;
@@ -1175,7 +1207,7 @@ public:
 
 	tMJx -= usecond();
 	MpInvJx_nu = Cshift(MpInvJx,mu,-1);
-	Compute_MpInvJx_dNxxdSy(PlaqL,PlaqR,MpInvJx_nu,FdetV);
+	Compute_MpInvJx_dNxxdSy_old(PlaqL,PlaqR,MpInvJx_nu,FdetV);
 	Fdet2_nu = Fdet2_nu+FdetV;
 	tMJx += usecond();
 	
@@ -1200,7 +1232,7 @@ public:
 
 	tMJx -= usecond();
 	MpInvJx_nu = Cshift(MpInvJx,nu,1);
-	Compute_MpInvJx_dNxxdSy(PlaqL,PlaqR,MpInvJx_nu,FdetV);
+	Compute_MpInvJx_dNxxdSy_old(PlaqL,PlaqR,MpInvJx_nu,FdetV);
 	Fdet2_nu = Fdet2_nu+FdetV;
 	tMJx += usecond();
 	
@@ -1227,7 +1259,7 @@ public:
 	tMJx -= usecond();
 	MpInvJx_nu = Cshift(MpInvJx,mu,-1);
 	MpInvJx_nu = Cshift(MpInvJx_nu,nu,1);
-	Compute_MpInvJx_dNxxdSy(PlaqL,PlaqR,MpInvJx_nu,FdetV);
+	Compute_MpInvJx_dNxxdSy_old(PlaqL,PlaqR,MpInvJx_nu,FdetV);
 	Fdet2_nu = Fdet2_nu+FdetV;
 	tMJx += usecond();
 	
@@ -1262,7 +1294,7 @@ public:
 	tMJx -= usecond();
 	MpInvJx_nu = Cshift(MpInvJx,nu,-1);
 
-	Compute_MpInvJx_dNxxdSy(PlaqL,PlaqR,MpInvJx_nu,FdetV);
+	Compute_MpInvJx_dNxxdSy_old(PlaqL,PlaqR,MpInvJx_nu,FdetV);
 	Fdet2_mu = Fdet2_mu+FdetV;
 	tMJx += usecond();
 
@@ -1287,7 +1319,7 @@ public:
 	tMJx -= usecond();
 	MpInvJx_nu = Cshift(MpInvJx,nu,1);
 
-	Compute_MpInvJx_dNxxdSy(PlaqL,PlaqR,MpInvJx_nu,FdetV);
+	Compute_MpInvJx_dNxxdSy_old(PlaqL,PlaqR,MpInvJx_nu,FdetV);
 	Fdet2_mu = Fdet2_mu+FdetV;
 	tMJx += usecond();
       }
@@ -1312,7 +1344,7 @@ public:
   {
     GridBase* grid = U.Grid();
     GaugeField C(grid);
-    GaugeLinkField Nb(grid), Nb_opt(grid);
+    GaugeLinkField Nb(grid);
     GaugeLinkField Z(grid);
     GaugeLinkField Umu(grid), Cmu(grid);
     ColourMatrix   Tb;
@@ -1325,7 +1357,7 @@ public:
     LatticeComplex       cplx(grid); 
     AdjVectorField  AlgV(grid); 
     AdjMatrixField  Mab(grid);
-    AdjMatrixField  Ncb(grid);
+    AdjMatrixField  Ncb(grid), Ncb_opt(grid);
     AdjMatrixField  Jac(grid);
     AdjMatrixField  Zac(grid);
     AdjMatrixField  mZac(grid);
@@ -1355,6 +1387,7 @@ public:
       tta += usecond();
       // FIXME -- replace this with LieAlgebraProject
 #if 1
+      // Fixed it
       SU3::LieAlgebraProject(Ncb_opt,Nb,b);
 #else
       for(int c=0;c<Ngen;c++) {
@@ -1364,10 +1397,11 @@ public:
 	PokeIndex<ColourIndex>(Ncb,tmp,c,b);
 	tpk += usecond();
       }
+
 #endif
     }
-    Dump(Ncb_opt,"Ncb_opt");
-    Dump(Ncb,"Ncb");
+    //Dump(Ncb_opt,"Ncb_opt");
+    //Dump(Ncb,"Ncb");
     tN += usecond();
     
     //////////////////////////////////////////////////////////////////
