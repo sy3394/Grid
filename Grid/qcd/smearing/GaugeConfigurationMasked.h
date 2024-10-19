@@ -47,6 +47,7 @@ private:
   
   
   // Assume: lat = full lattice
+  // DEBUG: to be removed or taken out of the class
   template<class T>  void printCheckerboards2norm(T &lat, int cb=-1)
   {
     T lat_0(UrbGrid); lat_0 = Zero();
@@ -165,6 +166,7 @@ private:
     t+=usecond();
     std::cout << GridLogMessage << " BaseSmear " << t/1e3 << " ms " << std::endl;
   }
+  
   void BaseSmear_cb(GaugeLinkField& Cup, const GaugeField& U,int mu,RealD rho) {
     GridBase *grid = U.Grid();
     GridBase *hgrid = Cup.Grid();
@@ -208,7 +210,8 @@ private:
     t+=usecond();
     std::cout << GridLogMessage << " InsertForce " << t/1e3 << " ms " << std::endl;
   }
-  void Compute_MpInvJx_dNxxdSy(int cb,
+  // not used anymore
+  void Compute_MpInvJx_dNxxdSy_cb(int cb,
 			       const GaugeLinkField &PlaqL,
                                const GaugeLinkField &PlaqR,
                                AdjMatrixField MpInvJx,
@@ -258,7 +261,6 @@ private:
 	  ta = 2.0 * ci * ta;
 	  auto UtaU = adj(PlaqL_v(ss))*ta*PlaqR_v(ss);
 	  SU3::LieAlgebraProject(Dbc,UtaU);
-	  //	  SU3::trace_product(Fdet2_v[ss],MpInvJx_v(ss),Dbc,a);
 	  SU3::trace_product(Fdet,MpInvJx_v(ss),Dbc,a);
 	}
 	coalescedWrite(Fdet2_v[ss],Fdet);
@@ -266,7 +268,7 @@ private:
     t+=usecond();
     std::cout << GridLogMessage << " Compute_MpInvJx_dNxxdSy " << t/1e3 <<" ms"<<std::endl;
   }
-  void Compute_MpInvJx_dNxxdSy_old(const GaugeLinkField &PlaqL,const GaugeLinkField &PlaqR, AdjMatrixField MpInvJx,AdjVectorField &Fdet2 )
+  void Compute_MpInvJx_dNxxdSy(int old, const GaugeLinkField &PlaqL,const GaugeLinkField &PlaqR, AdjMatrixField MpInvJx,AdjVectorField &Fdet2 )
   {
     GRID_TRACE("Compute_MpInvJx_dNxxdSy_old");
     int cb = PlaqL.Checkerboard();
@@ -332,11 +334,12 @@ private:
 	tmp = trace(MpInvJx * Dbc_opt);
       }
 #if 0
+      // Tesing trace_prod
       if (a==0){
 	GRID_TRACE("traceMpDbc2");
 	LatticeComplex tmp2(PlaqL.Grid()); tmp2.Checkerboard() = cb;
 	SU3::trace_product(tmp2,MpInvJx,Dbc_opt);
-	std::cout << GridLogMessage <<  "DEBUG: Compute_MpInvJx_dNxxdSy_fused trace " << norm2(tmp2-tmp)<<std::endl;
+	std::cout << GridLogMessage <<  "DEBUG: Compute_MpInvJx_dNxxdSy trace " << norm2(tmp2-tmp)<<std::endl;
       }
 	
 #endif	
@@ -351,9 +354,9 @@ private:
 	      << " ta "<<tta/1e3<<" ms" << " poke "<<tpk/1e3<< " ms LieAlgebraProject "<<tpl/1e3<<" ms"<<std::endl;
   }
   
-  void ComputeNxy(const GaugeLinkField &PlaqL,const GaugeLinkField &PlaqR,AdjMatrixField &NxAd)
+  void ComputeNxy(int old, const GaugeLinkField &PlaqL,const GaugeLinkField &PlaqR,AdjMatrixField &NxAd)
   {
-    GRID_TRACE("ComputeNxy");
+    GRID_TRACE("ComputeNxy_old");
     GaugeLinkField Nx(PlaqL.Grid());
     const int Ngen = SU3Adjoint::Dimension;
     Complex ci(0,1);
@@ -395,7 +398,28 @@ private:
     std::cout << GridLogMessage << " ComputeNxy " << t/1e3 << " ms  proj "<<tp/1e3<< " ms"
               << " ta "<<tta/1e3<<" ms tgen "<< tgen/1e3 << std::endl;
   }
-  
+
+  void ComputeNxy(const GaugeLinkField &PlaqL,const GaugeLinkField &PlaqR,AdjMatrixField &NxAd)
+  {
+    GRID_TRACE("ComputeNxy");
+    GridBase *grid = PlaqL.Grid();
+    RealD t = 0;
+
+    t-=usecond();
+    autoView(NxAd_v,NxAd,AcceleratorWrite);
+    autoView(PlaqL_v,PlaqL,AcceleratorRead);
+    autoView(PlaqR_v,PlaqR,AcceleratorRead);
+    const int nsimd = vAlgebraMatrix::Nsimd();
+    accelerator_for(ss,grid->oSites(),nsimd,{
+        typedef decltype(coalescedRead(NxAd_v[0]))  adj_mat;
+        adj_mat NxAd_site;
+	SU3::LieAlgebraProject(NxAd_site,PlaqL_v(ss),PlaqR_v(ss));
+        coalescedWrite(NxAd_v[ss],NxAd_site);
+      });
+    t+=usecond();
+    std::cout << GridLogMessage << " ComputeNxy_fused " << t/1e3 <<" ms"<<std::endl;
+  }
+
   void ApplyMask(GaugeField &U,int smr)
   {
     LatticeComplex tmp(U.Grid());
@@ -414,9 +438,6 @@ public:
     GRID_TRACE("logDetJacobianForceLevel");
     GridBase* grid = U.Grid();
     GridBase* hgrid = UrbGrid; // For now, assume masking is based on red-black checkerboarding
-    ColourMatrix   tb;
-    ColourMatrix   tc;
-    ColourMatrix   ta;
     GaugeField C(grid);
     GaugeField Umsk(grid);
     std::vector<GaugeLinkField> Umu(Nd,grid);
@@ -427,9 +448,7 @@ public:
     GaugeLinkField PlaqL(hgrid);
     GaugeLinkField PlaqR(hgrid);
     const int Ngen = SU3Adjoint::Dimension;
-    AdjMatrix TRb;
     ColourMatrix Ident;
-    LatticeComplex  cplx(hgrid); 
     
     AdjVectorField  dJdXe_nMpInv(hgrid); 
     AdjVectorField  dJdXe_nMpInv_y(hgrid); 
@@ -438,9 +457,6 @@ public:
     AdjMatrixField  NxxAd(hgrid);    // Nxx in adjoint space
     AdjMatrixField  JxAd(hgrid);     
     AdjMatrixField  ZxAd(hgrid);
-    AdjMatrixField  mZxAd(hgrid);
-    AdjMatrixField  X(hgrid);
-    Complex ci(0,1);
 
     RealD t0 = usecond();
     Ident = ComplexD(1.0);
@@ -461,7 +477,6 @@ public:
     pickCheckerboard(cb,Ueo,Utmp);
 
     Cmu.Checkerboard() = cb;
-    cplx.Checkerboard() = cb;
     Zx.Checkerboard() = cb;
     Ueo.Checkerboard() = cb;
     PlaqL.Checkerboard() = cb;
@@ -473,8 +488,6 @@ public:
     NxxAd.Checkerboard() = cb;
     JxAd.Checkerboard() = cb;
     ZxAd.Checkerboard() = cb;
-    mZxAd.Checkerboard() = cb;
-    X.Checkerboard() = cb;
     
     ////////////////////////////////////////////////////////////////////////////////
     // Retrieve the eps/rho parameter(s) -- could allow all different but not so far
@@ -482,11 +495,11 @@ public:
     double rho=this->StoutSmearing->SmearRho[1];
     int idx=0;
     for(int mu=0;mu<4;mu++){
-    for(int nu=0;nu<4;nu++){
-      if ( mu!=nu) assert(this->StoutSmearing->SmearRho[idx]==rho);
-      else         assert(this->StoutSmearing->SmearRho[idx]==0.0);
-      idx++;
-    }}
+      for(int nu=0;nu<4;nu++){
+	if ( mu!=nu) assert(this->StoutSmearing->SmearRho[idx]==rho);
+	else         assert(this->StoutSmearing->SmearRho[idx]==0.0);
+	idx++;
+      }}
     //////////////////////////////////////////////////////////////////
     // Assemble the N matrix
     //////////////////////////////////////////////////////////////////
@@ -499,14 +512,25 @@ public:
     // Assemble Luscher exp diff map J matrix 
     //////////////////////////////////////////////////////////////////
     // Ta so Z lives in Lie algabra
+    {GRID_TRACE("Zx");
     Zx  = Ta(Cmu * adj(Ueo));
+    }
     time+=usecond();
     std::cout << GridLogMessage << "Z took "<<time<< " us"<<std::endl;
-    
+
+    // Move Z to the Adjoint Rep == make_adjoint_representation
     time=-usecond();
     {GRID_TRACE("ZxAd");
-    // Move Z to the Adjoint Rep == make_adjoint_representation
+#if 1
+    SU3Adjoint::make_adjoint_rep(ZxAd, Zx);
+#else
+    LatticeComplex  cplx(hgrid);  cplx.Checkerboard() = cb;
+    AdjMatrix TRb;
+    Complex ci(0,1)
+    ColourMatrix   tb;
+
     ZxAd = Zero();
+    // can put in accelarator_for
     for(int b=0;b<8;b++) {
       // Adj group sets traceless antihermitian T's -- Guido, really????
       SU3::generator(b, tb);         // Fund group sets traceless hermitian T's
@@ -515,31 +539,162 @@ public:
       cplx = 2.0*trace(ci*tb*Zx); // my convention 1/2 delta ba
       ZxAd = ZxAd + cplx * TRb; // is this right? YES - Guido used Anti herm Ta's and with bloody wrong sign.
     }
+#endif
     }
     time+=usecond();
     std::cout << GridLogMessage << "ZxAd took "<<time<< " us"<<std::endl;
-    
+
     //////////////////////////////////////
     // J(x) = 1 + Sum_k=1..N (-Zac)^k/(k+1)!
     //////////////////////////////////////
     time=-usecond();
+    {GRID_TRACE("JxAd_k");
+#if 1
+    autoView(JxAd_v,JxAd,AcceleratorWrite);
+    autoView(ZxAd_v,ZxAd,AcceleratorRead);
+    const int nsimd = vAlgebraMatrix::Nsimd();
+    accelerator_for(ss,hgrid->oSites(),nsimd,{
+        typedef decltype(coalescedRead(JxAd_v[0])) adj_mat;
+        adj_mat X, JxAd_site;
+	RealD kpfac = 1;
+	
+	X=1.0;
+	JxAd_site = X;
+	for(int k=1;k<12;k++){
+	  X=-X*ZxAd_v(ss);
+	  kpfac = kpfac /(k+1);
+	  JxAd_site = JxAd_site + X * kpfac;
+	}
+        coalescedWrite(JxAd_v[ss],JxAd_site);
+      });
+#else
+    AdjMatrixField  X(hgrid);     X.Checkerboard() = cb;
+    AdjMatrixField  mZxAd(hgrid); mZxAd.Checkerboard() = cb;
+
     X=1.0; 
     JxAd = X;
     mZxAd = (-1.0)*ZxAd; 
     RealD kpfac = 1;
     for(int k=1;k<12;k++){
-      GRID_TRACE("JxAd_k");
       X=X*mZxAd;
       kpfac = kpfac /(k+1);
       JxAd = JxAd + X * kpfac;
     }
+#endif
+    }
     time+=usecond();
     std::cout << GridLogMessage << "Jx took "<<time<< " us"<<std::endl;
     
+    /////////////////////////////////////////////////////////////////
+    // NxxAd
+    /////////////////////////////////////////////////////////////////
+    time=-usecond();
+    {
+      GRID_TRACE("Plaq_for_Nxy");
+    PlaqL = Ident;
+    PlaqR = Ueo*adj(Cmu);
+    }
+    ComputeNxy(PlaqL,PlaqR,NxxAd);
+    time+=usecond();
+    std::cout << GridLogMessage << "ComputeNxy took "<<time<< " us"<<std::endl;
+
+    ////////////////////////////
+    // Mab
+    ////////////////////////////
+    MpAd = Complex(1.0,0.0);
+    MpAd = MpAd - JxAd * NxxAd; 
+
+    /////////////////////////
+    // invert the 8x8
+    /////////////////////////
+    {
+      GRID_TRACE("MpAdInv");
+    time=-usecond();
+    //std::cout << GridLogMessage <<"after MpAd def"<<std::endl;Coordinate lcoor,lcoor1;int site=0;hgrid->LocalIndexToLocalCoor(site, lcoor);int site1=1;hgrid->LocalIndexToLocalCoor(site1, lcoor1);
+    //std::cout << GridLogMessage <<"after MpAd apxy "<< MpAd.Checkerboard()<<" " <<cb<< " "<<hgrid->CheckerBoard(lcoor) << " "<<hgrid->CheckerBoard(lcoor1)<<std::endl;
+    //temporary; need to change grid->CheckerBoard(lcoor
+    AdjMatrixField tmp(grid);setCheckerboard(tmp,MpAd);
+    tmp = Inverse(tmp);
+    pickCheckerboard(cb,MpAdInv,tmp);
+    time+=usecond();
+    }
+    std::cout << GridLogMessage << "MpAdInv took "<<time<< " us"<<std::endl;
+    
+    RealD t3a = usecond();
+    /////////////////////////////////////////////////////////////////
+    // M'^{-1} J(X)_ad
+    /////////////////////////////////////////////////////////////////
+    AdjMatrixField MpInvJx(hgrid);      MpInvJx.Checkerboard() = cb; 
+    AdjMatrixField MpInvJx_nu(hgrid);   MpInvJx_nu.Checkerboard() = cb;
+    {GRID_TRACE("Mp_inv_Jx");
+    MpInvJx = (-1.0)*MpAdInv * JxAd;// rho is on the plaq factor
+    }
+
+    /////////////////////////////////////////////////////////////////
+    // dJ(x)/dxe N M'^{-1}  
+    /////////////////////////////////////////////////////////////////
+    time=-usecond();
+    {GRID_TRACE("dJdX_nMpinv_combined");
+#if 1
+    iVector<AdjMatrix,Ngen> iTas;
+
+    autoView(dJdXe_nMpInv_v,dJdXe_nMpInv,AcceleratorWrite);
+    autoView(ZxAd_v,ZxAd,AcceleratorRead);
+    autoView(NxxAd_v,NxxAd,AcceleratorRead);
+    autoView(MpAdInv_v,MpAdInv,AcceleratorRead);
+    const int nsimd = vAlgebraMatrix::Nsimd();
+    accelerator_for2d(ss,hgrid->oSites(),bb,Ngen,nsimd,{//only slightly faster (10%), as compared to the below accelerator_for
+    //accelerator_for(ss,hgrid->oSites(),nsimd,{
+	typedef decltype(coalescedRead(ZxAd_v[0]))         adj_mat;
+	typedef decltype(coalescedRead(dJdXe_nMpInv_v[0])) adj_vec;
+      	adj_mat X, t2, dt2, t3, dt3, aunit, nMpInv_site;
+	adj_vec dJdXe_nMpInv_site;
+#if 0
+	iVector<adj_mat,Ngen> dJdX_b;
+#else
+	adj_mat dJdX_bb;
+#endif
+#if 0
+	for(int b=0;b<Ngen;b++){
+	  SU3Adjoint::generator(b, iTas(b));
+	  dJdX_b(b) = iTas(b);
+	}
+#else
+	SU3Adjoint::generator(bb, iTas(bb));
+	dJdX_bb = iTas(bb);
+#endif
+	aunit = ComplexD(1.0);
+	X  = (-1.0)*ZxAd_v(ss);
+	t2 = X;
+	for (int j = 12; j > 1; --j) {
+	  t3  = t2*(1.0 / (j + 1))  + aunit;
+	  t2  = X * t3;
+#if 0
+	  for(int b=0;b<Ngen;b++){
+	    dJdX_b(b)= iTas(b) * t3 + X * dJdX_b(b)*(1.0 / (j + 1));
+	  }
+#else
+	  dJdX_bb = iTas(bb) * t3 + X * dJdX_bb*(1.0 / (j + 1));
+#endif
+	}
+	nMpInv_site= NxxAd_v(ss) * MpAdInv_v(ss);
+	// this only uses bb^th elem of dJdXe_nMpInv_site
+#if 0
+	for(int e=0;e<Ngen;e++){
+	  SU3::trace_product(dJdXe_nMpInv_site,(-1.0)*dJdX_b(e),nMpInv_site,e);
+	}
+#else
+	// either write a function returing scalar or loop over adj index
+	SU3::trace_product(dJdXe_nMpInv_site,(-1.0)*dJdX_bb,nMpInv_site,bb);
+#endif
+	coalescedWrite(dJdXe_nMpInv_v[ss]()()(bb),dJdXe_nMpInv_site()()(bb));
+      });
+    }//make sure view object is closed
+#else /* old version */
+    RealD tjx = -usecond();
     //////////////////////////////////////
     // dJ(x)/dxe
     //////////////////////////////////////
-#if 1
     std::vector<AdjMatrixField>  dJdX;    dJdX.resize(8,hgrid); for(auto &M : dJdX) M.Checkerboard() = cb; 
     std::vector<AdjMatrix> TRb_s; TRb_s.resize(8);              
     AdjMatrixField tbXn(hgrid);                                 tbXn.Checkerboard() = cb;
@@ -550,35 +705,13 @@ public:
     AdjMatrixField dt3(hgrid);                                  dt3.Checkerboard() = cb;
     AdjMatrixField aunit(hgrid);                                aunit.Checkerboard() = cb;
     {
-      GRID_TRACE("dJx");
+      GRID_TRACE("dJx_inter");
     time=-usecond();
     for(int b=0;b<8;b++){
       SU3Adjoint::generator(b, TRb_s[b]);
       dJdX[b] = TRb_s[b];
     }
     aunit = ComplexD(1.0);
-#if 0
-    autoView(Fdet2_v,Fdet2,AcceleratorWrite);
-    autoView(ZxAd_v,ZxAd,AcceleratorRead);
-    const int nsimd = vAlgebraMatrix::Nsimd();
-    accelerator_for(ss,hgrid->oSites(),nsimd,{
-        typedef decltype(coalescedRead(MpInvJx_v[0])) adj_mat;
-        typedef decltype(coalescedRead(Fdet2_v[0]))   adj_vec;
-      	adj_mat Dbc;
-        adj_vec Fdet;
-        for(int a=0;a<Ngen;a++) {
-          // Qlat Tb = 2i Tb^Grid                                                                                                                                                    
-          SU3::generator(a, ta);
-          ta = 2.0 * ci * ta;
-          auto UtaU = adj(PlaqL_v(ss))*ta*PlaqR_v(ss);
-          SU3::LieAlgebraProject(Dbc,UtaU);
-          //      SU3::trace_product(Fdet2_v[ss],MpInvJx_v(ss),Dbc,a);                                                                                                               
-          SU3::trace_product(Fdet,MpInvJx_v(ss),Dbc,a);
-        }
-        coalescedWrite(Fdet2_v[ss],Fdet);
-      });
-    
-#endif
 
     // Could put into an accelerator_for
     X  = (-1.0)*ZxAd; 
@@ -594,108 +727,57 @@ public:
       dJdX[b] = -dJdX[b];
     }
     }
-#else
-    std::vector<AdjMatrixField>  dJdX;    dJdX.resize(8,grid);
-    AdjMatrixField tbXn(grid);
-    AdjMatrixField sumXtbX(grid);
-    AdjMatrixField t2(grid);
-    AdjMatrixField dt2(grid);
-    AdjMatrixField t3(grid);
-    AdjMatrixField dt3(grid);
-    AdjMatrixField aunit(grid);
-    for(int b=0;b<8;b++){
-      aunit = ComplexD(1.0);
-      SU3Adjoint::generator(b, TRb); //dt2
-
-      X  = (-1.0)*ZxAd; 
-      t2 = X;
-      dt2 = TRb;
-      for (int j = 12; j > 1; --j) {
-	t3  = t2*(1.0 / (j + 1))  + aunit;
-	dt3 = dt2*(1.0 / (j + 1));
-	t2 = X * t3;
-	dt2 = TRb * t3 + X * dt3;
-      }
-      dJdX[b] = -dt2; 
-    }
-#endif  
     time+=usecond();
     std::cout << GridLogMessage << "dJx took "<<time<< " us"<<std::endl;
     
     /////////////////////////////////////////////////////////////////
-    // NxxAd
+    // Nxx Mp^-1 <- used only to compute dJdX_nMpinv
     /////////////////////////////////////////////////////////////////
-    time=-usecond();
-    {
-      GRID_TRACE("Plaq_for_Nxy");
-    PlaqL = Ident;
-    PlaqR = Ueo*adj(Cmu);
-    }
-    ComputeNxy(PlaqL,PlaqR,NxxAd);
-    time+=usecond();
-    std::cout << GridLogMessage << "ComputeNxy took "<<time<< " us"<<std::endl;
-    
-    ////////////////////////////
-    // Mab
-    ////////////////////////////
-    MpAd = Complex(1.0,0.0);//std::cout << GridLogMessage <<"after MpAd def"<<std::endl;Coordinate lcoor,lcoor1;int site=0;hgrid->LocalIndexToLocalCoor(site, lcoor);int site1=1;hgrid->LocalIndexToLocalCoor(site1, lcoor1);
-    MpAd = MpAd - JxAd * NxxAd; //std::cout << GridLogMessage <<"after MpAd apxy "<< MpAd.Checkerboard()<<" " <<cb<< " "<<hgrid->CheckerBoard(lcoor) << " "<<hgrid->CheckerBoard(lcoor1)<<std::endl;
-
-    /////////////////////////
-    // invert the 8x8
-    /////////////////////////
-    {
-      GRID_TRACE("MpAdInv");
-    time=-usecond();
-    //temporary
-    AdjMatrixField tmp(grid);setCheckerboard(tmp,MpAd);
-    tmp = Inverse(tmp);
-    pickCheckerboard(cb,MpAdInv,tmp);
-    time+=usecond();
-    }
-    std::cout << GridLogMessage << "MpAdInv took "<<time<< " us"<<std::endl;
-    
-    RealD t3a = usecond();
-    /////////////////////////////////////////////////////////////////
-    // Nxx Mp^-1
-    /////////////////////////////////////////////////////////////////
-    AdjVectorField  FdetV(hgrid);     FdetV.Checkerboard() = cb;
-    AdjVectorField  Fdet1_nu(grid);
-    AdjVectorField  Fdet2_nu(grid);
-    AdjVectorField  Fdet2_mu(grid);
-    AdjVectorField  Fdet1_mu(grid);
-
-    AdjVectorField  Fdet1_nu_eo(hgrid); Fdet1_nu_eo.Checkerboard() = cb;       
-    AdjVectorField  Fdet1_nu_oe(hgrid); Fdet1_nu_oe.Checkerboard() = (cb+1)%2; 
-    AdjVectorField  Fdet2_nu_eo(hgrid); Fdet2_nu_eo.Checkerboard() = cb;       
-    AdjVectorField  Fdet2_nu_oe(hgrid); Fdet1_nu_oe.Checkerboard() = (cb+1)%2;
-    
-    AdjVectorField  Fdet1_mu_oe(hgrid); Fdet1_mu_oe = Zero(); Fdet1_mu_oe.Checkerboard() = (cb+1)%2;
-    AdjVectorField  Fdet2_mu_oe(hgrid); Fdet2_mu_oe = Zero(); Fdet2_mu_oe.Checkerboard() = (cb+1)%2;
-    
     AdjMatrixField nMpInv(hgrid);       nMpInv.Checkerboard() = cb;
-    nMpInv= NxxAd *MpAdInv;
+    {GRID_TRACE("Mp_inv_inter");
+    nMpInv= NxxAd *MpAdInv; 
+    }
 
-    AdjMatrixField MpInvJx(hgrid);      MpInvJx.Checkerboard() = cb; 
-    AdjMatrixField MpInvJx_nu(hgrid);   MpInvJx_nu.Checkerboard() = cb;
-    MpInvJx = (-1.0)*MpAdInv * JxAd;// rho is on the plaq factor
-
+    /////////////////////////////////////////////////////////////////
+    // dJ(x)/dxe N M'^{-1}  
+    /////////////////////////////////////////////////////////////////
     LatticeComplexD tr(hgrid); tr.Checkerboard() = cb;
+    {GRID_TRACE("dJdX_nMpinv");
     for(int e =0 ; e<8 ; e++){
       //      ColourMatrix te;
       //      SU3::generator(e, te);
       tr = trace(dJdX[e] * nMpInv);
       pokeColour(dJdXe_nMpInv,tr,e);
     }
+    }
+    tjx+=usecond();
+    std::cout << GridLogMessage << "total dJx took "<<tjx/1e3<< " ms"<<std::endl;
+#endif /* END: old */
 
+    AdjVectorField  Fdet1_mu(grid);
+    AdjVectorField  Fdet2_mu(grid);
+    AdjVectorField  Fdet1_nu(grid);
+    AdjVectorField  Fdet2_nu(grid);
+
+    AdjVectorField  FdetV(hgrid);       FdetV.Checkerboard() = cb;
+    AdjVectorField  Fdet1_nu_eo(hgrid); Fdet1_nu_eo.Checkerboard() = cb;       
+    AdjVectorField  Fdet1_nu_oe(hgrid); Fdet1_nu_oe.Checkerboard() = (cb+1)%2; 
+    AdjVectorField  Fdet2_nu_eo(hgrid); Fdet2_nu_eo.Checkerboard() = cb;       
+    AdjVectorField  Fdet2_nu_oe(hgrid); Fdet1_nu_oe.Checkerboard() = (cb+1)%2;
+    
+    AdjVectorField  Fdet1_mu_oe(hgrid); Fdet1_mu_oe.Checkerboard() = (cb+1)%2; Fdet1_mu_oe = Zero();
+    AdjVectorField  Fdet2_mu_oe(hgrid); Fdet2_mu_oe.Checkerboard() = (cb+1)%2; Fdet2_mu_oe = Zero();
+
+    // Set even part of Fdet1_mu & Fdet2_mu <- cb is referred to as even here, regardless of actual parity of cb
     setCheckerboard(Fdet1_mu, (AdjVectorField) (transpose(NxxAd)*dJdXe_nMpInv)); 
     Compute_MpInvJx_dNxxdSy(PlaqL,PlaqR,MpInvJx,FdetV);
     setCheckerboard(Fdet2_mu,FdetV);
-#if 0
+#if 1
     AdjVectorField  FdetV2(hgrid);     FdetV2.Checkerboard() = cb; //FdetV2=Zero();
-    Compute_MpInvJx_dNxxdSy_fused(PlaqL,PlaqR,MpInvJx,FdetV2);
+    Compute_MpInvJx_dNxxdSy(0,PlaqL,PlaqR,MpInvJx,FdetV2);
     std::cout << GridLogMessage << " DEBUG: logDetJacobianForce_F_detVdiff " <<smr<<" "<<mu<<" "<<cb<<" "<<" simd "<<AdjMatrix::Nsimd()<<" "<<norm2(FdetV-FdetV2)<<" "<<norm2(FdetV)<<" " <<norm2(FdetV2)<<std::endl;
 #endif
+
 
     //    dJdXe_nMpInv needs to multiply:
     //       Nxx_mu (site local)                           (1)
@@ -709,8 +791,29 @@ public:
     GaugeField Fdet2(grid);
 
     RealD t4 = usecond(), tLR = 0, tNxy = 0, tMJx = 0;
+#if 0
+    std::vector<Coordinate>     shifts;
+    GaugeLinkField              gPlaqL(grid), gPlaqR(grid);
+    PaddedCell                  Ghost(1, (GridCartesian*)grid);
+    CshiftImplGauge<Gimpl>      cshift_impl;
+    std::vector<GaugeLinkField> gUmu(Nd,grid);
+    
+    for(int i=0; i<Nd;i++) gUmu[i] = Ghost.Exchange(Umu[i], cshift_impl);
+    autoView( gU_mu_v , gUmu[mu], AcceleratorRead);
+#endif
     for(int nu=0;nu<Nd;nu++){
 
+#if 0
+      Coordinate shift_0(Nd,0);
+      Coordinate shift_mu(Nd,0); shift_mu[mu]=1;
+      Coordinate shift_nu(Nd,0); shift_nu[nu]=1;
+      Coordinate shift_mmu(Nd,0); shift_mnu[mu]=-1;
+      Coordinate shift_mnu(Nd,0); shift_mnu[nu]=-1;
+      Coordinate shift_pmu_pnu(Nd,0); shift_mnu_pmu[mu]=1; shift_mnu_pmu[nu]=1;
+      Coordinate shift_mmu_pnu(Nd,0); shift_mnu_pmu[mu]=-1; shift_mnu_pmu[nu]=1;
+      Coordinate shift_mnu_pmu(Nd,0); shift_mnu_pmu[nu]=-1; shift_mnu_pmu[mu]=1;
+
+#endif
       if (nu!=mu) {
 	GRID_TRACE("MuNuLoopBody");
 	///////////////// +ve nu /////////////////
@@ -722,10 +825,36 @@ public:
 	PlaqL=Ident;
 	{
 	  GRID_TRACE("Staple");
+#if 1
 	pickCheckerboard(cb,PlaqR,(GaugeLinkField) ((-rho)*Gimpl::CovShiftForward(Umu[nu], nu,
 				          Gimpl::CovShiftForward(Umu[mu], mu,
 				           Gimpl::CovShiftBackward(Umu[nu], nu,
 					    Gimpl::CovShiftIdentityBackward(Utmp, mu))))));
+#else
+	shifts.clear();
+	shifts.push_back(shift_0);shifts.push_back(shift_nu);shifts.push_back(shift_mu);shifts.push_back(shift_0);
+	GeneralLocalStencil gStencil(grid,shifts);
+	
+	auto gStencil_v = gStencil.View();
+	autoView( gPlaqR_v , gPlaqR, AcceleratorWrite);
+	autoView( gU_nu_v , gUmu[nu], AcceleratorRead);
+	accelerator_for(ss, grid->oSites(), grid->Nsimd(), {
+          GeneralStencilEntry const* e = gStencil_v.GetEntry(0,ss);
+          auto U_nu_x = coalescedReadGeneralPermute(gU_nu_v[e->_offset], e->_permute, Nd);
+          e = gStencil_v.GetEntry(1,ss);
+          auto U_mu_xpmu = coalescedReadGeneralPermute(gU_mu_v[e->_offset], e->_permute, Nd);
+          e = gStencil_v.GetEntry(2,ss);
+          auto Udag_nu_xpmu = adj(coalescedReadGeneralPermute(gU_nu_v[e->_offset], e->_permute, Nd));
+	  e = gStencil_v.GetEntry(3,ss);
+          auto Udag_mu_x = adj(coalescedReadGeneralPermute(gU_mu_v[e->_offset], e->_permute, Nd));
+
+          auto stencil_ss = (-rho) * U_nu_x * U_mu_xpuu * Udag_nu_xpmu * Udag_mu_x;
+
+          coalescedWrite(gPlaqR_v[ss],stencil_ss);
+	}
+        );
+	pickCheckerboard(cb,PlaqR,gPlaqR);
+#endif
 	}
 	time+=usecond(); tLR += usecond();
 	std::cout << GridLogMessage << "PlaqLR took "<<time<< " us"<<std::endl;
@@ -753,11 +882,42 @@ public:
 	tLR -= usecond();
 	{
 	  GRID_TRACE("Staple");
+#if 1
 	pickCheckerboard((cb+1)%2,PlaqR,(GaugeLinkField) ((rho)*Gimpl::CovShiftForward(Umu[nu], nu,
 					       Gimpl::CovShiftBackward(Umu[mu], mu,
 								       Gimpl::CovShiftIdentityBackward(Umu[nu], nu)))));
 
 	pickCheckerboard((cb+1)%2,PlaqL, (GaugeLinkField) (Gimpl::CovShiftIdentityBackward(Utmp, mu)));
+#else
+	shifts.clear();
+        shifts.push_back(shift_0);shifts.push_back(shift_mmu_pnu);shifts.push_back(shift_mmu);shifts.push_back(shift_mmu);
+	GeneralLocalStencil gStencil(grid,shifts);
+
+	auto gStencil_v = gStencil.View();
+	autoView( gPlaqR_v , gPlaqR, AcceleratorWrite);
+	autoView( gPlaqL_v , gPlaqL, AcceleratorWrite);
+        autoView( gU_nu_v , gUmu[nu], AcceleratorRead);
+        accelerator_for(ss, grid->oSites(), grid->Nsimd(), {//can I change this to hgrid?
+          GeneralStencilEntry const* e = gStencil_v.GetEntry(0,ss);
+          auto U_nu_y = coalescedReadGeneralPermute(gU_nu_v[e->_offset], e->_permute, Nd);
+          e = gStencil_v.GetEntry(1,ss);
+          auto Udag_mu_ymmupnu = adj(coalescedReadGeneralPermute(gU_mu_v[e->_offset], e->_permute, Nd));
+          e = gStencil_v.GetEntry(2,ss);
+          auto Udag_nu_ymmu = adj(coalescedReadGeneralPermute(gU_nu_v[e->_offset], e->_permute, Nd));
+
+	  auto stencil_ss = (rho) * U_nu_y * Udag_mu_ymmupnu * Udag_nu_ymmu;
+	  coalescedWrite(gPlaqR_v[ss],stencil_ss);
+	  
+          e = gStencil_v.GetEntry(3,ss);
+          auto U_mu_ymmu = coalescedReadGeneralPermute(Ug_mu_v[e->_offset], e->_permute, Nd);
+          
+	  stencil_ss = U_mu_ymmu;
+          coalescedWrite(gPlaqL_v[ss],stencil_ss);
+        }
+        );
+	pickCheckerboard((cb+1)%2,PlaqR,gPlaqR);
+	pickCheckerboard((cb+1)%2,PlaqL,gPlaqL);
+#endif
 	}
 	tLR += usecond();
 
@@ -781,12 +941,45 @@ public:
 	// x==          // nu polarisation -- clockwise
 	tLR -= usecond();
 	{
+#if 1
 	  GRID_TRACE("Staple");
 	pickCheckerboard((cb+1)%2,PlaqL,(GaugeLinkField) ((rho)* Gimpl::CovShiftForward(Umu[mu], mu,
 						Gimpl::CovShiftForward(Umu[nu], nu,
 								       Gimpl::CovShiftIdentityBackward(Utmp, mu)))));
 
         pickCheckerboard((cb+1)%2,PlaqR, (GaugeLinkField) (Gimpl::CovShiftIdentityForward(Umu[nu], nu)));
+#else
+	shifts.clear();
+        shifts.push_back(shift_0);shifts.push_back(shift_pmu_pnu);shifts.push_back(shift_pmu);shifts.push_back(shift_0);
+	GeneralLocalStencil gStencil(grid,shifts);
+        auto gStencil_v = gStencil.View();
+	
+        autoView( gPlaqL_v , gPlaqL, AcceleratorWrite);
+	autoView( gPlaqR_v , gPlaqR, AcceleratorWrite);
+        autoView( gU_nu_v , gUmu[nu], AcceleratorRead);
+        accelerator_for(ss, grid->oSites(), grid->Nsimd(), {
+          GeneralStencilEntry const* e = gStencil_v.GetEntry(0,ss);
+          auto U_mu_y = coalescedReadGeneralPermute(gU_mu_v[e->_offset], e->_permute, Nd);
+          e = gStencil_v.GetEntry(1,ss);
+          auto U_nu_ypmupnu = coalescedReadGeneralPermute(gU_nu_v[e->_offset], e->_permute, Nd);
+          e = gStencil_v.GetEntry(2,ss);
+          auto Udag_mu_ypnu = adj(coalescedReadGeneralPermute(gU_mu_v[e->_offset], e->_permute, Nd));
+
+          auto stencil_ss = (rho) * U_mu_y * U_nu_ypmupnu * Udag_mu_ypnu;
+          coalescedWrite(gPlaqL_v[ss],stencil_ss);
+	  /*
+          e = gStencil_v.GetEntry(3,ss);
+          auto U_nu_y = coalescedReadGeneralPermute(gU_nu_v[e->_offset], e->_permute, Nd);
+
+          stencil_ss = U_nu_y ;
+          coalescedWrite(gPlaqR_v[ss],stencil_ss);
+	  */
+        }
+        );
+        pickCheckerboard((cb+1)%2,PlaqR,gPlaqR);
+        //pickCheckerboard((cb+1)%2,PlaqL,gPlaqL);
+	pickCheckerboard((cb+1)%2,PlaqL,Umu[nu]); 
+#endif
 	}
 	tLR += usecond();
 
@@ -808,11 +1001,42 @@ public:
 	tLR -= usecond();
 	{
 	  GRID_TRACE("Staple");
+#if 1
 	pickCheckerboard(cb,PlaqL,(GaugeLinkField) ((-rho)*Gimpl::CovShiftForward(Umu[nu], nu,
 										  Gimpl::CovShiftIdentityBackward(Utmp, mu))));
 
 	pickCheckerboard(cb,PlaqR,(GaugeLinkField) (Gimpl::CovShiftBackward(Umu[mu], mu,
 									    Gimpl::CovShiftIdentityForward(Umu[nu], nu))));
+#else
+	shifts.clear();
+        shifts.push_back(shift_0);shifts.push_back(shift_mmu_pnu);shifts.push_back(shift_mmu);shifts.push_back(shift_0);
+	GeneralLocalStencil gStencil(grid,shifts);
+	auto gStencil_v = gStencil.View();
+	
+        autoView( gPlaqL_v , gPlaqL, AcceleratorWrite);
+        autoView( gPlaqR_v , gPlaqR, AcceleratorWrite);
+        autoView( gU_nu_v , gUmu[nu], AcceleratorRead);
+        accelerator_for(ss, grid->oSites(), grid->Nsimd(), {
+          GeneralStencilEntry const* e = gStencil_v.GetEntry(0,ss);
+          auto U_nu_y = coalescedReadGeneralPermute(gU_nu_v[e->_offset], e->_permute, Nd);
+          e = gStencil_v.GetEntry(1,ss);
+          auto Udag_mu_ymmupnu = adj(coalescedReadGeneralPermute(gU_mu_v[e->_offset], e->_permute, Nd));
+
+          auto stencil_ss = (-rho) * U_nu_y * Udag_mu_ymmupnu;
+          coalescedWrite(gPlaqL_v[ss],stencil_ss);
+	  
+          e = gStencil_v.GetEntry(2,ss);
+          auto Udag_mu_ymmu = adj(coalescedReadGeneralPermute(gU_mu_v[e->_offset], e->_permute, Nd));
+          e = gStencil_v.GetEntry(3,ss);
+          auto U_nu_ymmu = coalescedReadGeneralPermute(gU_nu_v[e->_offset], e->_permute, Nd);
+
+          stencil_ss = Udag_mu_ymmu * U_nu_ymmu;
+          coalescedWrite(gPlaqR_v[ss],stencil_ss);
+        }
+        );
+        pickCheckerboard(cb,PlaqR,gPlaqR);
+        pickCheckerboard(cb,PlaqL,gPlaqL);
+#endif
 	}
 	tLR += usecond();
 
@@ -854,11 +1078,42 @@ public:
 	tLR -= usecond();
 	{
 	  GRID_TRACE("Staple");
+#if 1
 	pickCheckerboard((cb+1)%2,PlaqL,(GaugeLinkField) ((-rho)*Gimpl::CovShiftForward(Umu[mu], mu,
 						Gimpl::CovShiftBackward(Umu[nu], nu,
 									Gimpl::CovShiftIdentityBackward(Utmp, mu)))));
 
 	pickCheckerboard((cb+1)%2,PlaqR,(GaugeLinkField) (Gimpl::CovShiftIdentityBackward(Umu[nu], nu)));
+#else
+	shifts.clear();
+        shifts.push_back(shift_0);shifts.push_back(shift_pmu_mnu);shifts.push_back(shift_mnu);shifts.push_back(shift_0);
+	GeneralLocalStencil gStencil(grid,shifts);
+        auto gStencil_v = gStencil.View();
+	
+        autoView( gPlaqL_v , gPlaqL, AcceleratorWrite);
+        autoView( gPlaqR_v , gPlaqR, AcceleratorWrite);
+        autoView( gU_nu_v , gUmu[nu], AcceleratorRead);
+        accelerator_for(ss, grid->oSites(), grid->Nsimd(), {
+          GeneralStencilEntry const* e = gStencil_v.GetEntry(0,ss);
+          auto U_mu_y = coalescedReadGeneralPermute(gU_mu_v[e->_offset], e->_permute, Nd);
+          e = gStencil_v.GetEntry(1,ss);
+          auto Udag_nu_ypmumnu = adj(coalescedReadGeneralPermute(gU_nu_v[e->_offset], e->_permute, Nd));
+          e = gStencil_v.GetEntry(2,ss);
+          auto Udag_mu_ymnu = adj(coalescedReadGeneralPermute(gU_mu_v[e->_offset], e->_permute, Nd));
+
+          auto stencil_ss = (-rho) * U_mu_y * Udag_nu_ypmumnu * Udag_mu_ymnu;
+          coalescedWrite(gPlaqL_v[ss],stencil_ss);
+
+          e = gStencil_v.GetEntry(3,ss);
+          auto Udag_nu_y = adj(coalescedReadGeneralPermute(gU_nu_v[e->_offset], e->_permute, Nd));
+
+          stencil_ss = Udag_nu_y;
+          coalescedWrite(gPlaqR_v[ss],stencil_ss);
+        }
+        );
+        pickCheckerboard((cb+1)%2,PlaqR,gPlaqR);
+        pickCheckerboard((cb+1)%2,PlaqL,gPlaqL);
+#endif
 	}
 	tLR += usecond();
 
@@ -881,11 +1136,44 @@ public:
 	tLR -= usecond();
 	{
 	  GRID_TRACE("Staple");
+#if 1
 	pickCheckerboard((cb+1)%2,PlaqL,(GaugeLinkField) ((-rho)*Gimpl::CovShiftForward(Umu[mu], mu,
 						Gimpl::CovShiftForward(Umu[nu], nu,
 								       Gimpl::CovShiftIdentityBackward(Utmp, mu)))));
 
 	pickCheckerboard((cb+1)%2,PlaqR,(GaugeLinkField) (Gimpl::CovShiftIdentityForward(Umu[nu], nu)));
+#else
+	shifts.clear();
+        shifts.push_back(shift_0);shifts.push_back(shift_mu);shifts.push_back(shift_mmu);shifts.push_back(shift_0);
+	GeneralLocalStencil gStencil(grid,shifts);
+        auto gStencil_v = gStencil.View();
+	
+        autoView( gPlaqL_v , gPlaqL, AcceleratorWrite);
+        autoView( gPlaqR_v , gPlaqR, AcceleratorWrite);
+        autoView( gU_nu_v , gUmu[nu], AcceleratorRead);
+        accelerator_for(ss, grid->oSites(), grid->Nsimd(), {
+          GeneralStencilEntry const* e = gStencil_v.GetEntry(0,ss);
+          auto U_mu_y = coalescedReadGeneralPermute(gU_mu_v[e->_offset], e->_permute, Nd);
+          e = gStencil_v.GetEntry(1,ss);
+          auto U_nu_ypmu = coalescedReadGeneralPermute(gU_nu_v[e->_offset], e->_permute, Nd);
+          e = gStencil_v.GetEntry(2,ss);
+          auto Udag_mu_ymmu = adj(coalescedReadGeneralPermute(gU_mu_v[e->_offset], e->_permute, Nd));
+
+          auto stencil_ss = (-rho) * U_mu_y * U_nu_ypmu * Udag_mu_ymmu;
+          coalescedWrite(gPlaqL_v[ss],stencil_ss);
+	  /*
+          e = gStencil_v.GetEntry(3,ss);
+          auto U_nu_y = coalescedReadGeneralPermute(gU_nu_v[e->_offset], e->_permute, Nd);
+
+          stencil_ss = U_nu_y;;
+          coalescedWrite(gPlaqR_v[ss],stencil_ss);
+	  */
+        }
+        );
+        pickCheckerboard((cb+1)%2,PlaqR,gPlaqR);
+        //pickCheckerboard((cb+1)%2,PlaqL,gPlaqL);
+	pickCheckerboard((cb+1)%2,PlaqL,Umu[nu]);
+#endif
 	}
 	tLR += usecond();
 
@@ -1090,7 +1378,7 @@ public:
     time=-usecond();
     PlaqL = Ident;
     PlaqR = Utmp*adj(Cmu);
-    ComputeNxy(PlaqL,PlaqR,NxxAd);
+    ComputeNxy(old,PlaqL,PlaqR,NxxAd);
     time+=usecond();
     std::cout << GridLogMessage << "Full: ComputeNxy took "<<time<< " us"<<std::endl;
     
@@ -1125,7 +1413,7 @@ public:
     AdjMatrixField MpInvJx_nu(grid);
     MpInvJx = (-1.0)*MpAdInv * JxAd;// rho is on the plaq factor
 
-    Compute_MpInvJx_dNxxdSy_old(PlaqL,PlaqR,MpInvJx,FdetV);
+    Compute_MpInvJx_dNxxdSy(old,PlaqL,PlaqR,MpInvJx,FdetV);
     Fdet2_mu=FdetV;
     Fdet1_mu=Zero();
     
@@ -1175,14 +1463,14 @@ public:
 
 	time=-usecond(); tNxy -= usecond();
 	dJdXe_nMpInv_y =   dJdXe_nMpInv;
-	ComputeNxy(PlaqL,PlaqR,Nxy);
+	ComputeNxy(old,PlaqL,PlaqR,Nxy);
 	Fdet1_nu = transpose(Nxy)*dJdXe_nMpInv_y;
 	time+=usecond(); tNxy += usecond();
 	std::cout << GridLogMessage << "Full: ComputeNxy (occurs 6x) took "<<time<< " us"<<std::endl;
 
 	time=-usecond(); tMJx -= usecond();
 	PlaqR=(-1.0)*PlaqR;
-	Compute_MpInvJx_dNxxdSy_old(PlaqL,PlaqR,MpInvJx,FdetV);
+	Compute_MpInvJx_dNxxdSy(old,PlaqL,PlaqR,MpInvJx,FdetV);
 	Fdet2_nu = FdetV;
 	time+=usecond(); tMJx += usecond();
 	std::cout << GridLogMessage << "Full: Compute_MpInvJx_dNxxSy (occurs 6x) took "<<time<< " us"<<std::endl;
@@ -1201,13 +1489,13 @@ public:
 
 	tNxy -= usecond();
 	dJdXe_nMpInv_y = Cshift(dJdXe_nMpInv,mu,-1);
-	ComputeNxy(PlaqL, PlaqR,Nxy);
+	ComputeNxy(old,PlaqL, PlaqR,Nxy);
 	Fdet1_nu = Fdet1_nu+transpose(Nxy)*dJdXe_nMpInv_y;
 	tNxy += usecond();
 
 	tMJx -= usecond();
 	MpInvJx_nu = Cshift(MpInvJx,mu,-1);
-	Compute_MpInvJx_dNxxdSy_old(PlaqL,PlaqR,MpInvJx_nu,FdetV);
+	Compute_MpInvJx_dNxxdSy(old,PlaqL,PlaqR,MpInvJx_nu,FdetV);
 	Fdet2_nu = Fdet2_nu+FdetV;
 	tMJx += usecond();
 	
@@ -1226,13 +1514,13 @@ public:
 
 	tNxy -= usecond();
 	dJdXe_nMpInv_y = Cshift(dJdXe_nMpInv,nu,1);
-	ComputeNxy(PlaqL,PlaqR,Nxy);
+	ComputeNxy(old,PlaqL,PlaqR,Nxy);
 	Fdet1_nu = Fdet1_nu + transpose(Nxy)*dJdXe_nMpInv_y;
 	tNxy += usecond();
 
 	tMJx -= usecond();
 	MpInvJx_nu = Cshift(MpInvJx,nu,1);
-	Compute_MpInvJx_dNxxdSy_old(PlaqL,PlaqR,MpInvJx_nu,FdetV);
+	Compute_MpInvJx_dNxxdSy(old,PlaqL,PlaqR,MpInvJx_nu,FdetV);
 	Fdet2_nu = Fdet2_nu+FdetV;
 	tMJx += usecond();
 	
@@ -1252,14 +1540,14 @@ public:
 	dJdXe_nMpInv_y = Cshift(dJdXe_nMpInv,mu,-1);
 	dJdXe_nMpInv_y = Cshift(dJdXe_nMpInv_y,nu,1);
 
-	ComputeNxy(PlaqL,PlaqR,Nxy);
+	ComputeNxy(old,PlaqL,PlaqR,Nxy);
 	Fdet1_nu = Fdet1_nu + transpose(Nxy)*dJdXe_nMpInv_y;
 	tNxy += usecond();
 
 	tMJx -= usecond();
 	MpInvJx_nu = Cshift(MpInvJx,mu,-1);
 	MpInvJx_nu = Cshift(MpInvJx_nu,nu,1);
-	Compute_MpInvJx_dNxxdSy_old(PlaqL,PlaqR,MpInvJx_nu,FdetV);
+	Compute_MpInvJx_dNxxdSy(old,PlaqL,PlaqR,MpInvJx_nu,FdetV);
 	Fdet2_nu = Fdet2_nu+FdetV;
 	tMJx += usecond();
 	
@@ -1287,14 +1575,14 @@ public:
 	tNxy -= usecond();
 	dJdXe_nMpInv_y = Cshift(dJdXe_nMpInv,nu,-1);
 
-	ComputeNxy(PlaqL,PlaqR,Nxy);
+	ComputeNxy(old,PlaqL,PlaqR,Nxy);
 	Fdet1_mu = Fdet1_mu + transpose(Nxy)*dJdXe_nMpInv_y;
 	tNxy += usecond();
 
 	tMJx -= usecond();
 	MpInvJx_nu = Cshift(MpInvJx,nu,-1);
 
-	Compute_MpInvJx_dNxxdSy_old(PlaqL,PlaqR,MpInvJx_nu,FdetV);
+	Compute_MpInvJx_dNxxdSy(old,PlaqL,PlaqR,MpInvJx_nu,FdetV);
 	Fdet2_mu = Fdet2_mu+FdetV;
 	tMJx += usecond();
 
@@ -1312,14 +1600,14 @@ public:
 	tNxy -= usecond();
 	dJdXe_nMpInv_y = Cshift(dJdXe_nMpInv,nu,1);
 
-	ComputeNxy(PlaqL,PlaqR,Nxy);
+	ComputeNxy(old,PlaqL,PlaqR,Nxy);
 	Fdet1_mu = Fdet1_mu + transpose(Nxy)*dJdXe_nMpInv_y;
 	tNxy += usecond();
 
 	tMJx -= usecond();
 	MpInvJx_nu = Cshift(MpInvJx,nu,1);
 
-	Compute_MpInvJx_dNxxdSy_old(PlaqL,PlaqR,MpInvJx_nu,FdetV);
+	Compute_MpInvJx_dNxxdSy(old,PlaqL,PlaqR,MpInvJx_nu,FdetV);
 	Fdet2_mu = Fdet2_mu+FdetV;
 	tMJx += usecond();
       }
@@ -1379,6 +1667,7 @@ public:
 
     Umu = peekLorentz(U, mu);
     Complex ci(0,1);
+#if 1
     for(int b=0;b<Ngen;b++) {
       SU3::generator(b, Tb);
       // Qlat Tb = 2i Tb^Grid
@@ -1400,6 +1689,26 @@ public:
 
 #endif
     }
+#else
+      autoView(NxAd_v,NxAd,AcceleratorWrite);
+    autoView(PlaqL_v,PlaqL,AcceleratorRead);
+    autoView(PlaqR_v,PlaqR,AcceleratorRead);
+    const int nsimd = vAlgebraMatrix::Nsimd();
+    accelerator_for(ss,grid->oSites(),nsimd,{
+        typedef decltype(coalescedRead(PlaqL_v[0])) SU3_mat;
+        typedef decltype(coalescedRead(NxAd_v[0]))  adj_mat;
+        SU3_mat Nx;
+        adj_mat NxAd_site;
+        for(int b=0;b<Ngen;b++) {
+          SU3::generator(b, tb);
+          tb = 2.0 * ci * tb;
+          //auto Nx =Ta( adj(PlaqL_v(ss)) * tb * PlaqR_v(ss) );
+          auto Nx = 0.5*( adj(PlaqL_v(ss))*tb*PlaqR_v(ss) + adj(PlaqR_v(ss))*tb*PlaqL_v(ss) );//-tr(*) part does not contribute
+          SU3::LieAlgebraProject(NxAd_site,Nx,b);
+        }
+        coalescedWrite(NxAd_v[ss],NxAd_site);
+      });
+#endif
     //Dump(Ncb_opt,"Ncb_opt");
     //Dump(Ncb,"Ncb");
     tN += usecond();
