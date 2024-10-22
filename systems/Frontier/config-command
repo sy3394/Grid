@@ -1,16 +1,17 @@
 CLIME=`spack find --paths c-lime@2-3-9 | grep c-lime| cut -c 15-`
+GMP=`spack find --paths gmp | grep gmp| cut -c 12-`
 ../../configure --enable-comms=mpi-auto \
 --with-lime=$CLIME \
 --enable-unified=no \
 --enable-shm=nvlink \
---enable-tracing=timer \
+--enable-tracing=roctx \
 --enable-accelerator=hip \
 --enable-gen-simd-width=64 \
 --disable-gparity \
 --disable-fermion-reps \
 --enable-simd=GPU \
 --enable-accelerator-cshift \
---with-gmp=$OLCF_GMP_ROOT \
+--with-gmp=$GMP \
 --with-fftw=$FFTW_DIR/.. \
 --with-mpfr=/opt/cray/pe/gcc/mpfr/3.1.4/ \
 --disable-fermion-reps \

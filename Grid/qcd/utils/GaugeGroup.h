@@ -639,7 +639,7 @@ class GaugeGroup {
 	}
       });
   }
-#if 1
+
   // Site-local operation
   // Work with traceless anti-hermitian matrices for Lie algebra elements with Luscher's normalization convention
   // Explicitly, T^a = -i t^a where t^a is hermitian generators in Grid convention, c.f., Compute_MpInvJx_dNxxdSy
@@ -652,7 +652,7 @@ class GaugeGroup {
     int hNNm1= NNm1/2;
     
     // Compute N_{ab} = tr(T^a P^b) where P^b is traceless anti-hermitian
-    // Here, P^b = Ta(M^b) where M^b = adj(inL_v) * T'^b * inR_v => 0.5*( adj(inL_v(ss))*T'^b*inR_v(ss) + adj(inR_v(ss))*T'^b*inL_v(ss) )
+    // Here, P^b = Ta(M^b) where M^b = adj(inL_v) * T'^b * inR_v => P^b = 0.5*( adj(inL_v(ss))*T'^b*inR_v(ss) + adj(inR_v(ss))*T'^b*inL_v(ss) )
     // Note: 
     //     * -tr(*)/2N part does not contribute and thus neglected
     //     * T'^b appearing in M (c.f. below) is 2i t^b where t^b in Grid's convention, c.f. original def UtaU in the earlier version, diff from normalization of T^a
@@ -683,33 +683,29 @@ class GaugeGroup {
 	int k = diagIndex + 1; // diagIndex starts from 0
 	int a = NNm1+diagIndex;
 	RealD scale = 1.0/sqrt(2.0*k*(k+1));
-	auto tmpx = ( adj(inL_v()()(ib2,0))*inR_v()()(ib1,0) - adj(inL_v()()(ib1,0))*inR_v()()(ib2,0)
-		     +adj(inR_v()()(ib2,0))*inL_v()()(ib1,0) - adj(inR_v()()(ib1,0))*inL_v()()(ib2,0));
-	auto tmpy = ( adj(inL_v()()(ib2,0))*inR_v()()(ib1,0) + adj(inL_v()()(ib1,0))*inR_v()()(ib2,0)
-		     +adj(inR_v()()(ib2,0))*inL_v()()(ib1,0) + adj(inR_v()()(ib1,0))*inL_v()()(ib2,0));
+	auto tmpx = imag( adj(inL_v()()(ib2,0))*inR_v()()(ib1,0) - adj(inL_v()()(ib1,0))*inR_v()()(ib2,0));
+	auto tmpy = real( adj(inL_v()()(ib2,0))*inR_v()()(ib1,0) + adj(inL_v()()(ib1,0))*inR_v()()(ib2,0));
 	for(int i=1;i<k;i++){
-	  tmpx = tmpx + ( adj(inL_v()()(ib2,i))*inR_v()()(ib1,i) - adj(inL_v()()(ib1,i))*inR_v()()(ib2,i)
-			 +adj(inR_v()()(ib2,i))*inL_v()()(ib1,i) - adj(inR_v()()(ib1,i))*inL_v()()(ib2,i));
-	  tmpy = tmpy + ( adj(inL_v()()(ib2,i))*inR_v()()(ib1,i) + adj(inL_v()()(ib1,i))*inR_v()()(ib2,i)
-			 +adj(inR_v()()(ib2,i))*inL_v()()(ib1,i) + adj(inR_v()()(ib1,i))*inL_v()()(ib2,i));
+	  tmpx = tmpx + imag( adj(inL_v()()(ib2,i))*inR_v()()(ib1,i) - adj(inL_v()()(ib1,i))*inR_v()()(ib2,i));
+	  tmpy = tmpy + real( adj(inL_v()()(ib2,i))*inR_v()()(ib1,i) + adj(inL_v()()(ib1,i))*inR_v()()(ib2,i));
         }
-	tmpx = tmpx - k*( adj(inL_v()()(ib2,k))*inR_v()()(ib1,k) - adj(inL_v()()(ib1,k))*inR_v()()(ib2,k)
-			 +adj(inR_v()()(ib2,k))*inL_v()()(ib1,k) - adj(inR_v()()(ib1,k))*inL_v()()(ib2,k));
-	tmpy = tmpy - k*( adj(inL_v()()(ib2,k))*inR_v()()(ib1,k) + adj(inL_v()()(ib1,k))*inR_v()()(ib2,k)
-			 +adj(inR_v()()(ib2,k))*inL_v()()(ib1,k) + adj(inR_v()()(ib1,k))*inL_v()()(ib2,k));
-	out_v()()(a,bx)= 0.5*scale*imag(tmpx);
-	out_v()()(a,by)= 0.5*scale*real(tmpy);
+	tmpx = tmpx - k*imag( adj(inL_v()()(ib2,k))*inR_v()()(ib1,k) - adj(inL_v()()(ib1,k))*inR_v()()(ib2,k));
+	tmpy = tmpy - k*real( adj(inL_v()()(ib2,k))*inR_v()()(ib1,k) + adj(inL_v()()(ib1,k))*inR_v()()(ib2,k));
+	out_v()()(a,bx)= scale*tmpx;
+	out_v()()(a,by)= scale*tmpy;
       }
     }
     for(int diagIndex_b=0;diagIndex_b<N-1;diagIndex_b++){
       int k_b = diagIndex_b + 1; // diagIndex starts from 0
       int b = NNm1+diagIndex_b;
       RealD scale_b = 1.0/sqrt(2.0*k_b*(k_b+1));
+      
       for(int su2Index=0;su2Index<hNNm1;su2Index++){
 	int i1, i2;
 	su2SubGroupIndex(i1, i2, su2Index);
 	int ax = su2Index*2;
 	int ay = su2Index*2+1;
+	
 	auto tmpx = adj(inL_v()()(0,i2))*inR_v()()(0,i1) + adj(inR_v()()(0,i2))*inL_v()()(0,i1);
 	auto tmpy = adj(inL_v()()(0,i1))*inR_v()()(0,i2) + adj(inR_v()()(0,i1))*inL_v()()(0,i2);
 	for(int i=1;i<k_b;i++){
@@ -726,23 +722,27 @@ class GaugeGroup {
 	int k = diagIndex + 1; // diagIndex starts from 0
 	int a = NNm1+diagIndex;
 	RealD scale = 1.0/sqrt(2.0*k*(k+1));
-	auto tmp = adj(inL_v()()(0,0))*inR_v()()(0,0) + adj(inR_v()()(0,0))*inL_v()()(0,0);
-	int k_min = (k < k_b)? k:k_b;
-	for(int i=1;i<k_min;i++){
-	  tmp=tmp+adj(inL_v()()(i,i))*inR_v()()(i,i) + adj(inR_v()()(i,i))*inL_v()()(i,i);
+	
+	auto tmp = -k_b*real(adj(inL_v()()(k_b,k))*inR_v()()(k_b,k));
+	for(int i=0;i<k_b;i++){
+	  tmp = tmp + real( adj(inL_v()()(i,k))*inR_v()()(i,k));
 	}
-	int c = (k==k_b)? -k:1;
-	tmp = tmp - k_min*c*(adj(inL_v()()(k_min,k_min))*inR_v()()(k_min,k_min) + adj(inR_v()()(k_min,k_min))*inL_v()()(k_min,k_min));
-	out_v()()(a,b)=real(tmp) * scale * scale_b;
+	tmp = -k*tmp;
+
+	for(int i=0;i<k;i++){
+	  for(int j=0;j<k_b;j++){
+	    tmp=tmp+real(adj(inL_v()()(j,i))*inR_v()()(j,i));
+	  }
+	  tmp=tmp-k_b*real(adj(inL_v()()(k_b,i))*inR_v()()(k_b,i));
+	}
+	out_v()()(a,b)=2.0 * tmp * scale * scale_b;
       }
     }
   }
-#endif
+
   // out[a] = trace(in1*in2)
   template<class T_out, class T_in>
   static accelerator_inline void trace_product(T_out &out_v, const T_in &in1_v, const T_in &in2_v, int a){
-    //typedef decltype(out_v()()(0)) scal;
-    //scal tmp(0);
     out_v()()(a) = 0;
     for(int i=0;i<AlgebraDimension;i++)
       for(int j=0;j<AlgebraDimension;j++)

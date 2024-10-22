@@ -202,7 +202,7 @@ public:
 	  c()()() = 2.0*real(in_v(ss)()()(i2,i1));
 	  Tadj = Tadj + c*iTa;
 	  generator(ay,iTa);
-          c = 2.0*imag(in_v(ss)()()(i1,i2));
+          c()()() = 2.0*imag(in_v(ss)()()(i1,i2));
 	  Tadj = Tadj + c*iTa;
         }
         for(int diagIndex=0;diagIndex<N-1;diagIndex++){
