@@ -36,10 +36,14 @@ private:
   //  Smear_Stout<Gimpl> *StoutSmearing;
   //  std::vector<GaugeField> SmearedSet;
 
+  GridCartesian * UGrid; // keep a copy of the grid 
   GridRedBlackCartesian * UrbGrid; // keep a copy of the redblack grid for life of object
+  std::vector<GridCartesian *> g1Grids;
+  GridBase * g1Grid;
   std::vector<LatticeLorentzComplex> masks;
   std::vector<int> cbs;
-
+  std::vector<GeneralLocalStencil> gStencils;
+  
   typedef typename SU3Adjoint::AMatrix AdjMatrix;
   typedef typename SU3Adjoint::LatticeAdjMatrix  AdjMatrixField;
   typedef typename SU3Adjoint::LatticeAdjVector  AdjVectorField;
@@ -208,7 +212,7 @@ private:
     pokeLorentz(Fdet, Fdet_pol, nu);
 
     t+=usecond();
-    std::cout << GridLogMessage << " InsertForce " << t/1e3 << " ms " << std::endl;
+    std::cout << GridLogPerformance << " InsertForce " << t/1e3 << " ms " << std::endl;
   }
   // not used anymore
   void Compute_MpInvJx_dNxxdSy_cb(int cb,
@@ -232,7 +236,7 @@ private:
     time-=usecond();
     setCheckerboard(Fdet2,Fdet2eo);
     time+=usecond();
-    std::cout << GridLogMessage << " Checkerboarding_MpInvJx_dNxxdSy " << time/1e3 << " ms " << std::endl;
+    std::cout << GridLogPerformance << " Checkerboarding_MpInvJx_dNxxdSy " << time/1e3 << " ms " << std::endl;
   }
   void Compute_MpInvJx_dNxxdSy(const GaugeLinkField &PlaqL,const GaugeLinkField &PlaqR, AdjMatrixField MpInvJx,AdjVectorField &Fdet2 )
   {
@@ -266,7 +270,7 @@ private:
 	coalescedWrite(Fdet2_v[ss],Fdet);
       });
     t+=usecond();
-    std::cout << GridLogMessage << " Compute_MpInvJx_dNxxdSy " << t/1e3 <<" ms"<<std::endl;
+    std::cout << GridLogPerformance << " Compute_MpInvJx_dNxxdSy " << t/1e3 <<" ms"<<std::endl;
   }
   void Compute_MpInvJx_dNxxdSy(int old, const GaugeLinkField &PlaqL,const GaugeLinkField &PlaqR, AdjMatrixField MpInvJx,AdjVectorField &Fdet2 )
   {
@@ -350,7 +354,7 @@ private:
       tpk+=usecond();
     }
     t+=usecond();
-    std::cout << GridLogMessage << " Compute_MpInvJx_dNxxdSy_old " << t/1e3 << " ms  proj "<<tp/1e3<< " ms"
+    std::cout << GridLogPerformance << " Compute_MpInvJx_dNxxdSy_old " << t/1e3 << " ms  proj "<<tp/1e3<< " ms"
 	      << " ta "<<tta/1e3<<" ms" << " poke "<<tpk/1e3<< " ms LieAlgebraProject "<<tpl/1e3<<" ms"<<std::endl;
   }
   
@@ -395,7 +399,7 @@ private:
       tp+=usecond();
     }
     t+=usecond();
-    std::cout << GridLogMessage << " ComputeNxy_old " << t/1e3 << " ms  proj "<<tp/1e3<< " ms"
+    std::cout << GridLogPerformance << " ComputeNxy_old " << t/1e3 << " ms  proj "<<tp/1e3<< " ms"
               << " ta "<<tta/1e3<<" ms tgen "<< tgen/1e3 << std::endl;
   }
 
@@ -417,7 +421,7 @@ private:
         coalescedWrite(NxAd_v[ss],NxAd_site);
       });
     t+=usecond();
-    std::cout << GridLogMessage << " ComputeNxy " << t/1e3 <<" ms"<<std::endl;
+    std::cout << GridLogPerformance << " ComputeNxy " << t/1e3 <<" ms"<<std::endl;
   }
 
   void ApplyMask(GaugeField &U,int smr)
@@ -438,6 +442,7 @@ public:
     GRID_TRACE("logDetJacobianForceLevel");
     GridBase* grid = U.Grid();
     GridBase* hgrid = UrbGrid; // For now, assume masking is based on red-black checkerboarding
+    assert(grid==UGrid);
     GaugeField C(grid);
     GaugeField Umsk(grid);
     std::vector<GaugeLinkField> Umu(Nd,grid);
@@ -544,13 +549,13 @@ public:
 #endif
     }
     time+=usecond();
-    std::cout << GridLogMessage << "ZxAd took "<<time<< " us"<<std::endl;
+    std::cout << GridLogPerformance << "ZxAd took "<<time<< " us"<<std::endl;
     
     //////////////////////////////////////
     // J(x) = 1 + Sum_k=1..N (-Zac)^k/(k+1)!
     //////////////////////////////////////
     time=-usecond();
-    {GRID_TRACE("JxAd_k");
+    {GRID_TRACE("JxAd");
 #if 1
     autoView(JxAd_v,JxAd,AcceleratorWrite);
     autoView(ZxAd_v,ZxAd,AcceleratorRead);
@@ -587,7 +592,7 @@ public:
 #endif
     }
     time+=usecond();
-    std::cout << GridLogMessage << "Jx took "<<time<< " us"<<std::endl;
+    std::cout << GridLogPerformance << "Jx took "<<time<< " us"<<std::endl;
     
     /////////////////////////////////////////////////////////////////
     // NxxAd
@@ -615,17 +620,24 @@ public:
     /////////////////////////
     // invert the 8x8
     /////////////////////////
-    {GRID_TRACE("MpAdInv");
+    {GRID_TRACE("MpAdInv"); //was 43ms, now 61ms => slower
     time=-usecond();
-    //std::cout << GridLogMessage <<"after MpAd def"<<std::endl;Coordinate lcoor,lcoor1;int site=0;hgrid->LocalIndexToLocalCoor(site, lcoor);int site1=1;hgrid->LocalIndexToLocalCoor(site1, lcoor1);
-    //std::cout << GridLogMessage <<"after MpAd apxy "<< MpAd.Checkerboard()<<" " <<cb<< " "<<hgrid->CheckerBoard(lcoor) << " "<<hgrid->CheckerBoard(lcoor1)<<std::endl;
-    //temporary; need to change grid->CheckerBoard(lcoor
-    AdjMatrixField tmp(grid);setCheckerboard(tmp,MpAd);
-    tmp = Inverse(tmp);
-    pickCheckerboard(cb,MpAdInv,tmp);
+#if 1
+    //RealD t_mpadinv, t_mpadinv2;
+    //t_mpadinv=-usecond();
+    MpAdInv = Inverse_RealPart(MpAd);
+    MpAdInv.Checkerboard() = cb; //inside, it calls Lattice(GridBase *grid,ViewMode mode=AcceleratorWriteDiscard) in Lattice_base.h & sets checkerboard to 0
+#else
+    t_mpadinv+=usecond();
+    AdjMatrixField MpAdInv2(hgrid); MpAdInv2.Checkerboard() = cb;
+    t_mpadinv2=-usecond();
+    MpAdInv2 = Inverse(MpAd);t_mpadinv2+=usecond();std::cout << GridLogMessage << " DEBUG: MpAdInv Prior " <<MpAdInv2.Checkerboard()<<" "<<cb<<std::endl;
+    MpAdInv2.Checkerboard() = cb;
+    std::cout << GridLogMessage << " DEBUG: MpAdInv " <<smr<<" "<<mu<<" "<<cb<<" "<<" simd "<<AdjMatrix::Nsimd()<<" "<<norm2(MpAdInv-MpAdInv2)<<" "<<t_mpadinv<<" us "<<t_mpadinv2<<" us"<<std::endl;
+#endif
     time+=usecond();
     }
-    std::cout << GridLogMessage << "MpAdInv took "<<time<< " us"<<std::endl;
+    std::cout << GridLogPerformance << "MpAdInv took "<<time<< " us"<<std::endl;
     
     /////////////////////////////////////////////////////////////////
     // M'^{-1} J(X)_ad
@@ -650,18 +662,18 @@ public:
     autoView(NxxAd_v,NxxAd,AcceleratorRead);
     autoView(MpAdInv_v,MpAdInv,AcceleratorRead);
     const int nsimd = vAlgebraMatrix::Nsimd();
-    accelerator_for2d(ss,hgrid->oSites(),bb,Ngen,nsimd,{//only slightly faster (10%), as compared to the below accelerator_for
-    //accelerator_for(ss,hgrid->oSites(),nsimd,{
+    //accelerator_for2d(ss,hgrid->oSites(),bb,Ngen,nsimd,{//only slightly faster (10%), as compared to the below accelerator_for
+    accelerator_for(ss,hgrid->oSites(),nsimd,{
 	typedef decltype(coalescedRead(ZxAd_v[0]))         adj_mat;
 	typedef decltype(coalescedRead(dJdXe_nMpInv_v[0])) adj_vec;
       	adj_mat X, t2, dt2, t3, dt3, aunit, nMpInv_site;
 	adj_vec dJdXe_nMpInv_site;
-#if 0
+#if 1
 	iVector<adj_mat,Ngen> dJdX_b;
 #else
 	adj_mat dJdX_bb;
 #endif
-#if 0
+#if 1
 	for(int b=0;b<Ngen;b++){
 	  SU3Adjoint::generator(b, iTas(b));
 	  dJdX_b(b) = iTas(b);
@@ -676,7 +688,7 @@ public:
 	for (int j = 12; j > 1; --j) {
 	  t3  = t2*(1.0 / (j + 1))  + aunit;
 	  t2  = X * t3;
-#if 0
+#if 1
 	  for(int b=0;b<Ngen;b++){
 	    dJdX_b(b)= iTas(b) * t3 + X * dJdX_b(b)*(1.0 / (j + 1));
 	  }
@@ -686,15 +698,17 @@ public:
 	}
 	nMpInv_site= NxxAd_v(ss) * MpAdInv_v(ss);
 	// this only uses bb^th elem of dJdXe_nMpInv_site
-#if 0
+#if 1
 	for(int e=0;e<Ngen;e++){
 	  SU3::trace_product(dJdXe_nMpInv_site,(-1.0)*dJdX_b(e),nMpInv_site,e);
 	}
+	coalescedWrite(dJdXe_nMpInv_v[ss],dJdXe_nMpInv_site);
 #else
 	// either write a function returing scalar or loop over adj index
 	SU3::trace_product(dJdXe_nMpInv_site,(-1.0)*dJdX_bb,nMpInv_site,bb);
-#endif
 	coalescedWrite(dJdXe_nMpInv_v[ss]()()(bb),dJdXe_nMpInv_site()()(bb));
+#endif
+
       });
     }//make sure view object is closed
     time += usecond();
@@ -707,7 +721,7 @@ public:
     //////////////////////////////////////
     std::vector<AdjMatrixField>  dJdX;    dJdX.resize(8,hgrid); for(auto &M : dJdX) M.Checkerboard() = cb; 
     std::vector<AdjMatrix> TRb_s; TRb_s.resize(8);
-    AdjMatrixField  X(hgrid);                                   X.Checkerboard() = cb;//redundant if put out of the scope
+    AdjMatrixField X(hgrid);                                    X.Checkerboard() = cb;//redundant if put out of the scope
     AdjMatrixField tbXn(hgrid);                                 tbXn.Checkerboard() = cb;
     AdjMatrixField sumXtbX(hgrid);                              sumXtbX.Checkerboard() = cb;
     AdjMatrixField t2(hgrid);                                   t2.Checkerboard() = cb;
@@ -783,17 +797,18 @@ public:
     AdjVectorField  Fdet1_mu_oe(hgrid); Fdet1_mu_oe.Checkerboard() = (cb+1)%2; Fdet1_mu_oe = Zero();
     AdjVectorField  Fdet2_mu_oe(hgrid); Fdet2_mu_oe.Checkerboard() = (cb+1)%2; Fdet2_mu_oe = Zero();
 
-    // Set even part of Fdet1_mu & Fdet2_mu <- cb is referred to as even here, regardless of actual parity of cb
+    // Set even part of Fdet1_mu & Fdet2_mu <- cb is referred to as even here, regardless of actual parity corredponding to cb
     setCheckerboard(Fdet1_mu, (AdjVectorField) (transpose(NxxAd)*dJdXe_nMpInv)); 
     Compute_MpInvJx_dNxxdSy(PlaqL,PlaqR,MpInvJx,FdetV);
     setCheckerboard(Fdet2_mu,FdetV);
-#if 0
+#if 0 //DEBUG
     AdjVectorField  FdetV2(hgrid);     FdetV2.Checkerboard() = cb;
     Compute_MpInvJx_dNxxdSy(0,PlaqL,PlaqR,MpInvJx,FdetV2);
     std::cout << GridLogMessage << " DEBUG: logDetJacobianForce_F_detVdiff " <<smr<<" "<<mu<<" "<<cb<<" "<<" simd "<<AdjMatrix::Nsimd()<<" "<<norm2(FdetV-FdetV2)<<" "<<norm2(FdetV)<<" " <<norm2(FdetV2)<<std::endl;
 #endif
 
-
+    RealD t3c = usecond();
+    
     //    dJdXe_nMpInv needs to multiply:
     //       Nxx_mu (site local)                           (1)
     //       Nxy_mu one site forward  in each nu direction (3)
@@ -811,26 +826,46 @@ public:
     GaugeField Fdet1(grid);
     GaugeField Fdet2(grid);
 
-    RealD t4 = usecond(), tLR = 0, tNxy = 0, tMJx = 0;
+    RealD t4 = usecond(), tLR = 0, tNxy = 0, tMJx = 0, t_ins=0, t_ck = 0, t_stencil=0;
 
     std::vector<Coordinate>     shifts;
-    PaddedCell                  Ghost(1, (GridCartesian*)grid);
-    CshiftImplGauge<Gimpl>      cshift_impl;
+    RealD t4a = usecond();
+    GaugeField gU(grid);
     std::vector<GaugeLinkField> gUmu(Nd,grid);
-    for(int d=0; d<Nd;d++)
-      gUmu[d] = Ghost.Exchange(Umu[d], cshift_impl);
-    GridBase *ggrid = gUmu[0].Grid();
-    GaugeLinkField              gPlaqL(ggrid), gPlaqR(ggrid);
+    {
+      GRID_TRACE("ExchangePeriodic");
+      gU = Ghost.ExchangePeriodic(U);
+      for(int d=0; d<Nd;d++)
+	gUmu[d] = peekLorentz(gU, d);//Ghost.ExchangePeriodic(Umu[d]);
+    }
+    GridBase       *ggrid = gUmu[0].Grid();
+    assert(ggrid == g1Grid);
+    GaugeLinkField  gPlaqL(ggrid), gPlaqR(ggrid);
 
+    RealD t4b = usecond();
+#if 0
+    // will optimize Cshift rather
+    CshiftImplGauge<Gimpl> cshift_impl;
+    //AdjMatrixField MpInvJx(hgrid);      MpInvJx.Checkerboard() = cb;
+    AdjMatrixField gdJdXe_nMpInv(hgrid);
+    AdjMatrixField gMpInvJx(hgrid);
+    gdJdXe_nMpInv = Ghost.Exchange(dJdXe_nMpInv, cshift_impl);
+    gMpInvJx = Ghost.ExchangePeriodic(MpInvJx);
+    autoView( gdJdXe_nMpInv_v , gdJdXe_nMpInv, AcceleratorRead);
+    autoView( gMpInvJx_v , gMpInvJx, AcceleratorRead);
+    GridBase       *ghgrid = gdJdXe_nMpInv.Grid();
+    RealD t4c;
+#endif
+    
     autoView( gPlaqL_v , gPlaqL, AcceleratorWrite);
     autoView( gPlaqR_v , gPlaqR, AcceleratorWrite);
     autoView( gU_mu_v , gUmu[mu], AcceleratorRead);
-
+    
     for(int nu=0;nu<Nd;nu++){
       
       if (nu!=mu) {
 	GRID_TRACE("MuNuLoopBody");
-
+#if 0
 	Coordinate shift_0(Nd,0);
 	Coordinate shift_mu(Nd,0);  shift_mu[mu]=1;
 	Coordinate shift_nu(Nd,0);  shift_nu[nu]=1;
@@ -839,7 +874,7 @@ public:
 	Coordinate shift_pmu_pnu(Nd,0); shift_pmu_pnu[mu]= 1;  shift_pmu_pnu[nu]= 1;
 	Coordinate shift_pmu_mnu(Nd,0); shift_pmu_mnu[mu]= 1;  shift_pmu_mnu[nu]=-1;
 	Coordinate shift_mmu_pnu(Nd,0); shift_mmu_pnu[mu]=-1;  shift_mmu_pnu[nu]= 1;
-
+#endif
 	autoView( gU_nu_v , gUmu[nu], AcceleratorRead);
 
 
@@ -859,11 +894,13 @@ public:
 				           Gimpl::CovShiftBackward(Umu[nu], nu,
 					    Gimpl::CovShiftIdentityBackward(Utmp, mu))))));
 #else
-	shifts.clear();
-	shifts.push_back(shift_0);shifts.push_back(shift_nu);shifts.push_back(shift_mu);shifts.push_back(shift_0);
+	t_stencil-=usecond();
+	//shifts.clear();
+	//shifts.push_back(shift_0);shifts.push_back(shift_nu);shifts.push_back(shift_mu);shifts.push_back(shift_0);
 	
-	GeneralLocalStencil gStencil(ggrid,shifts);
-	autoView( gStencil_v  , gStencil, AcceleratorRead);
+	//GeneralLocalStencil gStencil(ggrid,shifts);
+	t_stencil+=usecond();
+	autoView( gStencil_v  , gStencils[mu*(Nd-1)*6+(nu-(mu<=nu))*6], AcceleratorRead);
 	accelerator_for(ss, ggrid->oSites(), ggrid->Nsimd(), {
           GeneralStencilEntry const* e = gStencil_v.GetEntry(0,ss);
           auto U_nu_x = coalescedReadGeneralPermute(gU_nu_v[e->_offset], e->_permute, Nd);
@@ -879,11 +916,13 @@ public:
           coalescedWrite(gPlaqR_v[ss],stencil_ss);
 	}
         );
+	t_ck -= usecond();
 	pickCheckerboard(cb,PlaqR,Ghost.Extract(gPlaqR));
+	t_ck += usecond();
 #endif
 	}
 	time+=usecond(); tLR += usecond();
-	std::cout << GridLogMessage << "PlaqLR took "<<time<< " us"<<std::endl;
+	std::cout << GridLogMessage << "PlaqLR took "<<time<< " us "<<" checkerboard_extract "<<t_ck<<" us"<<std::endl;
 
 	time=-usecond(); tNxy -= usecond();
 	PlaqL.Checkerboard() = cb; Nxy.Checkerboard() = cb; FdetV.Checkerboard() = cb;
@@ -917,11 +956,13 @@ public:
 
 	pickCheckerboard((cb+1)%2,PlaqL, (GaugeLinkField) (Gimpl::CovShiftIdentityBackward(Utmp, mu)));
 #else
-	shifts.clear();
-        shifts.push_back(shift_0);shifts.push_back(shift_mmu_pnu);shifts.push_back(shift_mmu);shifts.push_back(shift_mmu);
+	t_stencil -=usecond();
+	//shifts.clear();
+        //shifts.push_back(shift_0);shifts.push_back(shift_mmu_pnu);shifts.push_back(shift_mmu);shifts.push_back(shift_mmu);
 	
-	GeneralLocalStencil gStencil(ggrid,shifts);
-	autoView( gStencil_v  , gStencil, AcceleratorRead);
+	//GeneralLocalStencil gStencil(ggrid,shifts);
+	t_stencil += usecond();
+	autoView( gStencil_v  , gStencils[mu*(Nd-1)*6+(nu-(mu<=nu))*6+1], AcceleratorRead);
         accelerator_for(ss, ggrid->oSites(), ggrid->Nsimd(), {
           GeneralStencilEntry const* e = gStencil_v.GetEntry(0,ss);
           auto U_nu_y = coalescedReadGeneralPermute(gU_nu_v[e->_offset], e->_permute, Nd);
@@ -952,7 +993,21 @@ public:
 	tNxy += usecond();
 
 	tMJx -= usecond();
+#if 1
 	MpInvJx_nu = Cshift(MpInvJx,mu,-1);
+#else
+	shifts.clear();
+        shifts.push_back(shift_mmu);
+
+        GeneralLocalStencil gStencil(gghrid,shifts);
+        autoView( gStencil_v  , gStencil, AcceleratorRead);
+        accelerator_for(ss, ghgrid->oSites(), ghgrid->Nsimd(), {
+          GeneralStencilEntry const* e = gStencil_v.GetEntry(0,ss);
+          auto MpInvJx_mmu = coalescedReadGeneralPermute(gMpInvJx_v[e->_offset], e->_permute, Nd);
+          coalescedWrite(g_v[ss],stencil_ss);
+        }
+        );
+#endif
 	Compute_MpInvJx_dNxxdSy(PlaqL,PlaqR,MpInvJx_nu,FdetV);
 	
 	Fdet2_nu_oe = FdetV;
@@ -963,20 +1018,21 @@ public:
 	// |  |
 	// x==          // nu polarisation -- clockwise
 	tLR -= usecond();
-	{
+	{ GRID_TRACE("Staple");
 #if 0
-	  GRID_TRACE("Staple");
 	pickCheckerboard((cb+1)%2,PlaqL,(GaugeLinkField) ((rho)* Gimpl::CovShiftForward(Umu[mu], mu,
 						Gimpl::CovShiftForward(Umu[nu], nu,
 								       Gimpl::CovShiftIdentityBackward(Utmp, mu)))));
 
         pickCheckerboard((cb+1)%2,PlaqR, (GaugeLinkField) (Gimpl::CovShiftIdentityForward(Umu[nu], nu)));
 #else
-	shifts.clear();
-        shifts.push_back(shift_0);shifts.push_back(shift_mu);shifts.push_back(shift_nu);shifts.push_back(shift_0);
+	t_stencil -= usecond();
+	//shifts.clear();
+        //shifts.push_back(shift_0);shifts.push_back(shift_mu);shifts.push_back(shift_nu);shifts.push_back(shift_0);
 	
-	GeneralLocalStencil gStencil(ggrid,shifts);
-	autoView( gStencil_v  , gStencil, AcceleratorRead);
+	//GeneralLocalStencil gStencil(ggrid,shifts);
+	t_stencil+=usecond();
+	autoView( gStencil_v  , gStencils[mu*(Nd-1)*6+(nu-(mu<=nu))*6+2], AcceleratorRead);
         accelerator_for(ss, ggrid->oSites(), ggrid->Nsimd(), {
           GeneralStencilEntry const* e = gStencil_v.GetEntry(0,ss);
           auto U_mu_y = coalescedReadGeneralPermute(gU_mu_v[e->_offset], e->_permute, Nd);
@@ -1014,7 +1070,7 @@ public:
 	Compute_MpInvJx_dNxxdSy(PlaqL,PlaqR,MpInvJx_nu,FdetV);
 	Fdet2_nu_oe = Fdet2_nu_oe+FdetV;
 	tMJx += usecond();
-	
+      
 	// x==
 	// |  |
 	// |__|         // nu polarisation
@@ -1028,11 +1084,13 @@ public:
 	pickCheckerboard(cb,PlaqR,(GaugeLinkField) (Gimpl::CovShiftBackward(Umu[mu], mu,
 									    Gimpl::CovShiftIdentityForward(Umu[nu], nu))));
 #else
-	shifts.clear();
-        shifts.push_back(shift_0);shifts.push_back(shift_mmu_pnu);shifts.push_back(shift_mmu);shifts.push_back(shift_mmu);
+	t_stencil-=usecond();
+	//shifts.clear();
+        //shifts.push_back(shift_0);shifts.push_back(shift_mmu_pnu);shifts.push_back(shift_mmu);shifts.push_back(shift_mmu);
 	
-	GeneralLocalStencil gStencil(ggrid,shifts);
-	autoView( gStencil_v  , gStencil, AcceleratorRead);
+	//GeneralLocalStencil gStencil(ggrid,shifts);
+	t_stencil+=usecond();
+	autoView( gStencil_v  , gStencils[mu*(Nd-1)*6+(nu-(mu<=nu))*6+3], AcceleratorRead);
         accelerator_for(ss, ggrid->oSites(), ggrid->Nsimd(), {
           GeneralStencilEntry const* e = gStencil_v.GetEntry(0,ss);
           auto U_nu_y = coalescedReadGeneralPermute(gU_nu_v[e->_offset], e->_permute, Nd);
@@ -1074,12 +1132,14 @@ public:
 	/////////////////////////////////////////////////////////////////////
 	// Set up the determinant force contribution in 3x3 algebra basis
 	/////////////////////////////////////////////////////////////////////
+	t_ins -= usecond();
 	setCheckerboard(Fdet1_nu, Fdet1_nu_eo);
 	setCheckerboard(Fdet1_nu, Fdet1_nu_oe);
 	InsertForce(Fdet1,Fdet1_nu,nu);
 	setCheckerboard(Fdet2_nu, Fdet2_nu_eo);
         setCheckerboard(Fdet2_nu, Fdet2_nu_oe);
 	InsertForce(Fdet2,Fdet2_nu,nu);
+	t_ins+= usecond();
 	
 	//////////////////////////////////////////////////
 	// Parallel direction terms
@@ -1100,11 +1160,13 @@ public:
 
 	pickCheckerboard((cb+1)%2,PlaqR,(GaugeLinkField) (Gimpl::CovShiftIdentityBackward(Umu[nu], nu)));
 #else
-	shifts.clear();
-        shifts.push_back(shift_0);shifts.push_back(shift_pmu_mnu);shifts.push_back(shift_mnu);shifts.push_back(shift_mnu);
+	t_stencil-=usecond();
+	//shifts.clear();
+        //shifts.push_back(shift_0);shifts.push_back(shift_pmu_mnu);shifts.push_back(shift_mnu);shifts.push_back(shift_mnu);
 	
-	GeneralLocalStencil gStencil(ggrid,shifts);
-	autoView( gStencil_v  , gStencil, AcceleratorRead);
+	//GeneralLocalStencil gStencil(ggrid,shifts);
+	t_stencil+=usecond();
+	autoView( gStencil_v  , gStencils[mu*(Nd-1)*6+(nu-(mu<=nu))*6+4], AcceleratorRead);
         accelerator_for(ss, ggrid->oSites(), ggrid->Nsimd(), {
           GeneralStencilEntry const* e = gStencil_v.GetEntry(0,ss);
           auto U_mu_y = coalescedReadGeneralPermute(gU_mu_v[e->_offset], e->_permute, Nd);
@@ -1153,11 +1215,13 @@ public:
 
 	pickCheckerboard((cb+1)%2,PlaqR,(GaugeLinkField) (Gimpl::CovShiftIdentityForward(Umu[nu], nu)));
 #else
-	shifts.clear();
-        shifts.push_back(shift_0);shifts.push_back(shift_mu);shifts.push_back(shift_nu);shifts.push_back(shift_0);
+	t_stencil-=usecond();
+	//shifts.clear();
+        //shifts.push_back(shift_0);shifts.push_back(shift_mu);shifts.push_back(shift_nu);shifts.push_back(shift_0);
 	
-	GeneralLocalStencil gStencil(ggrid,shifts);
-	autoView( gStencil_v  , gStencil, AcceleratorRead);
+	//GeneralLocalStencil gStencil(ggrid,shifts);
+	t_stencil+=usecond();
+	autoView( gStencil_v  , gStencils[mu*(Nd-1)*6+(nu-(mu<=nu))*6+5], AcceleratorRead);
         accelerator_for(ss, ggrid->oSites(), ggrid->Nsimd(), {
           GeneralStencilEntry const* e = gStencil_v.GetEntry(0,ss);
           auto U_mu_y = coalescedReadGeneralPermute(gU_mu_v[e->_offset], e->_permute, Nd);
@@ -1210,9 +1274,14 @@ public:
     RealD t1 = usecond();
     std::cout << GridLogMessage << " logDetJacobianForce t3-t0 "<<t3a-t0<<" us "<<std::endl;
     std::cout << GridLogMessage << " logDetJacobianForce t4-t3 dJdXe_nMpInv "<<t4-t3b<<" us "<<std::endl;
-    std::cout << GridLogMessage << " logDetJacobianForce t3b-t3a Fdet1,2_mu  "<<t3b-t3a<<" us "<<std::endl;
+    std::cout << GridLogMessage << " logDetJacobianForce t3b-t3a dJdXe_nMpInv  "<<t3b-t3a<<" us "<<std::endl;
+    std::cout << GridLogMessage << " logDetJacobianForce t3c-t3b Fdet1,2_mu  "<<t3c-t3b<<" us "<<std::endl;
+    std::cout << GridLogMessage << " logDetJacobianForce t4-t3c Loop Setup  "<<t4-t3c<<" us "<<std::endl;
+    std::cout << GridLogMessage << " logDetJacobianForce t4b-t4a Loop Setup2.1  "<<t4b-t4a<<" us "<<std::endl;
+    std::cout << GridLogMessage << " logDetJacobianForce t4b-t4 Loop Setup2  "<<t4b-t4<<" us "<<std::endl;
     std::cout << GridLogMessage << " logDetJacobianForce t5-t4 mu nu loop "<<t5-t4<<" us Plaq "
-	      <<tLR/1e3<<" ms Nxy "<<tNxy/1e3<<" ms MpInvJx_dNxxdSy "<<tMJx/1e3<<" ms"<<std::endl;
+	      <<tLR/1e3<<" ms Nxy "<<tNxy/1e3<<" ms MpInvJx_dNxxdSy "<<tMJx/1e3<<" ms "<<" insert_force "<<t_ins/1e3<< "ms Stencil "
+	      <<t_stencil/1e3<<" ms"<<std::endl;
     std::cout << GridLogMessage << " logDetJacobianForce t1-t5 "<<t1-t5<<" us "<<std::endl; // turn adj vec to SU3 force
     std::cout << GridLogMessage << " logDetJacobianForce level took "<<t1-t0<<" us "<<std::endl;
   }
@@ -2059,15 +2128,22 @@ private:
     return SigmaK;
   }
 
+  PaddedCell                  Ghost;
 public:
 
   /* Standard constructor */
   virtual ~SmearedConfigurationMasked()
   {
     delete UrbGrid;
+    delete g1Grid;
+    for (auto grid : g1Grids)
+      delete grid;
+    g1Grids.clear();
   }
   SmearedConfigurationMasked(GridCartesian* _UGrid, unsigned int Nsmear, Smear_Stout<Gimpl>& Stout)
-    : SmearedConfiguration<Gimpl>(_UGrid, Nsmear,Stout)
+    : SmearedConfiguration<Gimpl>(_UGrid, Nsmear,Stout),
+      UGrid(_UGrid),
+      Ghost(1,_UGrid)
   {
     assert(Nsmear%(2*Nd)==0); // Or multiply by 8??
 
@@ -2097,6 +2173,72 @@ public:
       setCheckerboard(tmp,tmpcb);
       PokeIndex<LorentzIndex>(masks[i],tmp, mu);
 	
+    }
+    ///////////////////////////////
+    // Setup stencils for staples
+    ///////////////////////////////
+    int depth            = 1;
+    Coordinate local     =UGrid->LocalDimensions();
+    Coordinate simd      =UGrid->_simd_layout;
+    Coordinate processors=UGrid->_processors;
+    Coordinate plocal    =UGrid->LocalDimensions();
+    Coordinate global(Nd);
+    GridCartesian *old_grid = UGrid;
+    for(int d=0;d<Nd;d++){
+      if ( processors[d] > 1 ) {
+        plocal[d] += 2*depth;
+        for(int d=0;d<Nd;d++){
+          global[d] = plocal[d]*processors[d];
+        }
+	old_grid = new GridCartesian(global,simd,processors);
+      }
+      g1Grids.push_back(old_grid);
+    }
+    LatticeComplex gOne = Ghost.ExchangePeriodic(one);
+    g1Grid = gOne.Grid();
+    //assert(g1Grid == g1Grids[Nd]);//<- failed
+    GridBase *ggrid = g1Grid;
+    gStencils.clear();
+    std::vector<Coordinate> shifts;
+    Coordinate shift_0(Nd,0);
+    for(int mu=0;mu<Nd;mu++){
+      //GridBase *ggrid = g1Grids[mu];
+
+      Coordinate shift_mu(Nd,0);  shift_mu[mu]=1;
+      Coordinate shift_mmu(Nd,0); shift_mmu[mu]=-1;
+      for(int nu=0;nu<Nd;nu++){
+	if (nu!=mu) {
+	  Coordinate shift_nu(Nd,0);  shift_nu[nu]=1;
+	  Coordinate shift_mnu(Nd,0); shift_mnu[nu]=-1;
+	  Coordinate shift_pmu_pnu(Nd,0); shift_pmu_pnu[mu]= 1;  shift_pmu_pnu[nu]= 1;
+	  Coordinate shift_pmu_mnu(Nd,0); shift_pmu_mnu[mu]= 1;  shift_pmu_mnu[nu]=-1;
+	  Coordinate shift_mmu_pnu(Nd,0); shift_mmu_pnu[mu]=-1;  shift_mmu_pnu[nu]= 1;
+	  //GeneralLocalStencil gStencil
+	  shifts.clear();
+	  shifts.push_back(shift_0);shifts.push_back(shift_nu);shifts.push_back(shift_mu);shifts.push_back(shift_0);
+	  gStencils.push_back(GeneralLocalStencil(ggrid,shifts));
+
+	  shifts.clear();
+	  shifts.push_back(shift_0);shifts.push_back(shift_mmu_pnu);shifts.push_back(shift_mmu);shifts.push_back(shift_mmu);
+	  gStencils.push_back(GeneralLocalStencil(ggrid,shifts));
+
+	  shifts.clear();
+	  shifts.push_back(shift_0);shifts.push_back(shift_mu);shifts.push_back(shift_nu);shifts.push_back(shift_0);
+	  gStencils.push_back(GeneralLocalStencil(ggrid,shifts));
+	  
+	  shifts.clear();
+	  shifts.push_back(shift_0);shifts.push_back(shift_mmu_pnu);shifts.push_back(shift_mmu);shifts.push_back(shift_mmu);
+	  gStencils.push_back(GeneralLocalStencil(ggrid,shifts));
+	  
+	  shifts.clear();
+	  shifts.push_back(shift_0);shifts.push_back(shift_pmu_mnu);shifts.push_back(shift_mnu);shifts.push_back(shift_mnu);
+	  gStencils.push_back(GeneralLocalStencil(ggrid,shifts));
+	  
+	  shifts.clear();
+	  shifts.push_back(shift_0);shifts.push_back(shift_mu);shifts.push_back(shift_nu);shifts.push_back(shift_0);
+	  gStencils.push_back(GeneralLocalStencil(ggrid,shifts));
+	}
+      }
     }
   }
   

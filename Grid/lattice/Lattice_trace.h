@@ -97,6 +97,7 @@ Lattice<iScalar<iScalar<iScalar<Vec> > > > Determinant(const Lattice<iScalar<iSc
 template<int N>
 Lattice<iScalar<iScalar<iMatrix<vComplexD, N> > > > Inverse(const Lattice<iScalar<iScalar<iMatrix<vComplexD, N> > > > &Umu)
 {
+#if 0
   GridBase *grid=Umu.Grid();
   auto lvol = grid->lSites();
   Lattice<iScalar<iScalar<iMatrix<vComplexD, N> > > > ret(grid);
@@ -121,10 +122,78 @@ Lattice<iScalar<iScalar<iMatrix<vComplexD, N> > > > Inverse(const Lattice<iScala
       }}
     pokeLocalSite(Ui,ret_v,lcoor);
   });
+#else
+  GridBase *grid=Umu.Grid();
+  auto osites = grid->oSites();
+  const int Nsimd=grid->Nsimd();
+  //RealD time = 0;
+  Lattice<iScalar<iScalar<iMatrix<vComplexD, N> > > > ret(grid);
+  autoView(Umu_v,Umu,CpuRead);
+  autoView(ret_v,ret,CpuWrite);
+  thread_for(site,osites,{
+    Eigen::MatrixXcd EigenU = Eigen::MatrixXcd::Zero(N,N);
+
+    iScalar<iScalar<iMatrix<ComplexD, N> > > Us;
+    iScalar<iScalar<iMatrix<ComplexD, N> > > Ui;
+
+    for(int lane=0;lane<Nsimd;lane++){
+      Us = extractLane(lane,Umu_v[site]);//coalescedRead(Umu_v[site],lane);//getlane(Umu_v[site],lane);//extractLane(lane,Umu_v[site]);
+      for(int i=0;i<N;i++){
+	for(int j=0;j<N;j++){
+	  EigenU(i,j) = Us()()(i,j);
+	}}
+      //if(site==0) time -= usecond();
+      Eigen::MatrixXcd EigenUinv = EigenU.inverse();
+      //  if(site==0) time += usecond();
+      for(int i=0;i<N;i++){
+	for(int j=0;j<N;j++){
+	  Ui()()(i,j) = EigenUinv(i,j);
+	}}
+      insertLane(lane,ret_v[site],Ui);
+    }
+  });
+  //std::cout << GridLogMessage << "Inverse took "<<time<< " us"<<std::endl;
+#endif  
   return ret;
 }
 
+#if 1
+template<int N>
+Lattice<iScalar<iScalar<iMatrix<vComplexD, N> > > > Inverse_RealPart(const Lattice<iScalar<iScalar<iMatrix<vComplexD, N> > > > &Umu)
+{
+GridBase *grid=Umu.Grid();
+  auto osites = grid->oSites();
+  const int Nsimd=grid->Nsimd();
+  //RealD time = 0;
+  Lattice<iScalar<iScalar<iMatrix<vComplexD, N> > > > ret(grid);
+  autoView(Umu_v,Umu,CpuRead);
+  autoView(ret_v,ret,CpuWrite);
+  thread_for(site,osites,{
+    Eigen::MatrixXd EigenU = Eigen::MatrixXd::Zero(N,N);
 
+    iScalar<iScalar<iMatrix<ComplexD, N> > > Us;
+    iScalar<iScalar<iMatrix<ComplexD, N> > > Ui;
+
+    for(int lane=0;lane<Nsimd;lane++){
+      Us = extractLane(lane,Umu_v[site]);
+      for(int i=0;i<N;i++){
+        for(int j=0;j<N;j++){
+          EigenU(i,j) = real(Us()()(i,j));
+        }}
+      //if(site==0) time-=usecond();
+      Eigen::MatrixXd EigenUinv = EigenU.inverse();
+      //if(site==0) time+=usecond();
+      for(int i=0;i<N;i++){
+        for(int j=0;j<N;j++){
+          Ui()()(i,j) = EigenUinv(i,j);
+        }}
+      insertLane(lane,ret_v[site],Ui);
+    }
+  });
+  //std::cout << GridLogPerformance << "Inverse Real took "<<time<< " us"<<std::endl;
+ return ret;
+}
+#endif
 NAMESPACE_END(Grid);
 #endif
 
