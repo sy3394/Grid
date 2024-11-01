@@ -126,7 +126,6 @@ Lattice<iScalar<iScalar<iMatrix<vComplexD, N> > > > Inverse(const Lattice<iScala
   GridBase *grid=Umu.Grid();
   auto osites = grid->oSites();
   const int Nsimd=grid->Nsimd();
-  //RealD time = 0;
   Lattice<iScalar<iScalar<iMatrix<vComplexD, N> > > > ret(grid);
   autoView(Umu_v,Umu,CpuRead);
   autoView(ret_v,ret,CpuWrite);
@@ -137,14 +136,12 @@ Lattice<iScalar<iScalar<iMatrix<vComplexD, N> > > > Inverse(const Lattice<iScala
     iScalar<iScalar<iMatrix<ComplexD, N> > > Ui;
 
     for(int lane=0;lane<Nsimd;lane++){
-      Us = extractLane(lane,Umu_v[site]);//coalescedRead(Umu_v[site],lane);//getlane(Umu_v[site],lane);//extractLane(lane,Umu_v[site]);
+      Us = extractLane(lane,Umu_v[site]);
       for(int i=0;i<N;i++){
 	for(int j=0;j<N;j++){
 	  EigenU(i,j) = Us()()(i,j);
 	}}
-      //if(site==0) time -= usecond();
       Eigen::MatrixXcd EigenUinv = EigenU.inverse();
-      //  if(site==0) time += usecond();
       for(int i=0;i<N;i++){
 	for(int j=0;j<N;j++){
 	  Ui()()(i,j) = EigenUinv(i,j);
@@ -152,7 +149,6 @@ Lattice<iScalar<iScalar<iMatrix<vComplexD, N> > > > Inverse(const Lattice<iScala
       insertLane(lane,ret_v[site],Ui);
     }
   });
-  //std::cout << GridLogMessage << "Inverse took "<<time<< " us"<<std::endl;
 #endif  
   return ret;
 }
@@ -164,7 +160,6 @@ Lattice<iScalar<iScalar<iMatrix<vComplexD, N> > > > Inverse_RealPart(const Latti
 GridBase *grid=Umu.Grid();
   auto osites = grid->oSites();
   const int Nsimd=grid->Nsimd();
-  //RealD time = 0;
   Lattice<iScalar<iScalar<iMatrix<vComplexD, N> > > > ret(grid);
   autoView(Umu_v,Umu,CpuRead);
   autoView(ret_v,ret,CpuWrite);
@@ -180,9 +175,7 @@ GridBase *grid=Umu.Grid();
         for(int j=0;j<N;j++){
           EigenU(i,j) = real(Us()()(i,j));
         }}
-      //if(site==0) time-=usecond();
       Eigen::MatrixXd EigenUinv = EigenU.inverse();
-      //if(site==0) time+=usecond();
       for(int i=0;i<N;i++){
         for(int j=0;j<N;j++){
           Ui()()(i,j) = EigenUinv(i,j);
@@ -190,7 +183,6 @@ GridBase *grid=Umu.Grid();
       insertLane(lane,ret_v[site],Ui);
     }
   });
-  //std::cout << GridLogPerformance << "Inverse Real took "<<time<< " us"<<std::endl;
  return ret;
 }
 #endif
