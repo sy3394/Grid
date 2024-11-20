@@ -69,7 +69,7 @@ private:
 			   const GaugeField& iLambda,
 			   const GaugeField& U,
 			   int mmu, RealD rho)
-  {
+  {GRID_TRACE("BaseSmearDerivative");
     // Reference
     // Morningstar, Peardon, Phys.Rev.D69,054501(2004)
     // Equation 75
@@ -493,7 +493,7 @@ public:
     GridBase* grid = U.Grid();
     GridBase* hgrid = UrbGrid; // For now, assume masking is based on red-black checkerboarding
     assert(grid==UGrid);
-    GaugeField C(grid);
+    //GaugeField C(grid);
     GaugeField Umsk(grid);
     std::vector<GaugeLinkField> Umu(Nd,grid);
     GaugeLinkField Cmu(hgrid); // U and staple; C contains factor of epsilon
@@ -572,11 +572,11 @@ public:
     // Computes ALL the staples -- could compute one only and do it here
     RealD time;
     time=-usecond();
-    BaseSmear_cb(Cmu, U, mu, rho);
-#if 1 // DEBUG
+    BaseSmear_ghost(Cmu, gU, mu, rho);
+#if 0 // DEBUG
     GaugeLinkField Cmu2(hgrid);
     Cmu2.Checkerboard() = cb;
-    BaseSmear_ghost(Cmu2, gU, mu, rho);
+    BaseSmear_cb(Cmu2, U, mu, rho);
     std::cout << GridLogMessage << " DEBUG: BaseSmear " <<smr<<" "<<mu<<" "<<cb<<" "<<" simd "<<AdjMatrix::Nsimd()<<" "<<norm2(Cmu-Cmu2)<<std::endl;
 #endif
     
@@ -659,7 +659,7 @@ public:
 #endif
     }
     time+=usecond();
-    std::cout << GridLogPerformance << "Jx took "<<time<< " us"<<std::endl;
+    std::cout << GridLogMessage << "Jx took "<<time<< " us"<<std::endl;
     
     /////////////////////////////////////////////////////////////////
     // NxxAd
@@ -895,12 +895,7 @@ public:
 
     RealD t4 = usecond(), tLR = 0, tNxy = 0, tMJx = 0, t_ins=0, t_ck = 0, t_stencil=0, t_cshift=0;
 
-    //std::vector<Coordinate>     shifts;
-    RealD t4a = usecond();
-
     GaugeLinkField  gPlaqL(ggrid), gPlaqR(ggrid);
-
-    RealD t4b = usecond();
 #if 0
     // will optimize Cshift rather
     CshiftImplGauge<Gimpl> cshift_impl;
@@ -1347,14 +1342,11 @@ public:
     force= (-0.5)*( Fdet1 + Fdet2);
     RealD t1 = usecond();
     std::cout << GridLogMessage << " logDetJacobianForce t3-t0 "<<t3a-t0<<" us "<<std::endl;
-    std::cout << GridLogMessage << " logDetJacobianForce t4-t3 dJdXe_nMpInv "<<t4-t3b<<" us "<<std::endl;
+    std::cout << GridLogMessage << " logDetJacobianForce t4-t3b dJdXe_nMpInv+even part of Fdet1_mu & Fdet2_mu "<<t4-t3b<<" us "<<std::endl;
     std::cout << GridLogMessage << " logDetJacobianForce t3b-t3a dJdXe_nMpInv  "<<t3b-t3a<<" us "<<std::endl;
-    std::cout << GridLogMessage << " logDetJacobianForce t3c-t3b Fdet1,2_mu  "<<t3c-t3b<<" us "<<std::endl;
-    std::cout << GridLogMessage << " logDetJacobianForce t4-t3c Loop Setup  "<<t4-t3c<<" us "<<std::endl;
-    std::cout << GridLogMessage << " logDetJacobianForce t4b-t4a Loop Setup2.1  "<<t4b-t4a<<" us "<<std::endl;
-    std::cout << GridLogMessage << " logDetJacobianForce t4b-t4 Loop Setup2  "<<t4b-t4<<" us "<<std::endl;
+    std::cout << GridLogMessage << " logDetJacobianForce t3c-t3b even part of Fdet1_mu & Fdet2_mu  "<<t3c-t3b<<" us "<<std::endl;
     std::cout << GridLogMessage << " logDetJacobianForce t5-t4 mu nu loop "<<t5-t4<<" us Plaq "
-	      <<tLR/1e3<<" ms Nxy "<<tNxy/1e3<<" ms MpInvJx_dNxxdSy "<<tMJx/1e3<<" ms "<<" insert_force "<<t_ins/1e3<< "ms Stencil "
+	      <<tLR/1e3<<" ms Nxy "<<tNxy/1e3<<" ms MpInvJx_dNxxdSy "<<tMJx/1e3<<" ms "<<" insert_force "<<t_ins/1e3<< " ms Stencil "
 	      <<t_stencil/1e3<<" ms Cshift "<<t_cshift/1e3<<" ms"<<std::endl;
     std::cout << GridLogMessage << " logDetJacobianForce t1-t5 "<<t1-t5<<" us "<<std::endl; // turn adj vec to SU3 force
     std::cout << GridLogMessage << " logDetJacobianForce level took "<<t1-t0<<" us "<<std::endl;
@@ -1362,154 +1354,150 @@ public:
 
     RealD logDetJacobianLevel(const GaugeField &U,int smr)
   {
+    GRID_TRACE("logDetJacobianLevel");
     GridBase* grid = U.Grid();
-    GaugeField C(grid);
-    GaugeLinkField Nb(grid);
-    GaugeLinkField Z(grid);
-    GaugeLinkField Umu(grid), Cmu(grid);
-    ColourMatrix   Tb;
-    ColourMatrix   Tc;
-    typedef typename SU3Adjoint::AMatrix AdjMatrix;
+    GridBase* hgrid = UrbGrid; // For now, assume masking is based on red-black checkerboarding
+    assert(grid==UGrid);
+    GaugeField gU(grid);
+    std::vector<GaugeLinkField> gUmu(Nd,grid);
+    GaugeLinkField PlaqL(hgrid);
+    GaugeLinkField Z(hgrid);
+    GaugeLinkField Umu(hgrid), Cmu(hgrid);
+    LatticeComplex ln_det(hgrid); 
     typedef typename SU3Adjoint::LatticeAdjMatrix  AdjMatrixField;
-    typedef typename SU3Adjoint::LatticeAdjVector  AdjVectorField;
-    const int Ngen = SU3Adjoint::Dimension;
-    AdjMatrix TRb;
-    LatticeComplex       cplx(grid); 
-    AdjVectorField  AlgV(grid); 
-    AdjMatrixField  Mab(grid);
-    AdjMatrixField  Ncb(grid), Ncb_opt(grid);
-    AdjMatrixField  Jac(grid);
-    AdjMatrixField  Zac(grid);
-    AdjMatrixField  mZac(grid);
-    AdjMatrixField  X(grid);
-
-    RealD time=0, tta=0, tpk=0, tN=0, tZ=0, tJ=0, tlnDetM=0;
+    AdjMatrixField  Ncb(hgrid);
+    AdjMatrixField  Zac(hgrid); 
+    ColourMatrix Ident;
+    
+    RealD time=0, tN=0, tZ=0, t_M=0, tJ_lnDet=0, t_det=0, t_ln=0;
     int mu= (smr/2) %Nd;
 
     time -= usecond();
+    Ident = ComplexD(1.0);
+
+    int cb = cbs[smr];
     auto mask=PeekIndex<LorentzIndex>(masks[smr],mu); // the cb mask
+
+    Z.Checkerboard() = cb;
+    Cmu.Checkerboard() = cb;
+    PlaqL.Checkerboard() = cb;
+    Ncb.Checkerboard() = cb;
+    ln_det.Checkerboard() = cb; 
+    /* Assume: red-black masking
+    Umsk = U;
+    ApplyMask(Umsk,smr);
+    Umu = peekLorentz(Umsk,mu);
+    */
+    pickCheckerboard(cb,Umu,peekLorentz(U,mu));
 
     //////////////////////////////////////////////////////////////////
     // Assemble the N matrix
     //////////////////////////////////////////////////////////////////
 
     tN -= usecond();
-    double rho=this->StoutSmearing->SmearRho[1];
-    BaseSmear(Cmu, U,mu,rho);
-
-    Umu = peekLorentz(U, mu);
-    Complex ci(0,1);
-#if 1
-    for(int b=0;b<Ngen;b++) {
-      SU3::generator(b, Tb);
-      // Qlat Tb = 2i Tb^Grid
-      tta -= usecond();
-      Nb = (2.0)*Ta( ci*Tb * Umu * adj(Cmu));
-      tta += usecond();
-      // FIXME -- replace this with LieAlgebraProject
-#if 1
-      // Fixed it
-      SU3::LieAlgebraProject(Ncb_opt,Nb,b);
-#else
-      for(int c=0;c<Ngen;c++) {
-	SU3::generator(c, Tc);
-	auto tmp = -trace(ci*Tc*Nb); // Luchang's norm: (2Tc) (2Td) N^db = -2 delta cd N^db // - was important
-	tpk -= usecond();
-	PokeIndex<ColourIndex>(Ncb,tmp,c,b);
-	tpk += usecond();
-      }
-
-#endif
+    {GRID_TRACE("ExchangePeriodic");
+    gU = Ghost.ExchangePeriodic(U);
     }
-#else
-      autoView(NxAd_v,NxAd,AcceleratorWrite);
-    autoView(PlaqL_v,PlaqL,AcceleratorRead);
-    autoView(PlaqR_v,PlaqR,AcceleratorRead);
-    const int nsimd = vAlgebraMatrix::Nsimd();
-    accelerator_for(ss,grid->oSites(),nsimd,{
-        typedef decltype(coalescedRead(PlaqL_v[0])) SU3_mat;
-        typedef decltype(coalescedRead(NxAd_v[0]))  adj_mat;
-        SU3_mat Nx;
-        adj_mat NxAd_site;
-        for(int b=0;b<Ngen;b++) {
-          SU3::generator(b, tb);
-          tb = 2.0 * ci * tb;
-          //auto Nx =Ta( adj(PlaqL_v(ss)) * tb * PlaqR_v(ss) );
-          auto Nx = 0.5*( adj(PlaqL_v(ss))*tb*PlaqR_v(ss) + adj(PlaqR_v(ss))*tb*PlaqL_v(ss) );//-tr(*) part does not contribute
-          SU3::LieAlgebraProject(NxAd_site,Nx,b);
-        }
-        coalescedWrite(NxAd_v[ss],NxAd_site);
-      });
-#endif
-    //Dump(Ncb_opt,"Ncb_opt");
-    //Dump(Ncb,"Ncb");
+    double rho=this->StoutSmearing->SmearRho[1];
+    PlaqL = Ident;
+    BaseSmear_ghost(Cmu,gU,mu,rho);
+    ComputeNxy(PlaqL,Umu * adj(Cmu),Ncb);//we can expand function body and form a bigger accelerated loop
     tN += usecond();
-    
+
     //////////////////////////////////////////////////////////////////
     // Assemble Luscher exp diff map J matrix 
     //////////////////////////////////////////////////////////////////
     tZ -= usecond();
+    {GRID_TRACE("Z");
     // Ta so Z lives in Lie algabra
     Z  = Ta(Cmu * adj(Umu));
-
     // Move Z to the Adjoint Rep == make_adjoint_representation
-    Zac = Zero();
-    for(int b=0;b<8;b++) {
-      // Adj group sets traceless antihermitian T's -- Guido, really????
-      // Is the mapping of these the same? Same structure constants
-      // Might never have been checked.
-      SU3::generator(b, Tb);         // Fund group sets traceless hermitian T's
-      SU3Adjoint::generator(b,TRb);
-      TRb=-TRb;
-      cplx = 2.0*trace(ci*Tb*Z); // my convention 1/2 delta ba
-      Zac = Zac + cplx * TRb; // is this right? YES - Guido used Anti herm Ta's and with bloody wrong sign.
+    SU3Adjoint::make_adjoint_rep(Zac, Z);
     }
     tZ += usecond();
-    
-    //////////////////////////////////////
-    // J(x) = 1 + Sum_k=1..N (-Zac)^k/(k+1)!
-    //////////////////////////////////////
-    tJ -= usecond();
-    X=1.0; 
-    Jac = X;
-    mZac = (-1.0)*Zac; 
-    RealD kpfac = 1;
-    for(int k=1;k<12;k++){
-      X=X*mZac;
-      kpfac = kpfac /(k+1);
-      Jac = Jac + X * kpfac;
+
+    tJ_lnDet -= usecond();
+    t_M -= usecond();
+    {GRID_TRACE("Mab");
+#if 0
+    const int Ngen = SU3Adjoint::Dimension;
+    AdjMatrixField  Mab(hgrid);    Mab.Checkerboard() = cb;
+    LatticeComplex ln_det2(hgrid); ln_det2.Checkerboard() = cb;
+    autoView(Mab_v,Mab,AcceleratorWrite);
+#endif
+    autoView(ln_det_v,ln_det,AcceleratorWrite);
+    autoView(Zac_v,Zac,AcceleratorRead);
+    autoView(Ncb_v,Ncb,AcceleratorRead);
+    accelerator_for(ss,hgrid->oSites(),hgrid->Nsimd(),{
+	typedef decltype(coalescedRead(Zac_v(0)))    adj_mat;
+	//typedef decltype(coalescedRead(ln_det_v[0])) cplx;
+	adj_mat X, Jac, Mab_ss;
+	RealD kpfac = 1;//, ln_det = 0;
+	
+	//////////////////////////////////////
+	// J(x) = 1 + Sum_k=1..N (-Zac)^k/(k+1)!
+	//////////////////////////////////////
+	X=1.0; 
+	Jac = X;
+	for(int k=1;k<12;k++){
+	  X=(-1.0)*X*Zac_v(ss);
+	  kpfac = kpfac /(k+1);
+	  Jac = Jac + X * kpfac;
+	}
+	
+	////////////////////////////
+	// Mab
+	////////////////////////////
+	Mab_ss = Complex(1.0,0.0);
+	Mab_ss = Mab_ss - Jac * Ncb_v(ss);
+
+
+#if 0 // Eigen implements det of mat on GPU if its size < 5
+	Eigen::MatrixXd EigenU = Eigen::MatrixXd::Zero(Ngen,Ngen);
+	for(int i=0;i<Ngen;i++){
+	  for(int j=0;j<Ngen;j++){
+	    EigenU(i,j) = real(Mab_ss()()(i,j));
+	  }}
+	RealD detD  = EigenU.determinant();
+#else
+	////////////////////////////
+	// ln det
+	////////////////////////////
+	auto detD = Determinant(Mab_ss);
+	coalescedWrite(ln_det_v[ss],log(detD));
+#endif	
+	//coalescedWrite(Mab_v[ss],Mab_ss);
+      });
     }
-    tJ += usecond();
+    t_M+=usecond();
 
-    tlnDetM -= usecond();
-    ////////////////////////////
-    // Mab
-    ////////////////////////////
-    Mab = Complex(1.0,0.0);
-    Mab = Mab - Jac * Ncb;
-
+#if 0
     ////////////////////////////
     // det
     ////////////////////////////
-    LatticeComplex       det(grid); 
-    det = Determinant(Mab);
+    t_det-=usecond();
+    {GRID_TRACE("det");
+    LatticeComplex det(hgrid);det.Checkerboard() = cb;
+    det= Determinant_real(Mab);
+    }
+    t_det+=usecond();
 
     ////////////////////////////
     // ln det
     ////////////////////////////
-    LatticeComplex       ln_det(grid); 
+    t_ln-=usecond();
+    {GRID_TRACE("log");
     ln_det = log(det);
-
-    ////////////////////////////
-    // Masked sum
-    ////////////////////////////
-    ln_det = ln_det * mask;
-    tlnDetM += usecond();
-    time += usecond();
-    std::cout << GridLogMessage << " logDetJacobianLevel " << time/1e3 << " ms ta "<<tta/1e3<<" ms" << " poke "<<tpk/1e3<< " ms"
-	      <<" N "<<tN/1e3<<" ms Z "<<tZ/1e3<<" ms J " <<tJ/1e3<<" ms lnDetM "<<tlnDetM/1e3<<" ms" <<std::endl;
-    
+    }
+    t_ln += usecond();
+    std::cout << GridLogMessage << " DEBUG: logDetJacobianLevel " << norm2(ln_det - ln_det2)<<std::endl;
+#endif
+    tJ_lnDet += usecond();
     Complex result = sum(ln_det);
+    time += usecond();
+    std::cout << GridLogMessage << " logDetJacobianLevel " << time/1e3 <<" ms N "<<tN/1e3<<" ms Z "<<tZ/1e3<<" ms J_lnDetM " <<tJ_lnDet/1e3
+	      <<" ms Det " <<t_det/1e3<<" ms log "<<t_ln/1e3<<" ms M "<<t_M/1e3<<std::endl;
+
     return result.real();
   }
 
@@ -2080,7 +2068,7 @@ public:
     ln_det = ln_det * mask;
     tlnDetM += usecond();
     time += usecond();
-    std::cout << GridLogMessage << " logDetJacobianLevel " << time/1e3 << " ms ta "<<tta/1e3<<" ms" << " poke "<<tpk/1e3<< " ms"
+    std::cout << GridLogMessage << " Full: logDetJacobianLevel " << time/1e3 << " ms ta "<<tta/1e3<<" ms" << " poke "<<tpk/1e3<< " ms"
 	      <<" N "<<tN/1e3<<" ms Z "<<tZ/1e3<<" ms J " <<tJ/1e3<<" ms lnDetM "<<tlnDetM/1e3<<" ms" <<std::endl;
     
     Complex result = sum(ln_det);
@@ -2088,7 +2076,7 @@ public:
   }
   
 public:
-  RealD logDetJacobian(int old, void)
+  RealD logDetJacobian(int old)
   {
     RealD ln_det = 0;
     if (this->smearingLevels > 0)
@@ -2103,10 +2091,12 @@ public:
       double time = (end - start)/ 1e3;
       std::cout << GridLogMessage << "Full: GaugeConfigurationMasked: logDetJacobian took " << time << " ms" << std::endl;  
     }
+    std::cout << GridLogMessage << " DEBUG: logDetJacobian Full " << std::endl;
     return ln_det;
   }
   void logDetJacobianForce(int old, GaugeField &force)
   {
+    GRID_TRACE("logDetJacobianForce");
     force =Zero();
     GaugeField force_det(force.Grid());
 
@@ -2183,12 +2173,17 @@ public:
 
       double end = usecond();
       double time = (end - start)/ 1e3;
-      std::cout << GridLogMessage << "GaugeConfigurationMasked: logDetJacobian took " << time << " ms" << std::endl;  
+      std::cout << GridLogMessage << "GaugeConfigurationMasked: logDetJacobian took " << time << " ms" << std::endl;
+#if 0 //DEBUG
+      RealD ln_det2 = logDetJacobian(1);
+      std::cout << GridLogMessage << " DEBUG: logDetJacobian_diff " << abs(ln_det2-ln_det) << std::endl;
+#endif
     }
     return ln_det;
   }
   void logDetJacobianForce(GaugeField &force)
   {
+    GRID_TRACE("logDetJacobianForce");
     force =Zero();
     GaugeField force_det(force.Grid());
 
@@ -2248,7 +2243,7 @@ public:
 
       force=Ta(force); // Ta
       
-#if 1 // debug
+#if 0 // debug
       GaugeField force_debug(force.Grid()); 
       logDetJacobianForce(1,force_debug);
       std::cout << GridLogMessage << " DEBUG: logDetJacobianForce_diff " << norm2(force-force_debug) << std::endl;
@@ -2305,6 +2300,7 @@ private:
   virtual GaugeField AnalyticSmearedForce(const GaugeField& SigmaKPrime,
 					  const GaugeField& GaugeK,int level) 
   {
+    GRID_TRACE("AnalyticSmearedForce");
     GridBase* grid = GaugeK.Grid();
     GaugeField SigmaK(grid), iLambda(grid);
     GaugeField SigmaKPrimeA(grid);
@@ -2379,9 +2375,8 @@ public:
   /* Standard constructor */
   virtual ~SmearedConfigurationMasked()
   {
-    delete UGrid;
     delete UrbGrid;
-    delete g1Grid;
+    //delete g1Grid; //could have been already removed; dangling pt? as it can get destroyed after exiting the constructor
     gStencils.clear();
     gStencils_smear.clear();
   }
@@ -2518,6 +2513,7 @@ public:
   
   virtual void smeared_force(GaugeField &SigmaTilde) 
   {
+    GRID_TRACE("smeared_force");
     if (this->smearingLevels > 0)
     {
       double start = usecond();

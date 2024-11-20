@@ -39,14 +39,29 @@
 #endif
 
 /* HIP save and restore compile environment*/
+#if 0
+
 #ifdef GRID_HIP
 #pragma push
 #pragma push_macro("__HIP_DEVICE_COMPILE__")
 #endif
 #define EIGEN_NO_HIP
 
+#else
+
+#ifdef GRID_HIP
+#undef EIGEN_NO_HIP //not sure if this makes Eigen work on AMD GPUs
+#endif
+
+#endif
+
+#if 1
 #include <Grid/Eigen/Dense>
 #include <Grid/Eigen/unsupported/CXX11/Tensor>
+#else
+#include <Grid/eigen/Eigen/Dense>
+#include <Grid/eigen/Eigen/unsupported/CXX11/Tensor>
+#endif
 
 /* NVCC restore */
 #ifdef __NVCC__REDEFINE__
@@ -63,11 +78,12 @@
 #endif
 
 /*HIP restore*/
+/*
 #ifdef __HIP__REDEFINE__
 #pragma pop_macro("__HIP_DEVICE_COMPILE__")
 #pragma pop
 #endif
-
+*/
 #if defined __GNUC__
 #pragma GCC diagnostic pop
 #endif

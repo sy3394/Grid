@@ -94,6 +94,34 @@ Lattice<iScalar<iScalar<iScalar<Vec> > > > Determinant(const Lattice<iScalar<iSc
   return ret;
 }
 
+template<int N, class Vec>
+Lattice<iScalar<iScalar<iScalar<Vec> > > > Determinant_real(const Lattice<iScalar<iScalar<iMatrix<Vec, N> > > > &Umu)
+{
+  GridBase *grid=Umu.Grid();
+  auto osites = grid->oSites();
+  const int Nsimd=grid->Nsimd();
+  Lattice<iScalar<iScalar<iScalar<Vec> > > > ret(grid);
+  ret.Checkerboard() = Umu.Checkerboard();
+  autoView(Umu_v,Umu,CpuRead);
+  autoView(ret_v,ret,CpuWrite);
+  thread_for(site,osites,{
+      Eigen::MatrixXd EigenU = Eigen::MatrixXd::Zero(N,N);
+      
+      iScalar<iScalar<iMatrix<ComplexD, N> > > Us;
+      iScalar<iScalar<iScalar<ComplexD> > > Ud;
+      for(int lane=0;lane<Nsimd;lane++){
+	Us = extractLane(lane,Umu_v[site]);
+	for(int i=0;i<N;i++){
+	  for(int j=0;j<N;j++){
+	    EigenU(i,j)=real(Us()()(i,j));
+	  }}
+	Ud()()() = EigenU.determinant();
+	insertLane(lane,ret_v[site],Ud);
+      }
+    });
+  return ret;
+}
+
 template<int N>
 Lattice<iScalar<iScalar<iMatrix<vComplexD, N> > > > Inverse(const Lattice<iScalar<iScalar<iMatrix<vComplexD, N> > > > &Umu)
 {
@@ -153,14 +181,14 @@ Lattice<iScalar<iScalar<iMatrix<vComplexD, N> > > > Inverse(const Lattice<iScala
   return ret;
 }
 
-#if 1
 template<int N>
 Lattice<iScalar<iScalar<iMatrix<vComplexD, N> > > > Inverse_RealPart(const Lattice<iScalar<iScalar<iMatrix<vComplexD, N> > > > &Umu)
 {
-GridBase *grid=Umu.Grid();
+  GridBase *grid=Umu.Grid();
   auto osites = grid->oSites();
   const int Nsimd=grid->Nsimd();
   Lattice<iScalar<iScalar<iMatrix<vComplexD, N> > > > ret(grid);
+#if 1
   autoView(Umu_v,Umu,CpuRead);
   autoView(ret_v,ret,CpuWrite);
   thread_for(site,osites,{
@@ -183,9 +211,29 @@ GridBase *grid=Umu.Grid();
       insertLane(lane,ret_v[site],Ui);
     }
   });
+#else // Eigen supports inversion on GPU's only for matrices of size < 5
+  iScalar<iScalar<iMatrix<ComplexD, N> > > Ui;
+  autoView(Umu_v,Umu,AcceleratorRead);
+  autoView(ret_v,ret,AcceleratorWrite);
+  accelerator_for(ss,grid->oSites(),Nsimd,{
+      Eigen::MatrixXd EigenU = Eigen::MatrixXd::Zero(N,N);
+      for(int i=0;i<N;i++){
+        for(int j=0;j<N;j++){
+          EigenU(i,j) = real(Umu_v(ss)()()(i,j));
+        }}
+      //Linker error occurs w/r/t Eigen when combining the below two lines into a one liner
+      Eigen::MatrixXd EigenUinv; 
+      EigenUinv= EigenU.inverse();
+      for(int i=0;i<N;i++){
+        for(int j=0;j<N;j++){
+          Ui()()(i,j) = EigenUinv(i,j);
+        }}
+      coalescedWrite(ret_v[ss],Ui);
+    });
+#endif
  return ret;
 }
-#endif
+
 NAMESPACE_END(Grid);
 #endif
 

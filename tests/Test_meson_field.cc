@@ -135,11 +135,12 @@ int main(int argc, char *argv[])
   FileName.append(".bin");
 #endif
 
+#if 0 //FIXME: Causes error when including Eigen; commented out for now
   Default_Writer w(FileName);
   write(w,"phi_phi",Mpp);
   write(w,"phi_rho",Mpr);
   write(w,"rho_rho",Mrr);
-
+#endif
   // epilogue
   std::cout << GridLogMessage << "Grid is finalizing now" << std::endl;
   Grid_finalize();
