@@ -2,7 +2,8 @@ cmake_minimum_required(VERSION 3.12 FATAL_ERROR)
 
 project(GridViewer)
 
-list(APPEND CMAKE_PREFIX_PATH "/home/paboyle/Visualisation/install/")
+#list(APPEND CMAKE_PREFIX_PATH "/Users/peterboyle/QCD/vtk/VTK-9.4.2-install/")
+list(APPEND CMAKE_PREFIX_PATH "/ccs/home/syamamoto/src/vtk/build/")
 
 find_package(VTK COMPONENTS 
   CommonColor
@@ -24,14 +25,21 @@ if (NOT VTK_FOUND)
   message(FATAL_ERROR "GridViewer: Unable to find the VTK build folder.")
 endif()
 
+
 # Prevent a "command line is too long" failure in Windows.
 set(CMAKE_NINJA_FORCE_RESPONSE_FILE "ON" CACHE BOOL "Force Ninja to use response files.")
 
 add_executable(FieldDensityAnimate MACOSX_BUNDLE FieldDensityAnimate.cxx )
-  target_link_libraries(FieldDensityAnimate PRIVATE ${VTK_LIBRARIES}
-)
+target_link_libraries(FieldDensityAnimate PRIVATE ${VTK_LIBRARIES})
+
+add_executable(FieldDensityAnimateMultiFiles MACOSX_BUNDLE FieldDensityAnimateMultiFiles.cxx )
+target_link_libraries(FieldDensityAnimateMultiFiles PRIVATE ${VTK_LIBRARIES})
+
+add_executable(FieldDensityFindRegion MACOSX_BUNDLE FieldDensityFindRegion.cxx )
+target_link_libraries(FieldDensityFindRegion PRIVATE ${VTK_LIBRARIES})
+
 # vtk_module_autoinit is needed
 vtk_module_autoinit(
-  TARGETS FieldDensityAnimate
+  TARGETS FieldDensityAnimate FieldDensityAnimateMultiFiles FieldDensityFindRegion
   MODULES ${VTK_LIBRARIES}
 )

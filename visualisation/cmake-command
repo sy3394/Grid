@@ -1,17 +1,25 @@
-export grid_config=/home/paboyle/GPT/install/bin/grid-config
-libs=`$grid_config --libs`
-ldflags=`$grid_config --ldflags`
-cxxflags=`$grid_config --cxxflags`
-cxx=`$grid_config --cxx`
-cc=icx
+DIR=/ccs/home/syamamoto/tmp/src/Grid_cleanedup_for_pullrequest/systems/Frontier
 
-mkdir build
+libs=`$DIR/grid-config --libs`
+ldflags=`$DIR/grid-config --ldflags`
+ldflags=$ldflags -L/ccs/home/syamamoto/tmp/src/Grid_cleanedup_for_pullrequest/systems/Frontier/Grid/
+
+cxxflags=`$DIR/grid-config --cxxflags`
+cxxflags_add=`$DIR/grid-config --cxx | awk '{print $2}'`
+cxx=`$DIR/grid-config --cxx | awk '{print $1}'`
+
+echo $libs
+echo
+echo $cxxflags
+echo
+echo $cxxflags_add
+echo
+echo $cxx
+
+mkdir -p build
 cd build
+pwd
+export LDFLAGS="$ldflags $libs"
+echo $LDFLAGS
 
-echo CC $cc
-echo CXX $cxx
-echo CXXFLAGS $cxxflags
-echo LDFLAGS  $ldflags
-echo LIBS  $libs
-
-LDFLAGS="$ldflags $libs " cmake .. -DCMAKE_C_COMPILER=$cc -DCMAKE_CXX_COMPILER="$cxx" -DCMAKE_CXX_FLAGS="$cxxflags "
+cmake .. -DCMAKE_CXX_COMPILER=$cxx -DCMAKE_CXX_FLAGS="$cxxflags $cxxflags_add -I/ccs/home/syamamoto/tmp/src/Grid_cleanedup_for_pullrequest/ -I$DIR/Grid/ " 
