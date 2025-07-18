@@ -3,7 +3,7 @@ echo spack
 . /autofs/nccs-svm1_home1/paboyle/Crusher/Grid/spack/share/spack/setup-env.sh
 
 module load cce/15.0.1
-module load rocm/5. #rocm/5.3.0
+module load rocm/5.3.0
 module load cray-fftw
 module load craype-accel-amd-gfx90a
 

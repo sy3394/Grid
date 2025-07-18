@@ -88,6 +88,7 @@ namespace Grid {
 
   struct WFParameters: Serializable {
     GRID_SERIALIZABLE_CLASS_MEMBERS(WFParameters,
+	    bool, is_flow,
             int, steps,
             double, step_size,
             int, meas_interval,
@@ -152,7 +153,68 @@ int main(int argc, char** argv) {
     FieldMetaData header;
     std::string file(LanParams.fpath + "/" + LanParams.fname + "." + std::to_string(i_conf));
     NerscIO::readConfiguration(Umu,header,file);
-    WF.smear(Uflow, Umu);
+
+    /**********    Compute E density and TC density during WF     ****************/
+    std::string file_pre  = WFParams.path + "/";
+    std::string file_post = LanParams.fname + "." + std::to_string(i_conf);
+    WF.addMeasurement(WFParams.meas_interval, [&file_pre,&file_post,&i_conf](int step, RealD t, const typename PeriodicGimplR::GaugeField &U){
+
+      int tmp = std::round(t);
+      std::string tau = std::to_string(tmp);
+  
+      typedef typename PeriodicGimplR::GaugeLinkField GaugeMat;
+      typedef typename PeriodicGimplR::ComplexField ComplexField;
+      
+      assert(Nd == 4);
+      
+      GaugeMat F(U.Grid());
+      ComplexField R(U.Grid());
+      R = Zero();
+      
+      for(int mu=0;mu<3;mu++){
+	for(int nu=mu+1;nu<4;nu++){
+	  WilsonLoops<PeriodicGimplR>::FieldStrength(F, U, mu, nu);
+	  R = R + trace(F*F);
+	}
+      }
+      R = (-1.0) * R;
+      
+      //// Taken from qcd/utils/WilsonLoops.h
+      
+      // Bx = -iF(y,z), By = -iF(z,y), Bz = -iF(x,y)
+      GaugeMat Bx(U.Grid()), By(U.Grid()), Bz(U.Grid());
+      WilsonLoops<PeriodicGimplR>::FieldStrength(Bx, U, Ydir, Zdir);
+      WilsonLoops<PeriodicGimplR>::FieldStrength(By, U, Zdir, Xdir);
+      WilsonLoops<PeriodicGimplR>::FieldStrength(Bz, U, Xdir, Ydir);
+      
+      // Ex = -iF(t,x), Ey = -iF(t,y), Ez = -iF(t,z)
+      GaugeMat Ex(U.Grid()), Ey(U.Grid()), Ez(U.Grid());
+      WilsonLoops<PeriodicGimplR>::FieldStrength(Ex, U, Tdir, Xdir);
+      WilsonLoops<PeriodicGimplR>::FieldStrength(Ey, U, Tdir, Ydir);
+      WilsonLoops<PeriodicGimplR>::FieldStrength(Ez, U, Tdir, Zdir);
+      
+      double coeff = 8.0/(32.0*M_PI*M_PI);
+      ComplexField qfield = coeff*trace(Bx*Ex + By*Ey + Bz*Ez);
+      
+      std::string efile = file_pre + "E_dnsty_" + tau + "_" + file_post;
+      writeFile(R,efile);
+      std::string tfile = file_pre + "Top_dnsty_" + tau + "_" + file_post;
+      writeFile(qfield,tfile);
+      
+      RealD WFlow_TC5Li   = WilsonLoops<PeriodicGimplR>::TopologicalCharge5Li(U);
+      RealD E = real(sum(R))/ RealD(U.Grid()->gSites());
+      RealD T = real( sum(qfield) );
+      Coordinate scoor; for (int mu=0; mu < Nd; mu++) scoor[mu] = 0;
+      RealD E0 = real(peekSite(R,scoor));
+      RealD T0 = real(peekSite(qfield,scoor));
+      std::cout << GridLogMessage << "[WilsonFlow] Saved energy density (clover) & topo. charge density: "  << i_conf << " " << step << "  " << tau << "  "
+		<< "(E_avg,T_sum) " << E << " " << T << " (E, T at origin) " << E0 << " " << T0 << " 5Li " << WFlow_TC5Li << std::endl;    
+    });
+
+    if( WFParams.is_flow )
+      WF.smear(Uflow, Umu);
+    else
+      Uflow = Umu;
 
     // TODO: add the following in the measurement for WF if to be repeated for diff flow times
     std::cout << GridLogMessage << "Start: " << file << std::endl;
@@ -258,6 +320,7 @@ int main(int argc, char** argv) {
       eMe[i] = fabs(eMe[i]);
       eMe_copy[i] = eMe[i];
     }
+    int pair_flag = 1;
     sort(eMe_copy.begin(), eMe_copy.end());
     for(int i = 0; i < Nconv; i++){
       for(int j = 0; j < Nconv; j++){
@@ -273,13 +336,8 @@ int main(int argc, char** argv) {
     std::cout << GridLogMessage << eMe                                 << std::endl;
     std::cout << GridLogMessage << "Sorted <G5R5M(evec), G5R5M(evec)>" << std::endl;
     std::cout << GridLogMessage << eMMe                                << std::endl;
-    for(int i = 0; i < Nconv; i++) {
-      sp_sum -= localInnerProduct(finalevec[i],G5R5Mevec[i]) - 0.5*(eMe[i]-mass)*localInnerProduct(finalevec[i],finalevec[i]);
-    }
     conv_evecs_all.push_back(finalevec);    
-    std::string sp_file = LanParams.outpath + "/" + std::to_string(i_conf) + "/sp_sum_tau_"+tau+"."+std::to_string(i_conf);
-    FermionField sp_sum(FGrid); sp_sum = Zero();
-    writeFile(sp_sum,sp_file);
+
     
     /***********************************************************************/
     /*                   calculate chirality matrix                        */
@@ -290,13 +348,27 @@ int main(int argc, char** argv) {
     for(int i = 0; i < Nconv; i++){
       G5evec[i] = Zero();
       for(int j = 0; j < Ls/2; j++){
-	axpby_ssp(G5evec[i], 1., finalevec[i], 0., G5evec[i], j, j);
-      }
-      for(int j = Ls/2; j < Ls; j++){
 	axpby_ssp(G5evec[i], -1., finalevec[i], 0., G5evec[i], j, j);
       }
+      for(int j = Ls/2; j < Ls; j++){
+	axpby_ssp(G5evec[i], 1., finalevec[i], 0., G5evec[i], j, j);
+      }
     }
-    
+    // Compute spectral reconstruction of topological charge density
+    std::string sp_file = LanParams.outpath + "/" + std::to_string(i_conf) + "/sp_sum_tau_"+tau+"."+std::to_string(i_conf);
+    LatticeComplexD sp_sum(FGrid); sp_sum = Zero();
+    for(int i = 0; i < Nconv; i++) {
+      RealD sign = (eMe[i]>=0)? 1.0 : -1.0;
+      RealD abs_lambda = sqrt(eMe[i]*eMe[i] - mass*mass);
+      sp_sum = sp_sum - localInnerProduct(finalevec[i],G5evec[i]) + 0.5*sign*abs_lambda*localInnerProduct(finalevec[i],finalevec[i]);
+    }
+    LatticeComplexD sp_sum4D(UGrid), tmp_F(UGrid); sp_sum4D = Zero();
+    for(int i=0; i<Ls;i++){
+      ExtractSlice(tmp_F,sp_sum,i,0);
+      sp_sum4D = sp_sum4D + tmp_F;
+    }
+    writeFile(sp_sum4D,sp_file);
+
     for(int i = 0; i < Nconv; i++){
       chiral_matrix_real[i].resize(Nconv);
       chiral_matrix[i].resize(Nconv);
@@ -335,25 +407,24 @@ int main(int argc, char** argv) {
 	}
 	fprintf(fp,"\n");
       }
-      fp.close();
+      fclose(fp);
     }
   }
   // Compute tensor of <evecs_i(ii), evecs_j(jj)> where evecs_i is the conv'ed evecs for i^th config
   // row major
-  if( UGrid->IsBoss()){
-    FILE *fp = fopen((LanParams.outpath + "/" + std::to_string(i_conf) + "/evec_tensor_tau_"+tau+"_"+std::to_string(i_conf)).c_str(),"w");
-    for(int i=0; i<conv_evecs_all.size()-1; i++){
-      for(int j=i+1; j<conv_evecs_all.size(); j++){
-	for(int ii=0; ii<conv_evecs_all[i].size(); ii++){
-	  for(int jj=0 jj<ii; jj++) fprintf(fp,"%lf ", 0);
-	  for(int jj=ii jj<conv_evecs_all[j].size(); jj++){
-	    ComplexD tmp = localInnerProduct(conv_evecs_all[i][ii],conv_evecs_all[j][jj]);
-	    fprintf(fp,"%lf ", norm2(tmp));
+  FILE *fp;
+  if( UGrid->IsBoss()) fp = fopen((LanParams.outpath + "/evec_tensor_tau_"+tau).c_str(),"w");
+  for(int i=0; i<conv_evecs_all.size()-1; i++)
+    for(int j=i+1; j<conv_evecs_all.size(); j++)
+      for(int ii=0; ii<conv_evecs_all[i].size(); ii++){
+	if( UGrid->IsBoss()) for(int jj=0; jj<ii; jj++) fprintf(fp,"%lf ", 0.0);
+	for(int jj=ii; jj<conv_evecs_all[j].size(); jj++){
+	  RealD tmp = abs(innerProduct(conv_evecs_all[i][ii],conv_evecs_all[j][jj]));
+	  if( UGrid->IsBoss()) fprintf(fp,"%lf ", tmp);
 	  }
-	  fprintf(fp,"\n");
-	}}}
-    fp.close();
-  }
+	  if( UGrid->IsBoss()) fprintf(fp,"\n");
+	}
+  if( UGrid->IsBoss()) fclose(fp);
   
   Grid_finalize();
 }
