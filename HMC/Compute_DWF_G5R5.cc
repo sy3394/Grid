@@ -346,7 +346,7 @@ int main(int argc, char** argv) {
     std::vector<std::vector<ComplexD>> chiral_matrix(Nconv);
     std::vector<std::vector<RealD>>    chiral_matrix_real(Nconv);
     for(int i = 0; i < Nconv; i++){
-      G5evec[i] = Zero();
+      G5evec[i] = Zero();//Did it take into account R5?
       for(int j = 0; j < Ls/2; j++){
 	axpby_ssp(G5evec[i], -1., finalevec[i], 0., G5evec[i], j, j);
       }
