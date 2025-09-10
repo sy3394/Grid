@@ -4,6 +4,8 @@
 //
 // Modified heavily by Peter Boyle to display lattice field theory data as movies and compare multiple files
 
+#define AXES
+
 #include <vtkActor.h>
 #include <vtkCamera.h>
 #include <vtkMetaImageReader.h>
@@ -21,6 +23,14 @@
 #include <vtkCallbackCommand.h>
 #include <vtkTextActor.h>
 #include <vtkTextProperty.h>
+
+#include <vtkAxesActor.h>
+#include <vtkAxesActor.h>
+#ifdef AXES
+#include <vtkOrientationMarkerWidget.h>
+#include <vtkRenderWindowInteractor.h>
+#include <vtkTransform.h>
+#endif
 
 #define MPEG
 #ifdef MPEG
@@ -54,6 +64,7 @@ int take_diff = 0;
 int dynm_dir = 3;
 std::vector<int> omit_dirs(1,4);
 std::vector<int> omit_intcpts(1,0);
+int xlate_omit_dir=-1;
 bool sum_omit_dir=0;
 bool save_file=0;
 
@@ -87,6 +98,8 @@ public:
     coor_map   = nullptr;
     timerId    = 0;
     maxCount   = -1;
+    dynmIndexF.clear();
+    use_dynmIndexF = 0;
   }
   
   static FrameUpdater* New()
@@ -108,18 +121,21 @@ public:
 	  ++this->TimerCount;
 
 
-	  // Make a new frame
+	  /*****  Make a new frame  **********/
 	  for(int x0=0;x0<ext_latt_size[coor_map[0]];x0++){
 	    for(int x1=0;x1<ext_latt_size[coor_map[1]];x1++){
 	      for(int x2=0;x2<ext_latt_size[coor_map[2]];x2++){
+		
 		RealD value = 0.0;
 		Coordinate site(std::vector(n_dims,0));
+		
 		// the first two frame dim's are always latt dim
 		site[coor_map[0]] = (x0+xoff)%ext_latt_size[coor_map[0]]; site[coor_map[1]] = x1;
-		if(dynm_dir<n_dims) site[dynm_dir] = x3;
-		else                site[coor_map[2]] = x2;
+		if(dynm_dir<n_dims) site[dynm_dir] = x3;    // dynm_dir != file index => coor_map[2] != latt index 
+		else                site[coor_map[2]] = x2; // dynm_dir == file index => coor_map[2] == latt index
 
-		if(sum_omit_dir){// Assume: omit_dir != file_index_dir if summed over the dir
+		if(sum_omit_dir){
+		  // ASSUME: omit_dir != file_index_dir if summed over the dir
 		  int x_max = 1; for(int &dir : omit_dirs) x_max *= ext_latt_size[dir];
 		  for(int xi=0; xi<x_max; xi++){
 		    int x_tmp = xi;
@@ -132,12 +148,15 @@ public:
 		}
 		else {
 		  for(int i=0; omit_dirs.size()-1; i++) site[omit_dirs[i]] = omit_intcpts[i];
-		  // The last elem of omit_dirs can be the file index
-		  if(omit_dirs.back()<n_dims){ // it is not file index
+		  /***  The last elem of omit_dirs can be the file index  ***/
+
+		  // The last omit dir !=t file index => one frame index can be a file index
+		  if(omit_dirs.back()<n_dims){ 
 		    site[omit_dirs.back()] = omit_intcpts.back();
 		    value = coor_map[2] == n_dims? real(peekSite(*grid_data[x2],site)) : real(peekSite(*grid_data[x3],site));
 		  }
-		  else { // it is file index
+		  // The last omit dir == file index => all frame dims are latt dims
+		  else { 
 		    site[coor_map[2]] = x2;
 		    value = real(peekSite(*grid_data[0],site));
 		  }
@@ -147,20 +166,38 @@ public:
 
 	  }}}
 
-	  snprintf(text_string,max,"%s=%d",dynm_labels[dynm_dir].c_str(),x3);
+	  
+	  /*****   Put frame counter on the upper left corner   ***********/
+	  if(use_dynmIndexF)
+	    snprintf(text_string,max,"%s=%s",dynm_labels[dynm_dir].c_str(),dynmIndexF[x3].c_str());
+	  else
+	    snprintf(text_string,max,"%s=%d",dynm_labels[dynm_dir].c_str(),x3);
+	  if(xlate_omit_dir>=0){
+	    char tmp[max];
+	    strncpy(tmp,text_string, max);
+	    snprintf(text_string,max,"%s %s=%d", tmp,
+		     dynm_labels[omit_dirs[xlate_omit_dir]].c_str(), omit_intcpts[xlate_omit_dir]);
+	  }
+
 	  text->SetInput(text_string);
       
 
-	  if ( xlate ) { 
+	  /*****  Update frame dims   *************************/
+	  if ( xlate ) {
+	    // When translating the first frame index, dynamic index is updated only after a complete translation
 	    xoff = (xoff + 1)%ext_latt_size[coor_map[0]];
 	    if ( xoff== 0 ) x3 = (x3+1)%ext_latt_size[dynm_dir];
 	  } else {
 	    x3 = (x3+1)%ext_latt_size[dynm_dir];
+	    if( xlate_omit_dir>=0 && x3==0 ) omit_intcpts[xlate_omit_dir] = (omit_intcpts[xlate_omit_dir]+1)%ext_latt_size[omit_dirs[xlate_omit_dir]];
 	    //if ( x3 == 0 ) 	xoff = (xoff + 1)%ext_latt_size[coor_map[0]];
 	  }
 
-
-	  std::cout << this->TimerCount<<"/"<<maxCount<< " xoff "<<xoff<<" t_updated "<< x3 <<std::endl;
+	  
+	  /*****   Print the log to stdout   ***********/
+	  std::cout << this->TimerCount<<"/"<<maxCount<< " xoff "<<xoff<<" t_updated "<< x3 <<" "<< omit_intcpts[xlate_omit_dir];
+	  if(use_dynmIndexF) std::cout<<" "<<dynmIndexF[x3]<<std::endl;
+	  else std::cout<<std::endl;
 	  imageData->Modified();
 
 	  vtkRenderWindowInteractor* iren = dynamic_cast<vtkRenderWindowInteractor*>(caller);
@@ -194,6 +231,8 @@ public:
   double rms;
   isosurface * posExtractor;
   isosurface * negExtractor;
+  std::vector<std::string> dynmIndexF;
+  bool use_dynmIndexF;
 };
 
 
@@ -240,12 +279,10 @@ int main(int argc, char* argv[])
   GridCartesian * grid  = &UGrid;
     
  
-  std::cout << argc << " command Line arguments "<<std::endl;
-  for(int c=0;c<argc;c++) {
-    std::cout << " - "<<argv[c]<<std::endl;
-  }
+  /***********   READ INPUT           *******************************************
 
-  /*
+
+    
   For now,
     - xlate: the first non-omitted coor
     - n_dim: #dimensions of the lattice
@@ -258,11 +295,20 @@ int main(int argc, char* argv[])
         - index on input files is treated as a dimension of the frame
 	- if dynm_dir = n_dim; n_dim-1 out of n_dim latt dim's are displayed
 	- if dynm_dir < n_dim; only 2 out of 4 latt dim is displayed + sim. time
- */
+  ************************************************************************************/
+  std::string separator = "smr.";
   std::vector<std::string> file_list, data_fname;
   double default_contour = 1.0;
+  int use_fname_as_frame_counter = 0, pre_sum_Ls = 0;
+  std::ifstream index_list;
   
   std::string arg;
+  
+  std::cout << argc << " command Line arguments "<<std::endl;
+  for(int c=0;c<argc;c++) {
+    std::cout << " - "<<argv[c]<<std::endl;
+  }
+
 #ifdef MPEG
   std::string mpeg_fname = "movie.avi";
   if( GridCmdOptionExists(argv,argv+argc,"--mpeg") ){
@@ -276,12 +322,14 @@ int main(int argc, char* argv[])
     GridCmdOptionInt(arg,Ls);
     assert(Ls !=0 && "Ls needs to be greater than 0 when specified");
     grid = SpaceTimeGrid::makeFiveDimGrid(Ls, &UGrid);
-    GridCartesian * FGrid = SpaceTimeGrid::makeFiveDimGrid(Ls, &UGrid);
     latt_size = grid->GlobalDimensions();
     dynm_labels.insert(dynm_labels.begin(),"Ls");
     omit_dirs[0] = 5;
     n_dims++;
-    std::cout<<FGrid->GlobalDimensions()<<" "<<latt_size<<std::endl;
+    std::cout<<grid->GlobalDimensions()<<" "<<latt_size<<std::endl;
+  }
+  if( GridCmdOptionExists(argv,argv+argc,"--pre_sum_Ls") ){
+    pre_sum_Ls = 1;
   }
   if( GridCmdOptionExists(argv,argv+argc,"--xlate") ){
     xlate = 1;
@@ -308,6 +356,14 @@ int main(int argc, char* argv[])
   if( GridCmdOptionExists(argv,argv+argc,"--sum_omit_dir") ){
     sum_omit_dir = 1;
   }
+  if( GridCmdOptionExists(argv,argv+argc,"--xlate_omit_dir") ){
+    arg=GridCmdOptionPayload(argv,argv+argc,"--xlate_omit_dir");
+    GridCmdOptionInt(arg,xlate_omit_dir);
+    assert( !sum_omit_dir && xlate_omit_dir<omit_dirs.size() &&
+    //assert(!sum_omit_dir && std::find(omit_dirs.begin(), omit_dirs.end(), xlate_omit_dir) != omit_dirs.end() &&
+	   "xlate_omit_dir is an index of the array of omit_dirs");
+  }
+
   if( GridCmdOptionExists(argv,argv+argc,"--take_adj_diff") ){
     take_diff = 1;
   }
@@ -320,20 +376,53 @@ int main(int argc, char* argv[])
     std::cout<<"files "<<arg<<std::endl;
     GridCmdOptionCSL(arg,file_list);
   }
+  if( GridCmdOptionExists(argv,argv+argc,"--use_fname_as_frame_counter") ){
+    use_fname_as_frame_counter = 1;
+    arg = GridCmdOptionPayload(argv,argv+argc,"--use_fname_as_frame_counter");
+    if(!arg.empty()) separator = arg;
+  }
+  if( GridCmdOptionExists(argv,argv+argc,"--index_file") ){
+    arg = GridCmdOptionPayload(argv,argv+argc,"--index_file");
+    std::cout<<"index file "<<arg<<std::endl;
+    if(!arg.empty()) index_list.open(arg,std::ifstream::in);
+  }
   if( GridCmdOptionExists(argv,argv+argc,"--save_data_to") ){
     save_file = 1;
     arg = GridCmdOptionPayload(argv,argv+argc,"--save_data_to");
     if(!arg.empty()) data_f.open(arg,std::ios::trunc);
   }
 
-
+  /***************************************************************/
+  /********   Preprocess Data   **********************************/
+  /***************************************************************/
   // Read in data; take diff when demanded
   FieldMetaData header;
   std::vector<LatticeComplexD> data(file_list.size()-take_diff,grid);
   for(int c=0;c<data.size();c++) {
     std::cout << "Reading file: "<<file_list[c]<<std::endl;
-    readFile(data[c],file_list[c]);
+    readFile(data[c],file_list[c]); data[c] = data[c];
   }
+  if(pre_sum_Ls && Ls>0){
+    std::vector<LatticeComplexD> tmp(data.size(), &UGrid);
+    LatticeComplexD Fsum(&UGrid), tmp_F(&UGrid); 
+    for(int c=0;c<data.size();c++) {
+      Fsum = Zero();
+      for(int i=0; i<Ls;i++){
+	ExtractSlice(tmp_F,data[c],i,0);
+        Fsum = Fsum + tmp_F;
+      }
+      tmp[c] = Fsum;
+    }
+    data.clear();
+    for(int c=0;c<tmp.size();c++)
+      data.push_back(tmp[c]);
+    grid = &UGrid;
+    latt_size = grid->GlobalDimensions();
+    dynm_labels.erase(dynm_labels.begin());
+    n_dims--;
+    std::cout<<"Ls pre summed: New Dimensions = " << grid->GlobalDimensions()<<" "<<latt_size<<" "<<n_dims<<std::endl;
+  }
+  
   if(take_diff){
     for(int c=0;c<data.size()-1;c++)
       data[c] = data[c+1] - data[c];
@@ -342,7 +431,10 @@ int main(int argc, char* argv[])
     readFile(tmp,file_list.back());
     data.back() = tmp - data.back();
   }
-
+  
+  /****************************************************************/
+  /**************      Determine Frame Dimensions    **************/
+  /****************************************************************/
   int coor_map[3] = {0,1,2}, ext_latt_size[latt_size.size()+1];
   for(int d=0,d_c=0,i_o=0; d<3; d++, d_c++){
     if( d_c == dynm_dir ) d_c++;
@@ -351,10 +443,15 @@ int main(int argc, char* argv[])
   }
   for(int d=0; d<latt_size.size();d++) ext_latt_size[d] = latt_size[d]; ext_latt_size[latt_size.size()] = data.size();
 
-  for(auto F: data) std::cout<<"Max: "<<std::sqrt(maxLocalNorm2(F))<<" "<<real(TensorRemove(sum(F)))<<std::endl;
+  // DEBUG
+  for(auto F: data) std::cout<<"Max: "<<std::sqrt(maxLocalNorm2(F))<<" "<<real(TensorRemove(sum(F)))<<" "<<std::sqrt(maxLocalNorm2(F)/norm2(F)*grid->gSites() )<<std::endl;
   for(int d=0;d<3;d++) std::cout<<d<<" "<<coor_map[d]<<std::endl;
   for(int s : ext_latt_size) std::cout<<s<<std::endl;
-  
+
+
+  /****************************************************************/
+  /****************    Setup Frames    ****************************/
+  /****************************************************************/
   // Common things:
   vtkNew<vtkNamedColors> colors;
   std::array<unsigned char, 4> posColor{{240, 184, 160, 255}};  colors->SetColor("posColor", posColor.data());
@@ -368,10 +465,13 @@ int main(int argc, char* argv[])
   vtkNew<vtkRenderWindowInteractor> iren;
   iren->SetRenderWindow(renWin);
 
+  // Set #Total Frames
   int frameCount = ext_latt_size[dynm_dir];// TODO: can take from input which dir is translated
   if ( !mpeg ) frameCount *= ext_latt_size[coor_map[0]];
+  if(xlate_omit_dir>=0) frameCount *= ext_latt_size[omit_dirs[xlate_omit_dir]];
 
-  double max_cntr = 0;
+  double max_cntr = 0; // max slider value; used in interactive slider widget
+  // If file index is not omitted but presented in the frame, all files are displayed in a single frame
   int fc = omit_dirs.back()<latt_size.size()? 1: data.size(); // TODO: can increase #frames corresp. to diff (omit_dir)-intercepts if omit_dir<4
   std::vector<FrameUpdater *> fu_list;
   for (int f=0;f<fc;f++){
@@ -391,18 +491,22 @@ int main(int argc, char* argv[])
     
     vtkNew<vtkRenderer> aRenderer;
     renWin->AddRenderer(aRenderer);
-    
+
+    //////// Set contour scale
     double vol = data[f].Grid()->gSites();
 
     auto nrm    = norm2(data[f]);
-    auto nrmbar = nrm/vol;
-    auto rms    = sqrt(nrmbar);
-    double norm_f = std::sqrt(maxLocalNorm2(data[f]));
-    if(max_cntr<norm_f/rms) max_cntr = norm_f/rms;
+    //auto nrmbar = nrm/vol;
+    auto rms    = sqrt(nrm/vol);
+    double max_local_norm = std::sqrt(maxLocalNorm2(data[f]));
+    if(max_cntr<max_local_norm/rms) max_cntr = max_local_norm/rms;
 
-    std::cout<<"ratio: "<<norm_f/rms<<std::endl;
-    double contour = default_contour * rms; // default to 1 x RMS
+    double contour = default_contour < 0 ? -default_contour * max_local_norm : default_contour * rms; // default to 1 x RMS
 
+    std::cout<<"ratio(|data|_inf/|data|_l2: "<<max_local_norm/rms<<" "<<max_local_norm<<" "<<rms<<std::endl;
+    std::cout<<"defalt contour: "<<default_contour<<" countour "<<contour<<" rms: "<<rms<<std::endl;
+
+    
     // The following reader is used to read a series of 2D slices (images)
     // that compose the volume. The slice dimensions are set, and the
     // pixel spacing. The data Endianness must also be specified. The reader
@@ -412,29 +516,6 @@ int main(int argc, char* argv[])
     vtkNew<vtkImageData> imageData;
     imageData->SetDimensions(ext_latt_size[coor_map[0]],ext_latt_size[coor_map[1]],ext_latt_size[coor_map[2]]);
     imageData->AllocateScalars(VTK_DOUBLE, 1);
-    /*
-    for(int x0=0;x0<ext_latt_size[coor_map[0]];x0++){
-      for(int x1=0;x1<ext_latt_size[coor_map[1]];x1++){
-	for(int x2=0;x2<ext_latt_size[coor_map[2]];x2++){
-	  RealD value = 0.0;
-	  Coordinate site({0,0,0,0}); // can take (omit_dir)-intercepts from input
-	  // the first two frame dim's are always latt dim
-	  site[coor_map[0]] = x0; site[coor_map[1]] = x1;
-	  if(coor_map[2]<4) site[coor_map[2]] = x2;
-	  if(sum_omit_dir){
-	    for(int xi=0; xi<ext_latt_size[omit_dir]; xi++){
-	      site[omit_dir] = xi; // Assume: omit_dir != 4 if summed over the dir
-	      value += (coor_map[2] == 4) ? real(peekSite(data[0],site)) : real(peekSite(data[f],site));
-	    }
-	  }
-	  else {
-	    if(omit_dir<4) site[omit_dir] = omit_intcpt;
-	    value += (coor_map[2] == 4) ? real(peekSite(data[0],site)) : real(peekSite(data[f],site));
-	  }
-	  imageData->SetScalarComponentFromDouble(x0,x1,x2,0,value);
-	  //if(save_file) data_f<<value<<std::endl;
-    }}}
-    */
     
     vtkNew<isosurface> posExtractor;
     posExtractor->SetInputData(imageData);
@@ -483,11 +564,13 @@ int main(int argc, char* argv[])
     outline->SetMapper(mapOutline);
     outline->GetProperty()->SetColor(colors->GetColor3d("Black").GetData());
 
+    ////////// create a label of the frame
+    int skip_one_omit_dir = xlate_omit_dir>=0?1:0;
     std::string info="";
     if(sum_omit_dir) for(auto dir : omit_dirs) info+=dynm_labels[dir];
-    else for(int i_d = 0; i_d<omit_dirs.size(); i_d++) info+= dynm_labels[omit_dirs[i_d]]+"="+std::to_string(omit_intcpts[i_d])+" ";
-    std::string ext = sum_omit_dir? "summed over "+info+"direction":info;
-    std::string txt = omit_dirs.back()<latt_size.size()?"All Files Displayed: "+ext : file_list[f];
+    else for(int i_d = skip_one_omit_dir; i_d<omit_dirs.size(); i_d++) info+= dynm_labels[omit_dirs[i_d]]+"="+std::to_string(omit_intcpts[i_d])+" ";
+    std::string ext = sum_omit_dir? "summed over "+info+"-dir":info;
+    std::string txt = omit_dirs.back()<latt_size.size()?"All Files: "+ext : file_list[f];
     if(take_diff) txt = "Diff: Next File - "+txt;
     if(mpeg) txt += " cntr="+std::to_string(contour);
     vtkNew<vtkTextActor> Text;
@@ -502,7 +585,33 @@ int main(int argc, char* argv[])
     TextT->GetTextProperty()->SetFontSize(48);
     TextT->GetTextProperty()->SetColor(colors->GetColor3d("Gold").GetData());
     
-  
+#ifdef AXES
+    // https://examples.vtk.org/site/Cxx/GeometricObjects/Axes/
+    // Add axis labels
+    vtkNew<vtkAxesActor> axes;
+
+    axes->SetXAxisLabelText(dynm_labels[coor_map[0]].c_str());
+    axes->SetYAxisLabelText(dynm_labels[coor_map[1]].c_str());
+    axes->SetZAxisLabelText(dynm_labels[coor_map[2]].c_str());
+
+    vtkNew<vtkTransform> transform;
+    transform->Translate(-5.0, 0.0, 0.0);
+    transform->Scale(2, 2, 2);
+    // The axes are positioned with a user transform
+    axes->SetUserTransform(transform);
+    
+    // Example of customizing label properties (e.g., color)
+    //axes->GetXAxisLabelProperty()->SetColor(1.0, 0.0, 0.0); // Red X-axis label
+    /*
+    vtkNew<vtkOrientationMarkerWidget> orientationWidget;
+    orientationWidget->SetOrientationMarker(axes);
+    orientationWidget->SetInteractor(iren);
+    orientationWidget->SetViewport(0.0, 0.0, 0.2, 0.2); // Example: Bottom-left corner, 20% of viewport size
+    orientationWidget->EnabledOn();
+    */
+    aRenderer->AddActor(axes);
+#endif
+    
     // Actors are added to the renderer. An initial camera view is created.
     // The Dolly() method moves the camera towards the FocalPoint,
     // thereby enlarging the image.
@@ -516,6 +625,7 @@ int main(int argc, char* argv[])
     std::vector<LatticeComplexD*> tmp;
     if(omit_dirs.back()<latt_size.size()) for(int i=0;i<data.size();i++) tmp.push_back(&data[i]);
     else tmp.push_back(&data[f]);
+    
     vtkNew<FrameUpdater> fu;
     fu->imageData = imageData;
     fu->grid_data = tmp;
@@ -526,7 +636,29 @@ int main(int argc, char* argv[])
     fu->posExtractor = posExtractor;
     fu->negExtractor = negExtractor;
     fu->rms = rms;
-      
+    // Set frame index
+    std::vector<std::string> ind_list;
+    if( use_fname_as_frame_counter ) {
+
+      for(const auto& fname : file_list) {
+	ind_list.push_back(fname.substr(fname.rfind((separator))+4));
+	std::cout<<ind_list.back()<<std::endl;
+      }
+      fu->dynmIndexF = ind_list;
+      fu->use_dynmIndexF = true;
+    }
+    else if(index_list.is_open()){
+      assert(!use_fname_as_frame_counter && "file name is not to be used as a frame counter");
+
+      std::string line;
+      while(!index_list.eof()){
+	getline(index_list,line);
+	ind_list.push_back(line);
+      }
+      fu->dynmIndexF = ind_list;
+      fu->use_dynmIndexF = true;
+    }
+    
     iren->AddObserver(vtkCommand::TimerEvent, fu);
 
     aRenderer->SetActiveCamera(aCamera);

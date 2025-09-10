@@ -8,12 +8,14 @@ list(APPEND CMAKE_PREFIX_PATH "/ccs/home/syamamoto/src/vtk/build/")
 find_package(VTK COMPONENTS 
   CommonColor
   CommonCore
+  CommonTransforms
   FiltersCore
   FiltersModeling
   IOImage
   IOFFMPEG
   InteractionStyle
   InteractionWidgets
+  RenderingAnnotation
   RenderingContextOpenGL2
   RenderingCore
   RenderingFreeType
@@ -37,6 +39,9 @@ target_link_libraries(FieldDensityAnimateMultiFiles PRIVATE ${VTK_LIBRARIES})
 
 add_executable(FieldDensityFindRegion MACOSX_BUNDLE FieldDensityFindRegion.cxx )
 target_link_libraries(FieldDensityFindRegion PRIVATE ${VTK_LIBRARIES})
+
+add_executable(FieldDensityEigen MACOSX_BUNDLE FieldDensityEigen.cxx )
+target_link_libraries(FieldDensityEigen PRIVATE ${VTK_LIBRARIES})
 
 # vtk_module_autoinit is needed
 vtk_module_autoinit(

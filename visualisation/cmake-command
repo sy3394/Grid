@@ -2,10 +2,9 @@ DIR=/ccs/home/syamamoto/tmp/src/Grid_cleanedup_for_pullrequest/systems/Frontier
 
 libs=`$DIR/grid-config --libs`
 ldflags=`$DIR/grid-config --ldflags`
-ldflags=$ldflags -L/ccs/home/syamamoto/tmp/src/Grid_cleanedup_for_pullrequest/systems/Frontier/Grid/
 
 cxxflags=`$DIR/grid-config --cxxflags`
-cxxflags_add=`$DIR/grid-config --cxx | awk '{print $2}'`
+≈ƒcxxflags_add=`$DIR/grid-config --cxx | awk '{print $2}'`
 cxx=`$DIR/grid-config --cxx | awk '{print $1}'`
 
 echo $libs
@@ -19,7 +18,8 @@ echo $cxx
 mkdir -p build
 cd build
 pwd
-export LDFLAGS="$ldflags $libs"
+export LDFLAGS="$ldflags -L$DIR/Grid/ $libs"
 echo $LDFLAGS
 
-cmake .. -DCMAKE_CXX_COMPILER=$cxx -DCMAKE_CXX_FLAGS="$cxxflags $cxxflags_add -I/ccs/home/syamamoto/tmp/src/Grid_cleanedup_for_pullrequest/ -I$DIR/Grid/ " 
+cmake .. --fresh -DCMAKE_CXX_COMPILER=$cxx -DCMAKE_CXX_FLAGS="$cxxflags $cxxflags_add -I/ccs/home/syamamoto/tmp/src/Grid_cleanedup_for_pullrequest/ -I$DIR/Grid/ "
+#--fresh
