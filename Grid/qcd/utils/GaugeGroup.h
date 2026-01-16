@@ -421,6 +421,7 @@ class GaugeGroup {
   // Work with traceless anti-hermitian matrices for Lie algebra elements with Luscher's normalization convention
   // Explicitly, T^a = -i t^a where t^a is hermitian generators in Grid convention, c.f., Compute_MpInvJx_dNxxdSy
   //  in GaugeConfigurationMasked.h
+  // Compute: tr[ T^a in ] = - tr [ i t^a in ] <- a factor of -(1/2) different from Lucher's normalization
   // Used only in old implementation left for debugging purposes; to be deleted
   template<typename T_out, typename T_in>
   static accelerator_inline void LieAlgebraProject(T_out &out_v,const T_in &in_v, int b)
@@ -452,6 +453,7 @@ class GaugeGroup {
   }
   
   // Lattice-wide operator
+  // Compute:  tr[ T^a in ] =  - tr [ i t^a in ] <- a factor of -(1/2) different from Lucher's normalization
   // Used only in old implementation left for debugging purposes; to be deleted
   static void LieAlgebraProject(LatticeAlgebraMatrix &out,const LatticeMatrix &in, int b)
   {
@@ -518,8 +520,7 @@ class GaugeGroup {
         su2SubGroupIndex(i1, i2, su2Index); //i1<i2
         int ax = su2Index*2;
         int ay = su2Index*2+1;
-        // Compute: tr(T^a P) where P is traceless anti-hermitian
-        // Here, P = Ta(M) where M is defined below
+        // Compute: tr(T^a P) where P is traceless anti-hermitian, i.e. P = Ta(M) for a matrix M defined below
         // Note: T^b appearing in M (c.f. below) is 2it^b where t^b in Grid's convention, c.f. original def UtaU in the earlier version
 	
         // real( 0.5*[M - M^\dag]_(i2, i1) )=real( 0.5*[T^b*in + in^\dag*T^b]_(i2, i1) ) <- M = T^b*in <- T^b: suN matrix in Luchang's convention; in: input matrix
@@ -640,28 +641,6 @@ class GaugeGroup {
     }
 #endif
   }
-
-#if 0
-  // Lattice-wide operator
-  // Work with traceless anti-hermitian matrices for Lie algebra elements with Luscher's normalization convention
-  // Explicitly, T^a = -i t^a where t^a is hermitian generators in Grid convention, c.f., Compute_MpInvJx_dNxxdSy
-  //  in GaugeConfigurationMasked.h
-  // not used any more; to be removed
-  static void LieAlgebraProject(LatticeAlgebraMatrix &out,const LatticeMatrix &in)
-  {
-    conformable(in, out);
-    GridBase *grid = out.Grid();
-    autoView(out_v,out,AcceleratorWrite);
-    autoView(in_v,in,AcceleratorRead);
-    const int nsimd = vMatrix::Nsimd();
-    accelerator_for(ss,grid->oSites(),nsimd,{
-	typedef decltype(coalescedRead(out_v[0])) adj_mat;
-	adj_mat out;
-	LieAlgebraProject(out,in_v(ss));
-	coalescedWrite(out_v[ss],out);
-      });
-  }
-  #endif
 
   // Site-local operation
   // Work with traceless anti-hermitian matrices for Lie algebra elements with Luscher's normalization convention

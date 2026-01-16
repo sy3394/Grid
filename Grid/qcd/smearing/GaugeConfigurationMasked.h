@@ -1827,6 +1827,371 @@ public:
     }  // if smearingLevels = 0 do nothing
     std::cout << GridLogMessage << " DEBUG: logDetJacobianForce Full " << std::endl;
   }
+#if 0 // REMOVE THIS !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+  // TODO: Move to the top, decompose into two typedef's with one replacing Complex to vtype; maybe Real is better than Complex if consistent
+  typedef Lattice< iVector<iScalar<iVector<Complex, SU3::AdjointDimension> > Nd> > LatticeLorentzAlgebraVector;
+  
+  //Assume: masking is based on red-black checkerboarding
+  void ApplyJacobianMatrixLevel(LatticeLorentzAlgebraVector &Mout, const GaugeField &U, const LatticeLorentzAlgebraVector &Min,int smr)
+  {
+    GRID_TRACE("ApplyJacobianMatrixLevel");
+    GridBase* grid = U.Grid();
+    ColourMatrix   tb;
+    ColourMatrix   tc;
+    ColourMatrix   ta;
+    GaugeField C(grid);
+    GaugeField Umsk(grid);
+    std::vector<GaugeLinkField> Mmu(Nd,grid);
+    GaugeLinkField Cmu(grid); // U and staple; C contains factor of epsilon
+    GaugeLinkField Zx(grid);  // U times Staple, contains factor of epsilon
+    GaugeLinkField Nxx(grid);  // Nxx fundamental space
+    GaugeLinkField Utmp(grid);
+    GaugeLinkField PlaqL(grid);
+    GaugeLinkField PlaqR(grid);
+    const int Ngen = SU3Adjoint::Dimension;
+    AdjMatrix TRb;
+    ColourMatrix Ident;
+    LatticeComplex  cplx(grid);
+    
+    AdjVectorField  dJdXe_nMpInv(grid); 
+    AdjVectorField  dJdXe_nMpInv_y(grid); 
+    AdjMatrixField  MpAd(grid);    // Mprime luchang's notes
+    AdjMatrixField  MpAdInv(grid); // Mprime inverse
+    AdjMatrixField  NxxAd(grid);    // Nxx in adjoint space
+    AdjMatrixField  JxAd(grid);     
+    AdjMatrixField  ZxAd(grid);
+    AdjMatrixField  mZxAd(grid);
+    AdjMatrixField  X(grid);
+    Complex ci(0,1);
+
+    RealD t0 = usecond();
+    Ident = ComplexD(1.0);
+    for(int d=0;d<Nd;d++){
+      Umu[d] = peekLorentz(U, d);
+    }
+    int mu= (smr/2) %Nd;
+
+    ////////////////////////////////////////////////////////////////////////////////
+    // Mask the gauge field
+    ////////////////////////////////////////////////////////////////////////////////
+    auto mask=PeekIndex<LorentzIndex>(masks[smr],mu); // the cb mask
+
+    Umsk = U;
+    ApplyMask(Umsk,smr);
+    Utmp = peekLorentz(Umsk,mu);
+
+    ////////////////////////////////////////////////////////////////////////////////
+    // Retrieve the eps/rho parameter(s) -- could allow all different but not so far
+    ////////////////////////////////////////////////////////////////////////////////
+    double rho=this->StoutSmearing->SmearRho[1];
+    int idx=0;
+    for(int mu=0;mu<4;mu++){
+    for(int nu=0;nu<4;nu++){
+      if ( mu!=nu) assert(this->StoutSmearing->SmearRho[idx]==rho);
+      else         assert(this->StoutSmearing->SmearRho[idx]==0.0);
+      idx++;
+    }}
+    //////////////////////////////////////////////////////////////////
+    // Assemble the N matrix
+    //////////////////////////////////////////////////////////////////
+    // Computes ALL the staples -- could compute one only and do it here
+    RealD time;
+    time=-usecond();
+    BaseSmear(Cmu, U,mu,rho);
+
+    //////////////////////////////////////////////////////////////////
+    // Assemble Luscher exp diff map J matrix 
+    //////////////////////////////////////////////////////////////////
+    // Ta so Z lives in Lie algabra
+    {GRID_TRACE("Zx");
+    Zx  = Ta(Cmu * adj(Umu[mu]));
+    time+=usecond();
+    }
+    std::cout << GridLogMessage << "AJMFull: Z took "<<time<< " us"<<std::endl;
+    {GRID_TRACE("ZxAd");
+    time=-usecond();
+    // Move Z to the Adjoint Rep == make_adjoint_representation
+    ZxAd = Zero();
+    for(int b=0;b<8;b++) {
+      // Adj group sets traceless antihermitian T's -- Guido, really????
+      SU3::generator(b, tb);         // Fund group sets traceless hermitian T's
+      SU3Adjoint::generator(b,TRb);
+      TRb=-TRb;
+      cplx = 2.0*trace(ci*tb*Zx); // my convention 1/2 delta ba
+      ZxAd = ZxAd + cplx * TRb; // is this right? YES - Guido used Anti herm Ta's and with bloody wrong sign.
+    }
+    time+=usecond();
+    }
+    std::cout << GridLogMessage << "AJMFull: ZxAd took "<<time<< " us"<<std::endl;
+
+    //////////////////////////////////////
+    // J(x) = 1 + Sum_k=1..N (-Zac)^k/(k+1)!
+    //////////////////////////////////////
+    {GRID_TRACE("Jx");
+    time=-usecond();
+    X=1.0; 
+    JxAd = X;
+    mZxAd = (-1.0)*ZxAd; 
+    RealD kpfac = 1;
+    for(int k=1;k<12;k++){
+      X=X*mZxAd;
+      kpfac = kpfac /(k+1);
+      JxAd = JxAd + X * kpfac;
+    }
+    time+=usecond();
+    }
+    std::cout << GridLogMessage << "AJMFull: Jx took "<<time<< " us"<<std::endl;
+
+    //////////////////////////////////////
+    // dJ(x)/dxe
+    //////////////////////////////////////
+    time=-usecond();
+    std::vector<AdjMatrixField>  dJdX;    dJdX.resize(8,grid);
+    std::vector<AdjMatrix> TRb_s; TRb_s.resize(8);
+    AdjMatrixField tbXn(grid);
+    AdjMatrixField sumXtbX(grid);
+    AdjMatrixField t2(grid);
+    AdjMatrixField dt2(grid);
+    AdjMatrixField t3(grid);
+    AdjMatrixField dt3(grid);
+    AdjMatrixField aunit(grid);
+    
+    {GRID_TRACE("dJdX");
+    for(int b=0;b<8;b++){
+      SU3Adjoint::generator(b, TRb_s[b]);
+      dJdX[b] = TRb_s[b];
+    }
+    aunit = ComplexD(1.0);
+    // Could put into an accelerator_for
+    X  = (-1.0)*ZxAd; 
+    t2 = X;
+    for (int j = 12; j > 1; --j) {
+      t3  = t2*(1.0 / (j + 1))  + aunit;
+      t2  = X * t3;
+      for(int b=0;b<8;b++){
+	dJdX[b]= TRb_s[b] * t3 + X * dJdX[b]*(1.0 / (j + 1));
+      }
+    }
+    for(int b=0;b<8;b++){
+      dJdX[b] = -dJdX[b];
+    }
+    }
+
+    time+=usecond();
+    std::cout << GridLogMessage << "AJMFull: dJx took "<<time<< " us"<<std::endl;
+    /////////////////////////////////////////////////////////////////
+    // Mask Umu for this link
+    /////////////////////////////////////////////////////////////////
+    time=-usecond();
+    PlaqL = Ident;
+    PlaqR = Utmp*adj(Cmu);
+    ComputeNxy(old,PlaqL,PlaqR,NxxAd);
+    time+=usecond();
+    std::cout << GridLogMessage << "AJMFull: ComputeNxy took "<<time<< " us"<<std::endl;
+    
+    ////////////////////////////
+    // Mab
+    ////////////////////////////
+    MpAd = Complex(1.0,0.0);
+    MpAd = MpAd - JxAd * NxxAd; // NxxAd masked => MpAd masked
+
+    RealD t3a = usecond();
+    //    dJdXe_nMpInv needs to multiply:
+    //       Nxx_mu (site local)                           (1)
+    //       Nxy_mu one site forward  in each nu direction (3)
+    //       Nxy_mu one site backward in each nu direction (3)
+    //       Nxy_nu 0,0  ; +mu,0; 0,-nu; +mu-nu   [ 3x4 = 12]
+    // 19 terms.
+    AdjMatrixField Nxy(grid);
+
+
+    RealD t4 = usecond(), tLR = 0, tNxy = 0, tMJx = 0;
+    for(int nu=0;nu<Nd;nu++){
+
+      if (nu!=mu) {
+	///////////////// +ve nu /////////////////
+	//     __
+	//    |  |
+	//    x==    // nu polarisation -- clockwise
+
+	time=-usecond(); tLR -= usecond();
+	PlaqL=Ident;
+
+	PlaqR=(-rho)*Gimpl::CovShiftForward(Umu[nu], nu,
+ 	       Gimpl::CovShiftForward(Umu[mu], mu,
+	         Gimpl::CovShiftBackward(Umu[nu], nu,
+		   Gimpl::CovShiftIdentityBackward(Utmp, mu))));
+	time+=usecond(); tLR += usecond();
+	std::cout << GridLogMessage << "ADJFull: PlaqLR took "<<time<< " us"<<std::endl;
+
+	time=-usecond(); tNxy -= usecond();
+	ComputeNxy(old,PlaqL,PlaqR,Nxy);
+	
+	time+=usecond(); tNxy += usecond();
+	std::cout << GridLogMessage << "Full: ComputeNxy (occurs 6x) took "<<time<< " us"<<std::endl;
+
+	time=-usecond(); tMJx -= usecond();
+	PlaqR=(-1.0)*PlaqR;
+	Compute_MpInvJx_dNxxdSy(old,PlaqL,PlaqR,MpInvJx,FdetV);
+	Fdet2_nu = FdetV;
+	time+=usecond(); tMJx += usecond();
+	std::cout << GridLogMessage << "Full: Compute_MpInvJx_dNxxSy (occurs 6x) took "<<time<< " us"<<std::endl;
+	
+	//    x==
+	//    |  |
+	//    .__|    // nu polarisation -- anticlockwise
+
+	tLR -= usecond();
+	PlaqR=(rho)*Gimpl::CovShiftForward(Umu[nu], nu,
+		      Gimpl::CovShiftBackward(Umu[mu], mu,
+    	 	        Gimpl::CovShiftIdentityBackward(Umu[nu], nu)));
+
+	PlaqL=Gimpl::CovShiftIdentityBackward(Utmp, mu);
+	tLR += usecond();
+
+	tNxy -= usecond();
+	dJdXe_nMpInv_y = Cshift(dJdXe_nMpInv,mu,-1);
+	ComputeNxy(old,PlaqL, PlaqR,Nxy);
+	Fdet1_nu = Fdet1_nu+transpose(Nxy)*dJdXe_nMpInv_y;
+	tNxy += usecond();
+
+	tMJx -= usecond();
+	MpInvJx_nu = Cshift(MpInvJx,mu,-1);
+	Compute_MpInvJx_dNxxdSy(old,PlaqL,PlaqR,MpInvJx_nu,FdetV);
+	Fdet2_nu = Fdet2_nu+FdetV;
+	tMJx += usecond();
+	
+	///////////////// -ve nu /////////////////
+	//  __
+	// |  |
+	// x==          // nu polarisation -- clockwise
+
+	tLR -= usecond();
+	PlaqL=(rho)* Gimpl::CovShiftForward(Umu[mu], mu,
+		       Gimpl::CovShiftForward(Umu[nu], nu,
+			 Gimpl::CovShiftIdentityBackward(Utmp, mu)));
+
+        PlaqR = Gimpl::CovShiftIdentityForward(Umu[nu], nu);
+	tLR += usecond();
+
+	tNxy -= usecond();
+	dJdXe_nMpInv_y = Cshift(dJdXe_nMpInv,nu,1);
+	ComputeNxy(old,PlaqL,PlaqR,Nxy);
+	Fdet1_nu = Fdet1_nu + transpose(Nxy)*dJdXe_nMpInv_y;
+	tNxy += usecond();
+
+	tMJx -= usecond();
+	MpInvJx_nu = Cshift(MpInvJx,nu,1);
+	Compute_MpInvJx_dNxxdSy(old,PlaqL,PlaqR,MpInvJx_nu,FdetV);
+	Fdet2_nu = Fdet2_nu+FdetV;
+	tMJx += usecond();
+	
+	// x==
+	// |  |
+	// |__|         // nu polarisation
+
+	tLR -= usecond();
+	PlaqL=(-rho)*Gimpl::CovShiftForward(Umu[nu], nu,
+ 	        Gimpl::CovShiftIdentityBackward(Utmp, mu));
+
+	PlaqR=Gimpl::CovShiftBackward(Umu[mu], mu,
+	        Gimpl::CovShiftIdentityForward(Umu[nu], nu));
+	tLR += usecond();
+
+	tNxy -= usecond();
+	dJdXe_nMpInv_y = Cshift(dJdXe_nMpInv,mu,-1);
+	dJdXe_nMpInv_y = Cshift(dJdXe_nMpInv_y,nu,1);
+
+	ComputeNxy(old,PlaqL,PlaqR,Nxy);
+	Fdet1_nu = Fdet1_nu + transpose(Nxy)*dJdXe_nMpInv_y;
+	tNxy += usecond();
+
+	tMJx -= usecond();
+	MpInvJx_nu = Cshift(MpInvJx,mu,-1);
+	MpInvJx_nu = Cshift(MpInvJx_nu,nu,1);
+	Compute_MpInvJx_dNxxdSy(old,PlaqL,PlaqR,MpInvJx_nu,FdetV);
+	Fdet2_nu = Fdet2_nu+FdetV;
+	tMJx += usecond();
+	
+	/////////////////////////////////////////////////////////////////////
+	// Set up the determinant force contribution in 3x3 algebra basis
+	/////////////////////////////////////////////////////////////////////
+	InsertForce(Fdet1,Fdet1_nu,nu);
+	InsertForce(Fdet2,Fdet2_nu,nu);
+	
+	//////////////////////////////////////////////////
+	// Parallel direction terms
+	//////////////////////////////////////////////////
+
+        //     __
+	//    |  "
+	//    |__"x    // mu polarisation
+	tLR -= usecond();
+	PlaqL=(-rho)*Gimpl::CovShiftForward(Umu[mu], mu,
+		      Gimpl::CovShiftBackward(Umu[nu], nu,
+   		        Gimpl::CovShiftIdentityBackward(Utmp, mu)));
+
+	PlaqR=Gimpl::CovShiftIdentityBackward(Umu[nu], nu);
+	tLR += usecond();
+
+	tNxy -= usecond();
+	dJdXe_nMpInv_y = Cshift(dJdXe_nMpInv,nu,-1);
+
+	ComputeNxy(old,PlaqL,PlaqR,Nxy);
+	Fdet1_mu = Fdet1_mu + transpose(Nxy)*dJdXe_nMpInv_y;
+	tNxy += usecond();
+
+	tMJx -= usecond();
+	MpInvJx_nu = Cshift(MpInvJx,nu,-1);
+
+	Compute_MpInvJx_dNxxdSy(old,PlaqL,PlaqR,MpInvJx_nu,FdetV);
+	Fdet2_mu = Fdet2_mu+FdetV;
+	tMJx += usecond();
+
+	//  __
+	// "  |
+	// x__|          // mu polarisation
+	tLR -= usecond();
+	PlaqL=(-rho)*Gimpl::CovShiftForward(Umu[mu], mu,
+		       Gimpl::CovShiftForward(Umu[nu], nu,
+		 	 Gimpl::CovShiftIdentityBackward(Utmp, mu)));
+
+        PlaqR=Gimpl::CovShiftIdentityForward(Umu[nu], nu);
+	tLR += usecond();
+
+	tNxy -= usecond();
+	dJdXe_nMpInv_y = Cshift(dJdXe_nMpInv,nu,1);
+
+	ComputeNxy(old,PlaqL,PlaqR,Nxy);
+	Fdet1_mu = Fdet1_mu + transpose(Nxy)*dJdXe_nMpInv_y;
+	tNxy += usecond();
+
+	tMJx -= usecond();
+	MpInvJx_nu = Cshift(MpInvJx,nu,1);
+
+	Compute_MpInvJx_dNxxdSy(old,PlaqL,PlaqR,MpInvJx_nu,FdetV);
+	Fdet2_mu = Fdet2_mu+FdetV;
+	tMJx += usecond();
+      }
+    }
+    RealD t5 = usecond();
+
+    Fdet1_mu = Fdet1_mu + transpose(NxxAd)*dJdXe_nMpInv;
+
+    InsertForce(Fdet1,Fdet1_mu,mu);
+    InsertForce(Fdet2,Fdet2_mu,mu);
+
+    force= (-0.5)*( Fdet1 + Fdet2);
+    RealD t1 = usecond();
+    std::cout << GridLogMessage << " Full: logDetJacobianForce t3-t0 "<<t3a-t0<<" us "<<std::endl;
+    std::cout << GridLogMessage << " Full: logDetJacobianForce t4-t3 dJdXe_nMpInv "<<t4-t3a<<" us "<<std::endl;
+    std::cout << GridLogMessage << " Full: logDetJacobianForce t5-t4 mu nu loop "<<t5-t4<<" us Plaq "
+	      <<tLR/1e3<<" ms Nxy "<<tNxy/1e3<<" ms MpInvJx_dNxxdSy "<<tMJx/1e3<<" ms"<<std::endl;
+    std::cout << GridLogMessage << " Full: logDetJacobianForce t1-t5 "<<t1-t5<<" us "<<std::endl; // turn adj vec to SU3 force
+    std::cout << GridLogMessage << " Full: logDetJacobianForce level took "<<t1-t0<<" us "<<std::endl;
+    
+  }
+  #endif
   /*------------------------------- OLD IMPLEMENTATION ----------------------------------------------------------*/
   
   RealD logDetJacobian(void)
@@ -1961,8 +2326,9 @@ private:
 #ifndef PRINT_SNAPSHOTS
       }
 #else
-        RealD impl_5Li = WilsonLoops<PeriodicGimplR>::TopologicalCharge5Li(previous_u);
-        std::cout << GridLogMessage << "[SmearedConfigurationMasked] smeared 5Li at " << smearLvl << " : " << impl_5Li << std::endl;
+      // overhead not small
+      //RealD impl_5Li = WilsonLoops<PeriodicGimplR>::TopologicalCharge5Li(previous_u);
+      //std::cout << GridLogMessage << "[SmearedConfigurationMasked] smeared 5Li at " << smearLvl << " : " << impl_5Li << std::endl;
       }
       RealD intmdt_lnDetJ = logDetJacobian();
       std::cout << GridLogMessage << "GaugeConfigurationMasked: Intermediate Jacobian " << intmdt_lnDetJ << std::endl;

@@ -5,20 +5,22 @@
 //
 // * Adjoint representation generators
 //
-// * Normalisation for the fundamental generators: 
-//   trace ta tb = 1/2 delta_ab = T_F delta_ab
-//   T_F = 1/2  for SU(N) groups
+// * Normalisation for the fundamental generators, i.e., basis of su(N) in Grid: 
+//   trace ta tb = 1/2 delta_ab
 //
+// * Then, (N^2-1)x(N^2-1) matrix rep for Ad[t^d]: su(N) -> su(N), namely, adj rep of t^d in this basis of su(N), is 
+// 
+//      (Ad[t^d])_ab = 2 * tr[ t^a t^d t^b - t^a t^b t^d ]  = 2 * tr[ (t^a t^d -  t^d t^a) t^b ]
 //
-//   base for NxN hermitian traceless matrices
-//   normalized to 1:
+// * Note: t^d hermitian => (Ad[t^d])_ab purely imaginary
 //
-//   (e_Adj)^a = t^a / sqrt(T_F)
+// * Multiplication by i results in the real, totally antisymmetric generators for the adjoint representations
 //
-//   then the real, antisymmetric generators for the adjoint representations
-//   are computed ( shortcut: e^a == (e_Adj)^a )
+// * If we set: T^a = -it^a <- T^a: su(N) basis elem in Luscher's normalization convention
+//       (Ad[T^d])_ab = -2 *tr[ T^a T^d T^b - T^a T^b T^d ] = -i (Ad[t^d])_ab
 //
-//   (iT_adj)^d_ba = i tr[e^a t^d e^b - t^d e^a e^b]
+//     => multipliying by -i leads to adj rep in Luscher's convention
+// * NOTE: The routine below multiplies by i not by -i
 //
 ////////////////////////////////////////////////////////////////////////
 
@@ -60,7 +62,7 @@ public:
 
   template <class cplx>
   static accelerator_inline void generator(int Index, iSUnAdjointMatrix<cplx> &iAdjTa) {
-    // returns i(T_Adj)^index necessary for the projectors
+    // returns i Adj[t^Index] necessary for the projectors
     // see definitions above
     iAdjTa = Zero();
     iVector<iSUnMatrix<cplx>,Dimension> ta;
@@ -164,12 +166,12 @@ public:
   static void make_adjoint_rep(LatticeAdjMatrix &out, const typename SU<ncolour>::LatticeMatrix &in) {
     // Use real and totally anti-symmetric matrices as adjoint rep
     //  => basis matrices for su(N) are anti-hermitian
-    // Take: T^a = i t^a where t^a: basis elem in Grid's convention; T^a satisfies Luscher's normalization convention -2tr[T^a,T^b] = \delta_{ab}
+    // Take: T^a = -i t^a where t^a: basis elem in Grid's convention; T^a satisfies Luscher's normalization convention -2tr[T^a,T^b] = \delta_{ab}
     // Recall: adj rep generated above, iAdjTa, is multiplied by i
     //   This makes adj rep here is consistent with the one written in terms of T^a
     // So for adj rep, we follow Luscher's convention
     
-    // in: traceless-anti-hermitian
+    // in: traceless-anti-hermitian, referred to as Zx below
 
     GridBase *grid = out.Grid();
       
@@ -193,7 +195,7 @@ public:
           int ay = su2Index*2+1;
 
 	  // multiply t^a by -i
-	  // cplx = -2.0*trace(ci*tb*Zx);
+	  // cplx = -2.0*trace(-ci*tb*Zx);
 	  // ZxAd = ZxAd + cplx * TRb;
 	  generator(ax,iTa);
 	  c()()() = 2.0*real(in_v(ss)()()(i2,i1));

@@ -33,14 +33,14 @@ NAMESPACE_BEGIN(Grid);
 ////////////////////////////////////////////////////////////////////////
 // Jacobian Action .. 
 ////////////////////////////////////////////////////////////////////////
-template <class Gimpl>
+template <class Gimpl, class Smearer_T = SmearedConfigurationMasked<Gimpl> >
 class JacobianAction : public Action<typename Gimpl::GaugeField> {
 public:  
   INHERIT_GIMPL_TYPES(Gimpl);
 
-  SmearedConfigurationMasked<Gimpl> * smearer;
+  Smearer_T * smearer;
   /////////////////////////// constructors
-  explicit JacobianAction(SmearedConfigurationMasked<Gimpl> * _smearer ) { smearer=_smearer;};
+  explicit JacobianAction(Smearer_T * _smearer ) { smearer=_smearer;};
 
   virtual std::string action_name() {return "JacobianAction";}
 

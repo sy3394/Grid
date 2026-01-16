@@ -38,11 +38,11 @@ NAMESPACE_BEGIN(Grid);
 /*!  @brief Stout smearing of link variable. */
 template <class Gimpl>
 class Smear_Stout : public Smear<Gimpl> {
- private:
+protected:
   int OrthogDim = -1;
 public:
   const std::vector<double> SmearRho;
-private:
+protected:
   // Smear<Gimpl>* ownership semantics:
   //    Smear<Gimpl>* passed in to constructor are owned by caller, so we don't delete them here
   //    Smear<Gimpl>* created within constructor need to be deleted as part of the destructor
