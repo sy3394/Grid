@@ -75,6 +75,7 @@ protected:
                 << "[SmearedConfiguration] Filling SmearedSet\n";
       GaugeField previous_u(ThinLinks->Grid());
 
+      std::cout << GridLogDebug << smearingLevels <<" "<<SmearedSet.size()<<std::endl;//DEBUG
       previous_u = *ThinLinks;
       for (int smearLvl = 0; smearLvl < smearingLevels; ++smearLvl)
       {

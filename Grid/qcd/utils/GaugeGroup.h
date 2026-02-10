@@ -422,6 +422,7 @@ class GaugeGroup {
   // Explicitly, T^a = -i t^a where t^a is hermitian generators in Grid convention, c.f., Compute_MpInvJx_dNxxdSy
   //  in GaugeConfigurationMasked.h
   // Compute: tr[ T^a in ] = - tr [ i t^a in ] <- a factor of -(1/2) different from Lucher's normalization
+  // i.e., needs to multiply the result by -2 to make it consistent with Luscher's convention
   // Used only in old implementation left for debugging purposes; to be deleted
   template<typename T_out, typename T_in>
   static accelerator_inline void LieAlgebraProject(T_out &out_v,const T_in &in_v, int b)
@@ -435,7 +436,7 @@ class GaugeGroup {
       su2SubGroupIndex(i1, i2, su2Index);
       int ax = su2Index*2;
       int ay = su2Index*2+1;
-      // in is traceless ANTI-hermitian
+      // in_v is traceless ANTI-hermitian
       out_v()()(ax,b)=real(in_v()()(i2,i1));
       out_v()()(ay,b)=imag(in_v()()(i1,i2));
     }
@@ -453,7 +454,7 @@ class GaugeGroup {
   }
   
   // Lattice-wide operator
-  // Compute:  tr[ T^a in ] =  - tr [ i t^a in ] <- a factor of -(1/2) different from Lucher's normalization
+  // Compute:  tr[ T^a in ] =  - tr [ i t^a in ] <- the output needs to be multiplid by -2 to make it to Lucher's normalization
   // Used only in old implementation left for debugging purposes; to be deleted
   static void LieAlgebraProject(LatticeAlgebraMatrix &out,const LatticeMatrix &in, int b)
   {
@@ -497,9 +498,13 @@ class GaugeGroup {
   }
 
   // Site-local operation
-  // Work with traceless anti-hermitian matrices for Lie algebra elements with Luscher's normalization convention
-  // Explicitly, T^a = -i t^a where t^a is hermitian generators in Grid convention, c.f., Compute_MpInvJx_dNxxdSy
-  //  in GaugeConfigurationMasked.h
+  // This version is to be used in Compute_MpInvJx_dNxxdSy => computes d N(x,\mu;x,\mu)^{ab} / d(y,\nu)^c
+  // Compute: tr(T^a P^b) where T^a is in Luscher's normalization, P^b is traceless anti-hermitian, i.e. P^b = Ta(-2T^b M) = Ta(-2T^b in_v)
+  //   derivative is taken before using this function, i.e., in_v contains T^c already
+  //   In the original code, Luchang's convention is used in the intermediate calculation: -2T^b
+  // Explicitly, T^a = -i t^a where t^a is hermitian generators in Grid convention
+  // Note: tr[ T^a in ] =  - tr [ i t^a in ] <- a factor of -(1/2) different from Lucher's normalization
+  // based on the above version: LieAlgebraProject(LatticeAlgebraMatrix &out,const LatticeMatrix &in, int b) but the loop over b is in this routine
   template<typename T_out, typename T_in>
   static accelerator_inline void LieAlgebraProject(T_out &out_v,const T_in &in_v){
     int N = ncolour;
@@ -520,10 +525,9 @@ class GaugeGroup {
         su2SubGroupIndex(i1, i2, su2Index); //i1<i2
         int ax = su2Index*2;
         int ay = su2Index*2+1;
-        // Compute: tr(T^a P) where P is traceless anti-hermitian, i.e. P = Ta(M) for a matrix M defined below
-        // Note: T^b appearing in M (c.f. below) is 2it^b where t^b in Grid's convention, c.f. original def UtaU in the earlier version
 	
         // real( 0.5*[M - M^\dag]_(i2, i1) )=real( 0.5*[T^b*in + in^\dag*T^b]_(i2, i1) ) <- M = T^b*in <- T^b: suN matrix in Luchang's convention; in: input matrix
+	//    !(ib2^i2): 1 if ib2 == i2; 0 otherwise
         //    sign flip of the complex part of the 2nd term is neglected, as real is taken
         out_v()()(ax,bx) = 0.5*real( !(ib2^i2)*in_v()()(ib1,i1)-!(ib1^i2)*in_v()()(ib2,i1)
                                     +!(ib1^i1)*in_v()()(ib2,i2)-!(ib2^i1)*in_v()()(ib1,i2) );

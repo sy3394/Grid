@@ -1004,37 +1004,6 @@ public:
     }
   }
 
-  static void RectStapleUnoptimisedRsUpper(GaugeMat &Stap, const GaugeLorentz &Umu,
-					   int mu, int nu) {
-    GridBase *grid = Umu.Grid();
-
-    std::vector<GaugeMat> U(Nd, grid);
-    for (int d = 0; d < Nd; d++) {
-      U[d] = PeekIndex<LorentzIndex>(Umu, d);
-    }
-    Stap = Zero();
-
-    if (nu != mu) {
-	
-      //      -<-
-      //      |  |
-      //
-      //      |  |
-      
-      Stap += Gimpl::ShiftStaple(
-				 Gimpl::CovShiftForward(
-							U[nu], nu,
-							Gimpl::CovShiftForward(
-									       U[nu], nu,
-									       Gimpl::CovShiftBackward(
-												       U[mu], mu,
-												       Gimpl::CovShiftBackward(
-															       U[nu], nu,
-															       Gimpl::CovShiftIdentityBackward(U[nu], nu))))),
-				 mu);
-    }
-  }
-  
   static void RectStapleUnoptimisedRs(GaugeMat &Stap, const GaugeLorentz &Umu,
 				      int mu) {
     GridBase *grid = Umu.Grid();

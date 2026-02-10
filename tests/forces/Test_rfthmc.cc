@@ -39,7 +39,7 @@ typedef WilsonImplD FimplD;
 typedef WilsonImplD FermionImplPolicy;
 
 template<class Gimpl>
-void ForceTest(Action<LatticeGaugeField> &action,ConfigurationBase<LatticeGaugeField> & smU,MomentumFilterBase<LatticeGaugeField> &Filter)
+void ForceTest(Action<LatticeGaugeField> &action,ConfigurationBase<LatticeGaugeField> & smU,MomentumFilterBase<LatticeGaugeField> &Filter, std::string smr_typ="")
 {
   LatticeGaugeField U = smU.get_U(false); // unsmeared config
   GridBase *UGrid = U.Grid();
@@ -53,22 +53,24 @@ void ForceTest(Action<LatticeGaugeField> &action,ConfigurationBase<LatticeGaugeF
   LatticeGaugeField UdSdU(UGrid); 
 
   std::cout << GridLogMessage << "*********************************************************"<<std::endl;
-  std::cout << GridLogMessage << " Force test for "<<action.action_name()<<std::endl;
+  std::cout << GridLogMessage << " Force test for "<<action.action_name()<<" "<<smr_typ<<std::endl;
   std::cout << GridLogMessage << "*********************************************************"<<std::endl;
   
   RealD eps=0.01;
 
   std::cout << GridLogMessage << "+++++++++++++++++++++++++++++++++++++++++++++++++++++++++"<<std::endl;
-  std::cout << GridLogMessage << " Refresh "<<action.action_name()<<std::endl;
+  std::cout << GridLogMessage << " Refresh "<<action.action_name()<<" "<<smr_typ<<std::endl;
   std::cout << GridLogMessage << "+++++++++++++++++++++++++++++++++++++++++++++++++++++++++"<<std::endl;
-  
-  Gimpl::generate_momenta(P,sRNG,RNG4);
-  //  Filter.applyFilter(P);
 
+  LatticeGaugeField Ptmp(UGrid); int mu = 1;
+  Gimpl::generate_momenta(Ptmp,sRNG,RNG4);
+  //P = Zero(); PokeIndex<LorentzIndex>(P,PeekIndex<LorentzIndex>(Ptmp,mu),mu);
+  P = Ptmp;
+  //  Filter.applyFilter(P);
   action.refresh(smU,sRNG,RNG4);
 
   std::cout << GridLogMessage << "+++++++++++++++++++++++++++++++++++++++++++++++++++++++++"<<std::endl;
-  std::cout << GridLogMessage << " Action "<<action.action_name()<<std::endl;
+  std::cout << GridLogMessage << " Action "<<action.action_name()<<" "<<smr_typ<<std::endl;
   std::cout << GridLogMessage << "+++++++++++++++++++++++++++++++++++++++++++++++++++++++++"<<std::endl;
 
   RealD S1 = action.S(smU);
@@ -77,7 +79,7 @@ void ForceTest(Action<LatticeGaugeField> &action,ConfigurationBase<LatticeGaugeF
   smU.set_Field(U);
 
   std::cout << GridLogMessage << "+++++++++++++++++++++++++++++++++++++++++++++++++++++++++"<<std::endl;
-  std::cout << GridLogMessage << " Derivative "<<action.action_name()<<std::endl;
+  std::cout << GridLogMessage << " Derivative "<<action.action_name()<<" "<<smr_typ<<std::endl;
   std::cout << GridLogMessage << "+++++++++++++++++++++++++++++++++++++++++++++++++++++++++"<<std::endl;
   action.deriv(smU,UdSdU);
   UdSdU = Ta(UdSdU);
@@ -109,10 +111,10 @@ void ForceTest(Action<LatticeGaugeField> &action,ConfigurationBase<LatticeGaugeF
   std::cout<< GridLogMessage << "S2 : "<< S2    <<std::endl;
   std::cout<< GridLogMessage << "dS : "<< S2-S1 <<std::endl;
   std::cout<< GridLogMessage << "dSpred : "<< dSpred.real() <<std::endl;
-  std::cout<< GridLogMessage << "diff : "<< diff<<std::endl;
+  std::cout<< GridLogMessage << "diff : "<< diff<<" "<<smr_typ<<std::endl;
   std::cout<< GridLogMessage << "*********************************************************"<<std::endl;
   //  assert(diff<1.0);
-  std::cout<< GridLogMessage << "Done" <<std::endl;
+  std::cout<< GridLogMessage << "Done" <<" "<<smr_typ<<std::endl;
   std::cout << GridLogMessage << "*********************************************************"<<std::endl;
 }
 
@@ -181,7 +183,7 @@ int main (int argc, char ** argv)
   ////////////////////////////////////////////////
   double rho = 0.1;
   Smear_Stout<PeriodicGimplR> SmearerS(rho);
-  Rect_Stout<PeriodicGimplR> SmearerR(rho,rho,rho);
+  Rect_Stout<PeriodicGimplR> SmearerR(0,rho,0.0);
   
   std::vector<Smear_Stout<PeriodicGimplR> *> Stouts1R = {&SmearerR};
   std::vector<int> mask_types1R{2};
@@ -190,9 +192,9 @@ int main (int argc, char ** argv)
   std::vector<Smear_Stout<PeriodicGimplR> *> Stouts2 = {&SmearerR, &SmearerS};
   std::vector<int> mask_types2{2,1};
 
-  SmearedConfigurationRect<PeriodicGimplR> SmartConfig1R(UGrid,2*Nd,Stouts1R,mask_types1R);
-  SmearedConfigurationRect<PeriodicGimplR> SmartConfig1S(UGrid,2*Nd,Stouts1S,mask_types1S);
-  SmearedConfigurationRect<PeriodicGimplR> SmartConfigR(UGrid,2*Nd,Stouts2,mask_types2);
+  SmearedConfigurationRect<PeriodicGimplR> SmartConfig1R(UGrid,2*Nd,Stouts1R,mask_types1R); std::cout << "1R" <<std::endl;
+  SmearedConfigurationRect<PeriodicGimplR> SmartConfig1S(UGrid,2*Nd,Stouts1S,mask_types1S); std::cout << "1S" <<std::endl;
+  SmearedConfigurationRect<PeriodicGimplR> SmartConfigR(UGrid,2*2*Nd,Stouts2,mask_types2); std::cout << "R" <<std::endl;
   SmearedConfigurationMasked<PeriodicGimplR> SmartConfigS(UGrid,2*Nd,SmearerS);
   SmearedConfiguration<PeriodicGimplR> StoutConfig(UGrid,1,SmearerS);
 
@@ -209,31 +211,32 @@ int main (int argc, char ** argv)
   std::cout << " *********  FIELD TRANSFORM SMEARING ***** "<<std::endl;
 
   SmartConfigS.set_Field(U);
-  ForceTest<GimplTypesR>(PlaqAction,SmartConfigS,FilterNone);
+  ForceTest<GimplTypesR>(PlaqAction,SmartConfigS,FilterNone, "S");
 
   SmartConfigS.set_Field(U);
-  ForceTest<GimplTypesR>(RectAction,SmartConfigS,FilterNone);
+  ForceTest<GimplTypesR>(RectAction,SmartConfigS,FilterNone,"S");
 
   SmartConfigS.set_Field(U);
-  ForceTest<GimplTypesR>(JacobianS,SmartConfigS,FilterNone);
+  ForceTest<GimplTypesR>(JacobianS,SmartConfigS,FilterNone,"S");
 
   SmartConfigS.set_Field(U);
-  ForceTest<GimplTypesR>(Nf2,SmartConfigS,FilterNone);
-  
-  std::vector< SmearedConfigurationRect<PeriodicGimplR> > SmartConfigs{SmartConfig1S, SmartConfig1R, SmartConfigR};
-  std::vector< JacobianAction<PeriodicGimplR,SmearedConfigurationRect<PeriodicGimplR>> > Jacobians{Jacobian1S, Jacobian1R, JacobianR};
+  ForceTest<GimplTypesR>(Nf2,SmartConfigS,FilterNone,"S");
+
+  std::vector<std::string> smr_typs = {"1S","1R","R"};
+  std::vector< SmearedConfigurationRect<PeriodicGimplR>* > SmartConfigs{&SmartConfig1S, &SmartConfig1R, &SmartConfigR};
+  std::vector< JacobianAction<PeriodicGimplR,SmearedConfigurationRect<PeriodicGimplR>>* > Jacobians{&Jacobian1S, &Jacobian1R, &JacobianR};
   for(int i=0; i<SmartConfigs.size(); i++){
-    SmartConfigs[i].set_Field(U);
-    ForceTest<GimplTypesR>(PlaqAction,SmartConfigs[i],FilterNone);
+    SmartConfigs[i]->set_Field(U);
+    ForceTest<GimplTypesR>(PlaqAction,*SmartConfigs[i],FilterNone, smr_typs[i]);
     
-    SmartConfigs[i].set_Field(U);
-    ForceTest<GimplTypesR>(RectAction,SmartConfigs[i],FilterNone);
+    SmartConfigs[i]->set_Field(U);
+    ForceTest<GimplTypesR>(RectAction,*SmartConfigs[i],FilterNone,smr_typs[i]);
     
-    SmartConfigs[i].set_Field(U);
-    ForceTest<GimplTypesR>(Jacobians[i],SmartConfigs[i],FilterNone);
+    SmartConfigs[i]->set_Field(U);
+    ForceTest<GimplTypesR>(*Jacobians[i],*SmartConfigs[i],FilterNone,smr_typs[i]);
 
-    SmartConfigs[i].set_Field(U);
-    ForceTest<GimplTypesR>(Nf2,SmartConfigs[i],FilterNone);
+    SmartConfigs[i]->set_Field(U);
+    ForceTest<GimplTypesR>(Nf2,*SmartConfigs[i],FilterNone,smr_typs[i]);
   }
   
   std::cout << " *********    STOUT SMEARING ***** "<<std::endl;
@@ -250,14 +253,21 @@ int main (int argc, char ** argv)
 
   std::cout << " *********    Force Consistency Check  ***** "<<std::endl;
   LatticeGaugeField Force1S(UGrid);
+  SmartConfig1S.set_Field(U);
   SmartConfig1S.logDetJacobianForceLevel(U, Force1S, 0);
   LatticeGaugeField ForceS(UGrid);
+  SmartConfigS.set_Field(U);
   SmartConfigS.logDetJacobianForceLevel(U, ForceS, 0);
+  LatticeGaugeField ForceSold(UGrid);
+  SmartConfigS.set_Field(U);
+  SmartConfigS.logDetJacobianForceLevel(1,U, ForceSold, 0);
   
   std::cout<< GridLogMessage << "+++++++++++++++++++++++++++++++++++++++++++++++++++++++++"<<std::endl;
   std::cout<< GridLogMessage << "Force Stout from Rect : "<< norm2(Force1S)    <<std::endl;
-  std::cout<< GridLogMessage << "Force Stout from Mask : "<< norm2(ForceS)    <<std::endl;
-  std::cout<< GridLogMessage << "diff : "<< norm2(Force1S) - norm2(ForceS)   <<std::endl;
+  std::cout<< GridLogMessage << "Force Stout from Mask : "<< norm2(ForceS)    <<" "<<norm2(ForceSold)<<std::endl;
+  std::cout<< GridLogMessage << "diff 1S vs S: "<< norm2(Force1S- ForceS)   <<std::endl;
+  std::cout<< GridLogMessage << "diff 1S vs Sold: "<< norm2(Force1S- ForceSold)   <<std::endl;
+  std::cout<< GridLogMessage << "diff S vs Sold: "<< norm2(ForceS- ForceSold)   <<std::endl;
   std::cout<< GridLogMessage << "*********************************************************"<<std::endl;
   
   Grid_finalize();

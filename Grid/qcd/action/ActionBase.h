@@ -33,7 +33,7 @@ directory
 #define ACTION_BASE_H
 
 
-#define PRINT_SNAPSHOTS
+//#define PRINT_SNAPSHOTS
 #ifdef PRINT_SNAPSHOTS
 #include <algorithm>
 #include <cctype>

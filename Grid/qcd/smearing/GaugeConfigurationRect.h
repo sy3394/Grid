@@ -16,7 +16,7 @@ NAMESPACE_BEGIN(Grid);
   Modified for a multi-subset smearing (aka Luscher Flowed HMC)
 */
 template <class Gimpl>
-class SmearedConfigurationRect : public SmearedConfiguration<Gimpl> //from Masked better???
+class SmearedConfigurationRect : public SmearedConfigurationMasked<Gimpl> //from Masked better???
 {
 public:
   INHERIT_GIMPL_TYPES(Gimpl);
@@ -36,7 +36,7 @@ private:
   //   - flow kernel: 1 =:= Wilson,    2 =:= short-side rectangle
   //   -  mask types: 1 =:= red-black, 2 =:= 2x2 red-black in the plane perp. to \mu but identical in mu-dir
   
-  int Nsmr_one_step = 8;
+  int Nsmr_one_step = 2*Nd; // = #filterings(even colour, odd colour) x #dirs of smearing
   std::vector<int> mask_types;
   std::vector<Smear_Stout<Gimpl> *> Stouts;
   std::vector<LatticeLorentzComplex> masks; // should we turn this to poiners?????????
@@ -57,17 +57,39 @@ private:
   void BaseSmear(GaugeLinkField& Cmu, const GaugeField& U,int mu,RealD rho, int flow_kernel) {
     GridBase *grid = U.Grid();
     WilsonLoops<Gimpl> WL;
-    
+
+
+
+    Cmu = Zero();
     switch (flow_kernel) { 
-    case 1:
+    case 1:{
+      GaugeLinkField tmp_stpl(grid);
+	  
+      std::cout << GridLogMessage <<"BaseSmear: 1" << std::endl;//DEBUG
       WL.Staple(Cmu, U, mu);  //nb staple conventions of IroIro and Grid differ by a dagger
-      break;
-    case 2:
-      // TODO: prepare optimized version
-      WL.RectStapleUnoptimisedRs(Cmu, U, mu);
+      Cmu = adj(rho * Cmu);
+#if 0 // produced the exactly same numbers
+      for(int nu=0; nu<Nd; ++nu){
+	if (nu != mu) {
+	// get the staple in direction mu, nu
+        WL.Staple(tmp_stpl, U, mu, nu);  //nb staple conventions of IroIro and Grid differ by a dagger
+        Cmu += adj(tmp_stpl*rho);
+	}
+      }
+#endif
       break;
     }
-    Cmu = adj(rho * Cmu);
+    case 2:
+      // TODO: prepare optimized version
+      std::cout << GridLogMessage <<"BaseSmear: 2" << std::endl;//DEBUG     
+      WL.RectStapleUnoptimisedRs(Cmu, U, mu);
+          Cmu = adj(rho * Cmu);
+      break;
+    }
+
+    //    Cmu = adj(rho * Cmu);
+    std::cout << GridLogMessage << "BaseSmear: " << mu<<" "<<rho<<" "<<flow_kernel<<" "<<norm2(Cmu) << std::endl;//DEBUG
+
   }
 
   void BaseSmearDerivativeP(GaugeField& SigmaTerm,
@@ -161,7 +183,7 @@ private:
     
     GridBase *grid = U.Grid();
 
-    WilsonLoops<Gimpl> WL;
+    //Rect_Stout Smearer(grid);
     GaugeLinkField staple(grid), u_tmp(grid);
     GaugeLinkField iLambda_mu(grid), iLambda_nu(grid);
     GaugeLinkField U_mu(grid), U_nu(grid);
@@ -180,52 +202,54 @@ private:
         U_nu = peekLorentz(U, nu);
 	
 	if ( (mu==mmu)||(nu==mmu) )
-	  WL.RectStapleUnoptimisedRsUpper(staple, U, mu, nu);
+	  Rect_Stout<Gimpl>::RectStapleUnoptimisedRsUpper(staple, U, mu, nu);
 	
 	if(nu==mmu) {
 	  iLambda_nu = peekLorentz(iLambda, nu);
 
-	  // 1st
+	  // 1st: -
           temp_Sigma = -rho_numu*staple*iLambda_nu;
 	  Gimpl::AddLink(SigmaTerm, temp_Sigma, mu);
 
-	  // 2nd
-	  sh_field = -rho_numu*adj(U_mu)*Cshift(temp_Sigma*U_mu, mu, -1);
+	  // 2nd: -
+	  sh_field = adj(U_mu)*Cshift(temp_Sigma*U_mu, mu, -1);
 	  Gimpl::AddLink(SigmaTerm, sh_field, mu);
 
-	  // 3rd
-	  sh_field = Cshift(iLambda_nu, nu, 1);
+	  // 3rd: +
+	  sh_field = Cshift(iLambda_nu, mu, 1);
 	  temp_Sigma = rho_numu*sh_field*adj(U_mu)*Cshift(staple*U_mu,mu,-1);
 	  Gimpl::AddLink(SigmaTerm, temp_Sigma, mu);
 
-	  // 4th
+	  // 4th: +
 	  sh_field = Cshift(U_mu*temp_Sigma, mu,1)*adj(U_mu);
 	  Gimpl::AddLink(SigmaTerm, sh_field, mu);
 
-	  // 5th
+	  // 5th: +
 	  temp_Sigma = rho_numu*adj(U_mu)*Cshift(adj(staple*U_nu)*adj(U_mu)*iLambda_nu*U_nu,nu,-1);
 	  Gimpl::AddLink(SigmaTerm, temp_Sigma, mu);
 
-	  // 6th
+	  // 6th: +
 	  sh_field = adj(U_mu)*Cshift(temp_Sigma*U_mu,mu,-1);
 	  Gimpl::AddLink(SigmaTerm, sh_field, mu);
 
-	  // 7th
-	  temp_Sigma = -rho_numu*Cshift(Cshift(U_nu*iLambda_nu*adj(adj(U_nu)*Cshift(adj(U_mu)*Cshift(staple*U_mu,mu,-1),mu,-1)),mu,1),nu,-1);
+	  // 7th: -
+	  temp_Sigma = -rho_numu*Cshift(Cshift(adj(U_nu)*iLambda_nu*adj(adj(U_nu)*Cshift(adj(U_mu)*Cshift(staple*U_mu,mu,-1)*U_mu,mu,-1)),mu,1),nu,-1)*adj(U_mu);
 	  Gimpl::AddLink(SigmaTerm,temp_Sigma, mu);
 
-	  // 8th
-	  sh_field = Cshift(U_mu*temp_Sigma,mu,1);
+	  // 8th: -
+	  sh_field = Cshift(U_mu*temp_Sigma,mu,1)*adj(U_mu);
 	  Gimpl::AddLink(SigmaTerm, sh_field, mu);
 	}
 
 	if ( mu == mmu ) {
-	  // 9th
-	  temp_Sigma = -rho_munu*Cshift(U_nu*Cshift(U_nu*Cshift(Cshift(adj(U_mu)*iLambda_mu,nu,1)*adj(U_nu),mu,-1),nu,1),mu,1)*adj(U_nu);
+	  // 9th: -
+	  sh_field = Cshift(U_nu,mu,1);
+	  temp_Sigma = -rho_munu*sh_field*Cshift(sh_field*Cshift(adj(U_mu)*iLambda_mu,nu,1)*adj(U_nu),nu,1)*adj(U_nu);
 	  Gimpl::AddLink(SigmaTerm,temp_Sigma, mu);
 
-	  // 10th
-	  temp_Sigma = -rho_munu*Cshift(Cshift(adj(U_nu)*Cshift(adj(U_nu)*Cshift(adj(U_mu)*iLambda_mu*U_nu,mu,-1),nu,-1),mu,1)*U_nu,nu,-1);
+	  // 10th: -
+	  sh_field = adj(sh_field);
+	  temp_Sigma = -rho_munu*Cshift(sh_field*Cshift(sh_field*adj(U_mu)*iLambda_mu*U_nu,nu,-1)*U_nu,nu,-1);
 	  Gimpl::AddLink(SigmaTerm,temp_Sigma, mu);
 	}
       }
@@ -243,11 +267,13 @@ private:
       break;
     case 2:
       BaseSmearDerivativeRs(SigmaTerm,iLambda,U,mmu,rho);
+      break;
     }
   }
 
   // Adjoint vector to GaugeField force
-  //tmp note: extra minus sign to adopt to Lucher's norm conv.
+  //tmp note: the output deviates from Luscher's convntion by -1 as it is
+  //            to account for deviation by -1 from force calculation
   void InsertForce(GaugeField &Fdet,AdjVectorField &Fdet_nu,int nu)
   {
     Complex ci(0,1);
@@ -257,7 +283,7 @@ private:
       ColourMatrix te;
       SU3::generator(e, te);
       auto tmp=peekColour(Fdet_nu,e);
-      Fdet_pol=Fdet_pol - ci*tmp*te; // Fdet_pol + ci*tmp*te
+      Fdet_pol=Fdet_pol + ci*tmp*te; // Fdet_pol + ci*tmp*te
     }
     pokeLorentz(Fdet, Fdet_pol, nu);
   }
@@ -272,14 +298,13 @@ private:
     ColourMatrix   tc;
     for(int b=0;b<Ngen;b++) {
       SU3::generator(b, tb);
-      tb = -ci * tb;  // 2 * ci * tb
+      tb = 2.0 * ci * tb; // - ci * tb; in Lucher's convention but multiplied the missing factor from below
       Nx = Ta( adj(PlaqL)*tb * PlaqR );
-      SU3::LieAlgebraProject(NxAd,Nx,b); /// extra factor of -1/2 from Lucher's convention
+      SU3::LieAlgebraProject(NxAd,Nx,b); /// needs to multiply -2 to get to Lucher's convention
     }
   }
 
-  // tmp comment: orig. extra factor of (-2)*(-2)/(-2) = -2
-  // deviates from the Luscher's norm. conv. by -1, which is accounted for in the end of LogDetJacobianForceLevel routine
+  // tmp comment: orig. extra factor of (-2)*(-2)/(-2) = -2 <- multiplied the result by 2 but still deviation from Luscher by -1
   void Compute_MpInvJx_dNxxdSy(const GaugeLinkField &PlaqL,const GaugeLinkField &PlaqR, AdjMatrixField MpInvJx,AdjVectorField &Fdet2 )
   {
     GaugeLinkField UtaU(PlaqL.Grid());
@@ -298,7 +323,7 @@ private:
     for(int a=0;a<Ngen;a++) {
       tta-=usecond();
       SU3::generator(a, ta);
-      ta = - ci * ta; //2.0 * ci * ta;
+      ta = ci * ta; //2.0 * ci * ta;
       UtaU= adj(PlaqL)*ta*PlaqR; // 6ms
       tta+=usecond();
       ////////////////////////////////////////////
@@ -308,7 +333,7 @@ private:
       ////////////////////////////////////////////
       for(int c=0;c<Ngen;c++) {
 	SU3::generator(c, tc);
-	tc = - ci * tc; //2.0*ci*tc;
+	tc = (2.0)* ci * tc; //2.0*ci*tc;//changd so that the entire method is consistent with Luscher's convention
 	tp-=usecond(); 
 	D = Ta( tc *UtaU); // 2ms
 #if 1
@@ -325,7 +350,7 @@ private:
       //      Dump(Dbc_opt,"Dbc_opt");
       //      Dump(Dbc,"Dbc");
       tpk-=usecond();
-      tmp = -trace(MpInvJx * Dbc_opt);
+      tmp = trace(MpInvJx * Dbc_opt);
       PokeIndex<ColourIndex>(Fdet2,tmp,a);
       tpk+=usecond();
     }
@@ -334,27 +359,35 @@ private:
 	      << " ta "<<tta/1e3<<" ms" << " poke "<<tpk/1e3<< " ms"<<std::endl;
   }
 
-  void linkTracer(const std::vector<GaugeLinkField> &Umu, const std::vector<int> dirs0, Real rho, GaugeLinkField &rect){
+  void linkTracer(const std::vector<GaugeLinkField> &Umu, const GaugeLinkField &Umskd, const std::vector<int> dirs0, int ind, Real rho, GaugeLinkField &rect){
     // dir in dirs is 1+mu where mu=0,..3 to put sign on dir
-    GaugeLinkField tmp(Umu[0].Grid());
-
-    std::vector<int> dirs = dirs0;
-    std::reverse(dirs.begin(), dirs.end());
+    // ind: index of dirs for which masked gauge link field should be used.  The indexing starts from 1, not 0
+    //    actually ind is always equal to size of dirs0 => can become just a flag
+    GaugeLinkField tmp(Umu[0].Grid()), U(Umu[0].Grid()), tmp1(Umu[0].Grid());
+    tmp = Zero(); U = Zero();
+    std::vector<int> dirs = dirs0; 
+    std::reverse(dirs.begin(), dirs.end());for(auto i :dirs)std::cout<<i<<std::endl;
     for(int i=0; i<dirs.size(); i++){
       int mu = dirs[i];
+      //-1: -2 0 0 -1 12288 0
+      std::cout << GridLogMessage <<"in_linkTracer "<<mu<<": "<<mu-1<<" "<<-mu-1<<" "<<norm2(tmp)<<" "<<ind<<" "<<norm2(U)<<" "<<std::abs(mu) - 1<<std::endl;
       if(i == 0){
+	if ( ind>0) U = Umskd;
+	else U = Umu[std::abs(mu) - 1];
 	if(mu>0)
-	  tmp = Gimpl::CovShiftIdentityForward(Umu[mu-1],mu-1);
+	  tmp = Gimpl::CovShiftIdentityForward(U,mu-1);
 	else
-	  tmp = Gimpl::CovShiftIdentityBackward(Umu[-mu-1],-mu-1);
+	  tmp = Gimpl::CovShiftIdentityBackward(U,-mu-1);
       }else{
 	if(mu>0)
-	  tmp = Gimpl::CovShiftForward(Umu[mu-1],mu-1,tmp);
+	  tmp1 = Gimpl::CovShiftForward(Umu[std::abs(mu) - 1],mu-1,tmp);
 	else
-	  tmp = Gimpl::CovShiftBackward(Umu[-mu-1],-mu-1,tmp);
+	  tmp1 = Gimpl::CovShiftBackward(Umu[std::abs(mu) - 1],-mu-1,tmp);
+	tmp = tmp1;
       }
-      rect = rho*tmp;
     }
+    std::cout << GridLogMessage <<"linkTracer "<<dirs.size()<<" "<<rho<<" "<<norm2(tmp)<<std::endl;
+    rect = rho*tmp;
   }
     
 public:
@@ -405,18 +438,20 @@ public:
     Umsk = U;
     ApplyMask(Umsk,smr);
     Utmp = peekLorentz(Umsk,mu);
-
+    std::cout << GridLogMessage << "norm Utmp: "<<mu<<" "<<norm2(Utmp)<<std::endl;
     ////////////////////////////////////////////////////////////////////////////////
     // Retrieve the eps/rho parameter(s) -- could allow all different but not so far
     ////////////////////////////////////////////////////////////////////////////////
-    int flw_knl = mask_types[smr/Nsmr_one_step];
+    int smr_ind = smr/Nsmr_one_step;
+    int flw_knl = mask_types[smr_ind];
     double rho;
+    
     switch(flw_knl){
     case 1:
-      rho=this->Stouts[flw_knl]->SmearRho[1];
+      rho=this->Stouts[smr_ind]->SmearRho[1];
       break;
     case 2:
-      rho=((Rect_Stout<Gimpl> *) this->Stouts[flw_knl])->SmearRhoRs[1];
+      rho=((Rect_Stout<Gimpl> *) this->Stouts[smr_ind])->SmearRhoRs[1];
       break;
     }
     int idx=0;
@@ -425,10 +460,10 @@ public:
 	double rho1;
 	switch(flw_knl){
 	case 1:
-	  rho1=this->Stouts[flw_knl]->SmearRho[idx];
+	  rho1=this->Stouts[smr_ind]->SmearRho[idx];
 	  break;
 	case 2:
-	  rho1=((Rect_Stout<Gimpl> *) this->Stouts[flw_knl])->SmearRhoRs[idx];
+	  rho1=((Rect_Stout<Gimpl> *) this->Stouts[smr_ind])->SmearRhoRs[idx];
 	  break;
 	}
 
@@ -436,6 +471,7 @@ public:
 	else         assert(rho1==0.0);
 	idx++;
       }}
+    std::cout << GridLogMessage <<"JacobActionREct: "<<rho<<" "<<smr_ind<<" "<<flw_knl<<" "<<mu<<std::endl;
     //////////////////////////////////////////////////////////////////
     // Assemble the N matrix
     //////////////////////////////////////////////////////////////////
@@ -467,6 +503,7 @@ public:
     //////////////////////////////////////
     // J(x) = 1 + Sum_k=1..N (-Zac)^k/(k+1)!
     //////////////////////////////////////
+#if 1
     time=-usecond();
     X=1.0; 
     JxAd = X;
@@ -479,7 +516,7 @@ public:
     }
     time+=usecond();
     std::cout << GridLogMessage << "Jx took "<<time<< " us"<<std::endl;
-
+#endif
     //////////////////////////////////////
     // dJ(x)/dxe
     //////////////////////////////////////
@@ -494,6 +531,7 @@ public:
     AdjMatrixField dt3(grid);
     AdjMatrixField aunit(grid);
 
+#if 1
     // tmp comment: an extra factor of -2 here (just compare with theoretical form) <- the factor of -1 removed
     // Norm: the remaning factor of 2 is accouted for in the end of this function
     for(int b=0;b<8;b++){
@@ -505,7 +543,6 @@ public:
     X  = (-1.0)*ZxAd; 
     t2 = X;
     for (int j = 12; j > 1; --j) {
-      // t3 = 1 + 2\sum_{k=1} X^(k-2)/(k+1)!
       t3  = t2*(1.0 / (j + 1))  + aunit;
       t2  = X * t3;
       for(int b=0;b<8;b++){
@@ -513,9 +550,53 @@ public:
       }
     }
     //  The above computation comes with an additinal factor of 2 (just compared with the theoretical form or below)
-    //for(int b=0;b<8;b++){
-    //  dJdX[b] = -dJdX[b];
-    //}
+    for(int b=0;b<8;b++){
+      dJdX[b] = -0.5*dJdX[b];
+    }
+#endif
+
+#if 1  //testing combined Horner's rule
+    std::vector<AdjMatrixField>  XB_dJdX;    XB_dJdX.resize(8,grid);
+    //std::vector<AdjMatrix> TRb_s; TRb_s.resize(8);
+    AdjMatrixField XB_tbXn(grid);
+    AdjMatrixField XB_sumXtbX(grid);
+    AdjMatrixField XB_t2(grid);
+    AdjMatrixField XB_dt2(grid);
+    AdjMatrixField XB_t3(grid);
+    AdjMatrixField XB_dt3(grid);
+    AdjMatrixField XB_JxAd(grid);
+    //AdjMatrixField aunit(grid);
+    
+    // 1. Pre-loop Negation
+    X = (-1.0) *ZxAd;
+    
+    aunit = ComplexD(1.0);
+    XB_t3 = aunit; 
+    XB_t2 = X;
+    for(int b=0; b<8; b++) {
+      // Note: Since Y = -X, the derivative w/r/t X includes a -1 factor
+      // As TRb_s[b] is - adj_basis in Luscher's convention, -1 is already included
+      XB_dJdX[b] = Zero(); //TRb_s[b]; 
+    }
+    
+    // 2. The Horner Loop (Unchanged)
+    for (int j = 12; j >= 1; --j) {
+      double kfac = 1.0 / (j + 1);
+
+      for(int b=0; b<8; b++) {
+        // dJdX[b] correctly accumulates the negative contributions
+        XB_dJdX[b] = (TRb_s[b] * XB_t3 + X * XB_dJdX[b] )* kfac;
+      }
+
+      XB_t3 = (XB_t2 * kfac) + aunit;
+      XB_t2 = X * XB_t3;
+    }
+    XB_JxAd = XB_t3;
+    std::cout << GridLogMessage << "DEBUG: Horner's method JxAd"<<norm2(XB_JxAd-JxAd)<< " djdx ";
+    for(int i =0;i<dJdX.size();i++) std::cout<<norm2(XB_dJdX[i] - dJdX[i])<<" ";
+    std::cout <<std::endl;
+#endif
+    
     time+=usecond();
     std::cout << GridLogMessage << "dJx took "<<time<< " us"<<std::endl;
     /////////////////////////////////////////////////////////////////
@@ -538,7 +619,7 @@ public:
     // invert the 8x8
     /////////////////////////
     time=-usecond();
-    MpAdInv = Inverse(MpAd);
+    MpAdInv = Inverse(MpAd); //Inverse_RealPart(MpAd); //Inverse(MpAd);
     time+=usecond();
     std::cout << GridLogMessage << "MpAdInv took "<<time<< " us"<<std::endl;
     
@@ -590,9 +671,13 @@ public:
     GaugeLinkField Fdet_pol(grid); // one polarisation
 
     std::vector<int> dirs;
+#if 0
     std::vector<GaugeLinkField> Umu_tmp(Nd,grid);
-    Umu_tmp[mu] = Utmp;
-
+    Umu_tmp = Umu;
+    Umu_tmp[mu] = Utmp;//vector of gauge links in each dir where Umu_tmp[mu] is masked
+    for(auto ttt: Umu_tmp) std::cout << GridLogMessage << "DEBUG: Umu_tmp[mu] "<< norm2(ttt)<<" "<<std::endl;
+#endif
+    
     RealD t4 = usecond();
     for(int nu=0;nu<Nd;nu++){
       ////////////////////  Conventions  ///////////////////
@@ -609,7 +694,7 @@ public:
       /////////////////////////////////////////////////////
       if (nu!=mu) {
 	switch(flw_knl){
-	case 1:{
+	case 1:{std::cout << GridLogMessage << "DEBUG: entered loops"<<std::endl;
 
 	///////////////// +ve nu /////////////////
 	//     __
@@ -626,6 +711,13 @@ public:
 	time+=usecond();
 	std::cout << GridLogMessage << "PlaqLR took "<<time<< " us"<<std::endl;
 
+#if 1 //DEBUG
+	GaugeLinkField PlaqR2(grid);
+	dirs = {(nu+1),mu+1,-(nu+1),-(mu+1)};
+	linkTracer(Umu, Utmp, dirs, 4, -rho, PlaqR2);
+	std::cout << GridLogMessage << "DEBUG: PlaqR linkT: "<<norm2(PlaqR2-PlaqR)<<std::endl;
+#endif
+	
 	time=-usecond();
 	dJdXe_nMpInv_y =   dJdXe_nMpInv;
 	ComputeNxy(PlaqL,PlaqR,Nxy);
@@ -647,7 +739,12 @@ public:
 	PlaqR=(rho)*Gimpl::CovShiftForward(Umu[nu], nu,
 		      Gimpl::CovShiftBackward(Umu[mu], mu,
     	 	        Gimpl::CovShiftIdentityBackward(Umu[nu], nu)));
-
+#if 1 //DEBUG
+        //GaugeLinkField PlaqR2(grid);
+        dirs = {(nu+1),-(mu+1),-(nu+1)};
+        linkTracer(Umu, Utmp, dirs, -1, rho, PlaqR2);
+        std::cout << GridLogMessage << "DEBUG: PlaqR linkT: "<<norm2(PlaqR2-PlaqR)<<std::endl;
+#endif
 	PlaqL=Gimpl::CovShiftIdentityBackward(Utmp, mu);
 
 	dJdXe_nMpInv_y = Cshift(dJdXe_nMpInv,mu,-1);
@@ -760,11 +857,12 @@ public:
 	  
 	  time=-usecond();
 	  PlaqL=Ident;
-	  
+
+	  dirs.clear();
 	  dirs = {nu+1,nu+1,mu+1,-(nu+1),-(nu+1),-(mu+1) };
-	  linkTracer(Umu_tmp, dirs, -rho, PlaqR);
+	  linkTracer(Umu, Utmp, dirs, 6, -rho, PlaqR); //Umu_tmp
 	  time+=usecond();
-	  std::cout << GridLogMessage << "PlaqLR took "<<time<< " us"<<std::endl;
+	  std::cout << GridLogMessage << "PlaqLR took "<<time<< " us Rect"<<norm2(PlaqR)<<" mu "<<mu<<" nu "<<nu<<std::endl;
 
 	  time=-usecond();
 	  dJdXe_nMpInv_y =   dJdXe_nMpInv;
@@ -774,8 +872,8 @@ public:
 	  std::cout << GridLogMessage << "ComputeNxy (occurs 10x) took "<<time<< " us"<<std::endl;
 
 	  time=-usecond();
-	  PlaqR=(-1.0)*PlaqR;
-	  Compute_MpInvJx_dNxxdSy(PlaqL,PlaqR,MpInvJx,FdetV);
+	  //PlaqR=(-1.0)*PlaqR; //commented out
+	  Compute_MpInvJx_dNxxdSy(PlaqR,PlaqL,MpInvJx,FdetV);//PlaqR,PlaqL,MpInvJx,FdetV);//PlaqL,PlaqR,MpInvJx,FdetV);
 	  Fdet2_nu = FdetV;
 	  time+=usecond();
 	  std::cout << GridLogMessage << "Compute_MpInvJx_dNxxSy (occurs 10x) took "<<time<< " us"<<std::endl;
@@ -785,10 +883,16 @@ public:
 	  //    |  :
 	  //    x==y    
 	  // x = y - mu 
-	  
+
+	  dirs.clear();
 	  dirs = {nu+1,nu+1,-(mu+1),-(nu+1),-(nu+1)};
-	  linkTracer(Umu, dirs, rho, PlaqR);
-	  PlaqL=Gimpl::CovShiftIdentityBackward(Utmp, mu);
+	  //linkTracer(Umu, Utmp, dirs, -1, rho, PlaqR);
+	  PlaqR = rho * Gimpl::CovShiftForward(Umu[nu],nu,
+					       Gimpl::CovShiftForward(Umu[nu],nu,
+								      Gimpl::CovShiftBackward(Umu[mu],mu,
+											      Gimpl::CovShiftBackward(Umu[nu],nu,
+														      Gimpl::CovShiftIdentityBackward(Umu[nu],nu)))));
+	  PlaqL=Gimpl::CovShiftIdentityBackward(Utmp, mu); // Note: adj(PlaqL) is used in ComputeNx & Compute_MpInvJx_dNxxdSy
 
 	  dJdXe_nMpInv_y = Cshift(dJdXe_nMpInv,mu,-1);
 	  ComputeNxy(PlaqL, PlaqR,Nxy);
@@ -805,16 +909,24 @@ public:
 	  //    x==    
 	  // x = y - nu
 
+	  dirs.clear();
 	  PlaqL = Gimpl::CovShiftIdentityBackward(Umu[nu], nu);
 	  dirs = {nu+1,(mu+1),-(nu+1),-(nu+1),-(mu+1)};
-	  linkTracer(Umu_tmp, dirs, -rho, PlaqR);
-
+	  //linkTracer(Umu, Utmp, dirs, 5,-rho, PlaqR);
+	  PlaqR = (-rho) * Gimpl::CovShiftForward(Umu[nu],nu,
+						  Gimpl::CovShiftForward(Umu[mu],mu,
+									 Gimpl::CovShiftBackward(Umu[nu],nu,
+												 Gimpl::CovShiftBackward(Umu[nu],nu,
+															 Gimpl::CovShiftIdentityBackward(Utmp,mu)))));
+												 
+												 
+	  
 	  dJdXe_nMpInv_y = Cshift(dJdXe_nMpInv,nu,-1);
 	  ComputeNxy(PlaqL, PlaqR,Nxy);
 	  Fdet1_nu = Fdet1_nu+transpose(Nxy)*dJdXe_nMpInv_y;
 	  
 	  MpInvJx_nu = Cshift(MpInvJx,nu,-1);
-	  Compute_MpInvJx_dNxxdSy(PlaqL,PlaqR,MpInvJx_nu,FdetV);
+	  Compute_MpInvJx_dNxxdSy(PlaqR,PlaqL,MpInvJx_nu,FdetV);//PlaqL,PlaqR,MpInvJx_nu,FdetV);
 	  Fdet2_nu = Fdet2_nu+FdetV;
 
 	
@@ -824,69 +936,53 @@ public:
 	  //    x==    
 	  // x = y - mu - nu
 
+	  dirs.clear();
 	  dirs = {-(nu+1),-(mu+1)};
-	  linkTracer(Umu_tmp, dirs, 1.0,PlaqL);
+	  //linkTracer(Umu,Utmp, dirs, 2, 1.0,PlaqL);
+	  PlaqL = Gimpl::CovShiftBackward(Umu[nu],nu,
+					   Gimpl::CovShiftIdentityBackward(Utmp,mu));
+	  dirs.clear();
 	  dirs = {nu+1,-(mu+1),-(nu+1),-(nu+1)};
-	  linkTracer(Umu, dirs, rho, PlaqR);
+	  //linkTracer(Umu, Utmp, dirs, -1, rho, PlaqR);
+	  PlaqR = rho * Gimpl::CovShiftForward(Umu[nu],nu,
+					       Gimpl::CovShiftBackward(Umu[mu],mu,
+									Gimpl::CovShiftBackward(Umu[nu],nu,
+												 Gimpl::CovShiftIdentityBackward(Umu[nu],nu))));
+					       
 
 
-	  dJdXe_nMpInv_y = Cshift(Cshift(dJdXe_nMpInv,mu,-1),nu,-1);
+	  //dJdXe_nMpInv_y = Cshift(Cshift(dJdXe_nMpInv,mu,-1),nu,-1);
+	  dJdXe_nMpInv_y = Cshift(dJdXe_nMpInv,mu,-1);
+	  dJdXe_nMpInv_y = Cshift(dJdXe_nMpInv_y,nu,-1);
 	  ComputeNxy(PlaqL, PlaqR,Nxy);
 	  Fdet1_nu = Fdet1_nu+transpose(Nxy)*dJdXe_nMpInv_y;
 	  
-	  MpInvJx_nu = Cshift(Cshift(MpInvJx,mu,-1),nu,-1);
+	  //MpInvJx_nu = Cshift(Cshift(MpInvJx,mu,-1),nu,-1);
+	  MpInvJx_nu = Cshift(MpInvJx,mu,-1);
+	  MpInvJx_nu = Cshift(MpInvJx_nu,nu,-1);
 	  Compute_MpInvJx_dNxxdSy(PlaqL,PlaqR,MpInvJx_nu,FdetV);
 	  Fdet2_nu = Fdet2_nu+FdetV;
 
 	
 	  ///////////////// -ve nu /////////////////
-	
+
 	  //    x==
 	  //    :  |
-	  //    |  |
-	  //     ->
-	  // x = y : Computes contr. from this type to the force for U_nu(y) and U_nu(y+nu) <- similar effect happens in all calc. below
-	  PlaqL=Ident;
-	  dirs = {-(nu+1),-(nu+1),mu+1,nu+1,nu+1,-(mu+1)};
-	  linkTracer(Umu_tmp, dirs, -rho, PlaqR);
-	
-	  dJdXe_nMpInv_y =   dJdXe_nMpInv;
-	  ComputeNxy(PlaqL,PlaqR,Nxy);
-	  Fdet1_nu = transpose(Nxy)*dJdXe_nMpInv_y;
-
-	  PlaqR=(-1.0)*PlaqR;
-	  Compute_MpInvJx_dNxxdSy(PlaqL,PlaqR,MpInvJx,FdetV);
-	  Fdet2_nu = FdetV;
-
-	  //    x==y
-	  //    |  :
-	  //    |  |
-	  //     <-
-	  // x = y - mu
-
-	  dirs = {-(nu+1),-(nu+1),-(mu+1),nu+1,nu+1};
-	  linkTracer(Umu, dirs, rho, PlaqR);
-	  PlaqL=Gimpl::CovShiftIdentityBackward(Utmp, mu);
-
-	  dJdXe_nMpInv_y = Cshift(dJdXe_nMpInv,mu,-1);
-	  ComputeNxy(PlaqL, PlaqR,Nxy);
-	  Fdet1_nu = Fdet1_nu+transpose(Nxy)*dJdXe_nMpInv_y;
-	  
-	  MpInvJx_nu = Cshift(MpInvJx,mu,-1);
-	  Compute_MpInvJx_dNxxdSy(PlaqL,PlaqR,MpInvJx_nu,FdetV);
-	  Fdet2_nu = Fdet2_nu+FdetV;
-
-
-	  //    x==
-	  //    |  |
 	  //    y
-	  //    :  |
+	  //    |  |
 	  //     <-
-	  // x = y + nu
+	  // x = y + nu: Computes contr. from this type to the force for U_nu(y) and U_nu(y+nu) <- similar effect happens in all calc. below
 
-	  PlaqR = Gimpl::CovShiftIdentityForward(Umu[nu], nu);
+	  dirs.clear();
 	  dirs = {-(nu+1),(mu+1),(nu+1),(nu+1),-(mu+1)};
-	  linkTracer(Umu_tmp, dirs, rho, PlaqL);
+	  //linkTracer(Umu, Utmp, dirs, 5, rho, PlaqL);
+	  PlaqL = rho* Gimpl::CovShiftBackward(Umu[nu],nu,
+						 Gimpl::CovShiftForward(Umu[mu],mu,
+									Gimpl::CovShiftForward(Umu[nu],nu,
+											       Gimpl::CovShiftForward(Umu[nu],nu,
+														      Gimpl::CovShiftIdentityBackward(Utmp,mu)))));
+														      
+	  PlaqR = Gimpl::CovShiftIdentityForward(Umu[nu], nu);
 
 	  dJdXe_nMpInv_y = Cshift(dJdXe_nMpInv,nu,1);
 	  ComputeNxy(PlaqL, PlaqR,Nxy);
@@ -899,26 +995,102 @@ public:
 
 	
 	  //    x==
-	  //    |  |
-	  //       y
 	  //    |  :
+	  //       y
+	  //    |  |
 	  //     ->
 	  // x = y - mu + nu
-	  
-	  dirs = {-(nu+1),-(mu+1),(nu+1),(nu+1)};
-	  linkTracer(Umu_tmp, dirs, -rho, PlaqR);
-	  dirs = {(nu+1),-(mu+1)};
-	  linkTracer(Umu_tmp, dirs, 1.0,PlaqR);
 
-	  dJdXe_nMpInv_y = Cshift(Cshift(dJdXe_nMpInv,mu,-1),nu,1);
+	  dirs.clear();
+	  dirs = {-(nu+1),-(mu+1),(nu+1),(nu+1)};
+	  //linkTracer(Umu, Utmp, dirs, -1, -rho, PlaqL);
+	  PlaqL = (-rho)*Gimpl::CovShiftBackward(Umu[nu],nu,
+						  Gimpl::CovShiftBackward(Umu[mu],mu,
+									   Gimpl::CovShiftForward(Umu[nu],nu,
+												  Gimpl::CovShiftIdentityForward(Umu[nu], nu))));
+	  dirs.clear();
+	  dirs = {(nu+1),-(mu+1)};
+	  //linkTracer(Umu, Utmp, dirs, 2, 1.0,PlaqR);
+	  PlaqR = Gimpl::CovShiftForward(Umu[nu],nu,
+					 Gimpl::CovShiftIdentityBackward(Utmp,mu));
+	  
+	  //dJdXe_nMpInv_y = Cshift(Cshift(dJdXe_nMpInv,mu,-1),nu,1);
+	  dJdXe_nMpInv_y = Cshift(dJdXe_nMpInv,mu,-1);
+          dJdXe_nMpInv_y = Cshift(dJdXe_nMpInv_y,nu,1);
 	  ComputeNxy(PlaqL, PlaqR,Nxy);
 	  Fdet1_nu = Fdet1_nu+transpose(Nxy)*dJdXe_nMpInv_y;
 
-	  MpInvJx_nu = Cshift(Cshift(MpInvJx,mu,-1),nu,1);
-	  Compute_MpInvJx_dNxxdSy(PlaqL,PlaqR,MpInvJx_nu,FdetV);
+	  //MpInvJx_nu = Cshift(Cshift(MpInvJx,mu,-1),nu,1);
+	  MpInvJx_nu = Cshift(MpInvJx,mu,-1);
+	  MpInvJx_nu = Cshift(MpInvJx_nu,nu,1);
+	  Compute_MpInvJx_dNxxdSy(PlaqR,PlaqL,MpInvJx_nu,FdetV);//PlaqL,PlaqR,MpInvJx_nu,FdetV);
 	  Fdet2_nu = Fdet2_nu+FdetV;
 	  
+
+	  //    x==
+	  //    |  |
+	  //    :  |
+	  //    y->
+	  // x = y + 2nu
+	  dirs.clear();
+	  dirs = {nu+1,nu+1};
+	  //linkTracer(Umu, Utmp, dirs, -1, rho, PlaqR);
+	  PlaqR = rho*Gimpl::CovShiftForward(Umu[nu],nu,
+					     Gimpl::CovShiftIdentityForward(Umu[nu], nu));
+	  dirs.clear();
+	  dirs = {mu+1,-(nu+1),-(nu+1),-(mu+1)};
+	  //linkTracer(Umu, Utmp, dirs, 4, 1.0, PlaqL);
+	  PlaqL = Gimpl::CovShiftForward(Umu[mu],mu,
+					 Gimpl::CovShiftBackward(Umu[nu],nu,
+								  Gimpl::CovShiftBackward(Umu[nu],nu,
+											   Gimpl::CovShiftIdentityBackward(Utmp,mu))));
 	
+	  dJdXe_nMpInv_y = Cshift(dJdXe_nMpInv,nu,2);
+	  ComputeNxy(PlaqL,PlaqR,Nxy);
+	  Fdet1_nu = Fdet1_nu + transpose(Nxy)*dJdXe_nMpInv_y;
+
+	  MpInvJx_nu = Cshift(MpInvJx,nu,2);
+	  Compute_MpInvJx_dNxxdSy(PlaqL,PlaqR,MpInvJx_nu,FdetV);
+	  Fdet2_nu = Fdet2_nu + FdetV;
+
+	  //    x==
+	  //    |  |
+	  //    |  :
+	  //     ->y
+	  // x = y + 2nu - mu
+
+	  dirs.clear();
+	  dirs = {nu+1,nu+1,-(mu+1)};
+	  //linkTracer(Umu, Utmp, dirs, 3, -rho, PlaqR);
+	  PlaqR = (-rho)*Gimpl::CovShiftForward(Umu[nu],nu,
+						Gimpl::CovShiftForward(Umu[nu],nu,
+								       Gimpl::CovShiftIdentityBackward(Utmp,mu)));
+	  dirs.clear();
+	  dirs = {-(mu+1),nu+1,nu+1};
+          //linkTracer(Umu, Utmp, dirs, -1, 1.0, PlaqL);
+	  PlaqL = Gimpl::CovShiftBackward(Umu[mu],mu,
+					   Gimpl::CovShiftForward(Umu[nu],nu,
+								  Gimpl::CovShiftIdentityForward(Umu[nu], nu)));
+
+	  //dJdXe_nMpInv_y = Cshift(Cshift(dJdXe_nMpInv,mu,-1),nu,2);
+	  dJdXe_nMpInv_y = Cshift(dJdXe_nMpInv,mu,-1);
+          dJdXe_nMpInv_y = Cshift(dJdXe_nMpInv_y,nu,2);
+	  ComputeNxy(PlaqL, PlaqR,Nxy);
+	  Fdet1_nu = Fdet1_nu+transpose(Nxy)*dJdXe_nMpInv_y;
+	  
+	  //MpInvJx_nu = Cshift(Cshift(MpInvJx,mu,-1),nu,2);
+	  MpInvJx_nu = Cshift(MpInvJx,mu,-1);
+          MpInvJx_nu = Cshift(MpInvJx_nu,nu,2);
+	  Compute_MpInvJx_dNxxdSy(PlaqR,PlaqL,MpInvJx_nu,FdetV);//PlaqL,PlaqR,MpInvJx_nu,FdetV);
+	  Fdet2_nu = Fdet2_nu+FdetV;
+
+	  /////////////////////////////////////////////////////////////////////
+	  // Set up the determinant force contribution in 3x3 algebra basis
+	  /////////////////////////////////////////////////////////////////////
+	  InsertForce(Fdet1,Fdet1_nu,nu);
+	  InsertForce(Fdet2,Fdet2_nu,nu);
+
+	  
 	  //////////////////////////////////////////////////
 	  // Parallel direction terms
 	  //////////////////////////////////////////////////
@@ -930,17 +1102,20 @@ public:
 	  // x = y - 2nu : Computes contr. from this type to the force for U_nu(y) and U_nu(y+nu) <- similar effect happens in all calc. below
 	  
 	  PlaqL=Gimpl::CovShiftBackward(Umu[nu],nu,Gimpl::CovShiftIdentityBackward(Umu[nu], nu));
+	  dirs.clear();
 	  dirs = {(mu+1),-(nu+1),-(nu+1),-(mu+1)};
-	  linkTracer(Umu_tmp, dirs, -rho,PlaqR);
-
+	  //linkTracer(Umu, Utmp, dirs, 4, -rho,PlaqR);
+	  PlaqR = (-rho)*Gimpl::CovShiftForward(Umu[mu],mu,
+						Gimpl::CovShiftBackward(Umu[nu],nu,
+									Gimpl::CovShiftBackward(Umu[nu],nu,
+												Gimpl::CovShiftIdentityBackward(Utmp,mu))));
 	  dJdXe_nMpInv_y = Cshift(dJdXe_nMpInv,nu,-2);
 	  
 	  ComputeNxy(PlaqL,PlaqR,Nxy);
 	  Fdet1_mu = Fdet1_mu + transpose(Nxy)*dJdXe_nMpInv_y;
 	  
 	  MpInvJx_nu = Cshift(MpInvJx,nu,-2);
-	  
-	  Compute_MpInvJx_dNxxdSy(PlaqL,PlaqR,MpInvJx_nu,FdetV);
+	  Compute_MpInvJx_dNxxdSy(PlaqR,PlaqL,MpInvJx_nu,FdetV);//PlaqL,PlaqR,MpInvJx_nu,FdetV);
 	  Fdet2_mu = Fdet2_mu+FdetV;
 	  
 	
@@ -949,10 +1124,15 @@ public:
 	  //    |  |
 	  //    y..
 	  // x = y + 2nu
-	  
+
+	  dirs.clear();
 	  PlaqL=Gimpl::CovShiftForward(Umu[nu],nu,Gimpl::CovShiftIdentityForward(Umu[nu], nu));
 	  dirs = {(mu+1),(nu+1),(nu+1),-(mu+1)};
-	  linkTracer(Umu_tmp, dirs, -rho,PlaqR);
+	  //linkTracer(Umu, Utmp, dirs, 4, -rho,PlaqR);
+	  PlaqR = (-rho)*Gimpl::CovShiftForward(Umu[mu],mu,
+						Gimpl::CovShiftForward(Umu[nu],nu,
+								       Gimpl::CovShiftForward(Umu[nu],nu,
+											      Gimpl::CovShiftIdentityBackward(Utmp,mu))));
 
 	  dJdXe_nMpInv_y = Cshift(dJdXe_nMpInv,nu,2);
 
@@ -960,12 +1140,16 @@ public:
 	  Fdet1_mu = Fdet1_mu + transpose(Nxy)*dJdXe_nMpInv_y;
 	  
 	  MpInvJx_nu = Cshift(MpInvJx,nu,2);
-	  
-	  Compute_MpInvJx_dNxxdSy(PlaqL,PlaqR,MpInvJx_nu,FdetV);
+	  Compute_MpInvJx_dNxxdSy(PlaqR,PlaqL,MpInvJx_nu,FdetV);//PlaqL,PlaqR,MpInvJx_nu,FdetV);
 	  Fdet2_mu = Fdet2_mu+FdetV;
 	  break;
 	}
-      }
+	default:
+	  {
+	    assert(1!=1 && " not entered force calculation");
+	      break;
+	  }
+	}
       }
     }
     RealD t5 = usecond();
@@ -975,10 +1159,11 @@ public:
     InsertForce(Fdet1,Fdet1_mu,mu);
     InsertForce(Fdet2,Fdet2_mu,mu);
 
-    // The overall extra factor of 2 (from dJdX and Compute_MpInvJx_dNxxdSy) is accounted
-    // The overall minus sign: Trivializing Maps, the Wilson Flow and the HMC Algorithm (Lushcer) Eq. (6.1)
-    //   can be regarded to moved to InsertForce routine
-    force=0.5*(Fdet1 + Fdet2);
+    // The overall extra factor of 2 (from dJdX and Compute_MpInvJx_dNxxdSy) is removed
+    // each also came with an extra factor of -1 from Luscher's convention, which is kept for the moment
+    //   This is because InertForce come with extra factor of -1, which can be adjasted
+    // The overall minus sign in force is necessary: Trivializing Maps, the Wilson Flow and the HMC Algorithm (Lushcer) Eq. (6.1)
+    force=-1.0*(Fdet1 + Fdet2); //-0.5*(Fdet1 + Fdet2);
     RealD t1 = usecond();
     std::cout << GridLogMessage << " logDetJacobianForce level took "<<t1-t0<<" us "<<std::endl;
     std::cout << GridLogMessage << " logDetJacobianForce t3-t0 "<<t3a-t0<<" us "<<std::endl;
@@ -1018,14 +1203,15 @@ public:
     //////////////////////////////////////////////////////////////////
     // Assemble the N matrix
     //////////////////////////////////////////////////////////////////
-    int flw_knl = mask_types[smr/Nsmr_one_step];
+    int smr_ind = smr/Nsmr_one_step;
+    int flw_knl = mask_types[smr_ind];
     double rho;
     switch(flw_knl){
     case 1:
-      rho=this->Stouts[flw_knl]->SmearRho[1];
+      rho=this->Stouts[smr_ind]->SmearRho[1];
       break;
     case 2:
-      rho=((Rect_Stout<Gimpl> *) this->Stouts[flw_knl])->SmearRhoRs[1];
+      rho=((Rect_Stout<Gimpl> *) this->Stouts[smr_ind])->SmearRhoRs[1];
       break;
     }
     BaseSmear(Cmu, U,mu,rho,flw_knl);
@@ -1182,7 +1368,7 @@ public:
       
       double end = usecond();
       double time = (end - start)/ 1e3;
-      std::cout << GridLogMessage << "GaugeConfigurationMasked: lnDetJacobianForce took " << time << " ms" << std::endl;  
+      std::cout << GridLogMessage << "GaugeConfigurationRect: lnDetJacobianForce took " << time << " ms" << std::endl;  
     }  // if smearingLevels = 0 do nothing
   }
 
@@ -1195,22 +1381,23 @@ public:
 
     // check the pointer is not null
     if (this->ThinLinks == NULL)
-      std::cout << GridLogError << "[SmearedConfigurationMasked] Error in ThinLinks pointer\n";
+      std::cout << GridLogError << "[SmearedConfigurationRect] Error in ThinLinks pointer\n";
 
     if (this->smearingLevels > 0)
     {
-      std::cout << GridLogMessage << "[SmearedConfigurationMasked] Filling SmearedSet\n";
+      std::cout << GridLogMessage << "[SmearedConfigurationRect] Filling SmearedSet\n";
       GaugeField previous_u(this->ThinLinks->Grid());
 
       GaugeField smeared_A(this->ThinLinks->Grid());
       GaugeField smeared_B(this->ThinLinks->Grid());
-
+      std::cout << GridLogDebug << this->smearingLevels <<" "<<this->SmearedSet.size()<<""<<Nsmr_one_step<<std::endl;//DEBUG
       previous_u = *this->ThinLinks;
       double start = usecond();
       for (int smearLvl = 0; smearLvl < this->smearingLevels; smearLvl+=Nsmr_one_step)
 	for(int smr=0; smr<Nsmr_one_step; smr++) {
-	  int flw_knl = mask_types[smearLvl/Nsmr_one_step];
-	  this->Stouts[flw_knl]->smear(smeared_A, previous_u);
+	  int smr_ind = smearLvl/Nsmr_one_step;
+	  int flw_knl = mask_types[smr_ind];
+	  this->Stouts[smr_ind]->smear(smeared_A, previous_u);
 	  ApplyMask(smeared_A,smearLvl+smr);
 	  smeared_B = previous_u;
 	  ApplyMask(smeared_B,smearLvl+smr);
@@ -1220,11 +1407,11 @@ public:
 
 	  // For debug purposes
 	  RealD impl_plaq = WilsonLoops<Gimpl>::avgPlaquette(previous_u);
-	  std::cout << GridLogMessage << "[SmearedConfigurationMasked] smeared Plaq: " << impl_plaq << std::endl;
+	  std::cout << GridLogMessage << "[SmearedConfigurationRect] smeared Plaq: " << impl_plaq << std::endl;
 	}
       double end = usecond();
       double time = (end - start)/ 1e3;
-      std::cout << GridLogMessage << "GaugeConfigurationMasked: Link smearing took " << time << " ms" << std::endl;  
+      std::cout << GridLogMessage << "GaugeConfigurationRect: Link smearing took " << time << " ms" << std::endl;  
     }
   }
   //====================================================================
@@ -1241,17 +1428,19 @@ public:
     GaugeLinkField SigmaKPrime_mu(grid);
     GaugeLinkField GaugeKmu(grid), Cmu(grid);
 
-    int i_smr     = level/Nsmr_one_step;
-    int mask_type = mask_types[i_smr];
-    int sub_level = level%Nsmr_one_step;
+    int smr_ind   = level/Nsmr_one_step; // which smearer to be used
+    int mask_type = mask_types[smr_ind]; // what type of the smearer corresp. to smr_ind
+    int sub_level = level%Nsmr_one_step; // Each mask type uses len(red,black)*Nd = 2*4 = Nsmr_one_step steps
     int mmu= (sub_level/2) %Nd;
     int cb= (sub_level%2);
     double rho=0;
     switch(mask_type){
     case 1:
-      rho = this->Stouts[mask_type]->SmearRho[1];
+      rho = this->Stouts[smr_ind]->SmearRho[1];
+      break;
     case 2:
-      rho = this->Stouts[mask_type]->SmearRho[1];
+      rho = ((Rect_Stout<Gimpl> *)this->Stouts[smr_ind])->SmearRhoRs[1];
+      break;
     }
 
     // Can override this to do one direction only.
@@ -1260,8 +1449,7 @@ public:
 
     SigmaKPrimeA = SigmaKPrime;
     ApplyMask(SigmaKPrimeA,level);
-    SigmaKPrimeB = SigmaKPrime - SigmaKPrimeA; // not updated 
-    
+    SigmaKPrimeB = SigmaKPrime - SigmaKPrimeA; // not updated
     // Could get away with computing only one polarisation here
     // int mu= (smr/2) %Nd;
     // SigmaKprime_A has only one component
@@ -1270,14 +1458,17 @@ public:
     //    for (int mu = 0; mu < Nd; mu++)
     int mu =mmu;
     BaseSmear(Cmu, GaugeK,mu,rho,mask_type);
+        //7 0 1 7 0.1 120790.48252695
+    std::cout << GridLogMessage <<"AnalyticSmearedForce REct "<<level<<" "<<smr_ind<<" "<<mask_type<<" "<<sub_level<<" "<<rho<<" "<<norm2(SigmaKPrimeB)<<" "<<norm2(SigmaKPrimeA)<<" "<<norm2(Cmu)<<" "<<norm2(GaugeK)<<std::endl;//DEBUG
+
     {
-      GaugeKmu = peekLorentz(GaugeK, mu);
-      SigmaKPrime_mu = peekLorentz(SigmaKPrimeA, mu);
-      iQ = Ta(Cmu * adj(GaugeKmu));
-      this->set_iLambda(iLambda_mu, e_iQ, iQ, SigmaKPrime_mu, GaugeKmu);
-      pokeLorentz(SigmaK, SigmaKPrime_mu * e_iQ + adj(Cmu) * iLambda_mu, mu);
+      GaugeKmu = peekLorentz(GaugeK, mu); std::cout << GridLogMessage <<"AnalyticSmearedForce REct gaugek "<<norm2(GaugeKmu)<<std::endl;//DEBUG   
+      SigmaKPrime_mu = peekLorentz(SigmaKPrimeA, mu);  std::cout << GridLogMessage <<"AnalyticSmearedForce REct SigmaKPrime_mu "<<norm2(SigmaKPrime_mu)<<std::endl;//DEBUG       
+      iQ = Ta(Cmu * adj(GaugeKmu));  std::cout << GridLogMessage <<"AnalyticSmearedForce REct iQ "<<norm2(iQ)<<std::endl;//DEBUG                                   
+      this->set_iLambda(iLambda_mu, e_iQ, iQ, SigmaKPrime_mu, GaugeKmu);  std::cout << GridLogMessage <<"AnalyticSmearedForce REct iLambda_mu "<<norm2(iLambda_mu)<<std::endl;//DEBUG
+      pokeLorentz(SigmaK, SigmaKPrime_mu * e_iQ + adj(Cmu) * iLambda_mu, mu); std::cout << GridLogMessage <<"AnalyticSmearedForce REct SigmaK "<<norm2(SigmaK)<<std::endl;//DEBUG 
       pokeLorentz(iLambda, iLambda_mu, mu);
-      std::cout << " mu "<<mu<<" SigmaKPrime_mu"<<norm2(SigmaKPrime_mu)<< " iLambda_mu " <<norm2(iLambda_mu)<<std::endl;
+      std::cout << " mu "<<mu<<" SigmaKPrime_mu "<<norm2(SigmaKPrime_mu)<< " iLambda_mu " <<norm2(iLambda_mu)<<std::endl;
     }
     //    GaugeField SigmaKcopy(grid);
     //    SigmaKcopy = SigmaK;
@@ -1297,10 +1488,10 @@ public:
 
   /* Standard constructor */
   SmearedConfigurationRect(GridCartesian* _UGrid, unsigned int Nsmear, std::vector<Smear_Stout<Gimpl> *> Stouts, std::vector<int> mask_types={2,1})
-    : SmearedConfiguration<Gimpl>(_UGrid, Nsmear,*Stouts[0]), Stouts(Stouts), mask_types(mask_types)
+    : SmearedConfigurationMasked<Gimpl>(_UGrid, Nsmear,*Stouts[0]), Stouts(Stouts), mask_types(mask_types)
   {
-    assert(Nsmear%(4*Nd)==0); 
-    assert(Nsmear/Nsmr_one_step==mask_types.size()); // Nsmr_one_step = #Basic_num_steps; One step <-> a mask type
+    assert(Nsmear%(Nsmr_one_step)==0); 
+    assert(Nsmear/Nsmr_one_step==mask_types.size()); // Nsmr_one_step = #Basic_num_steps = 2*Nd = 8; One step <-> a mask type
     assert(Stouts.size() == mask_types.size());
     
     // was resized in base class
@@ -1311,7 +1502,7 @@ public:
     ////////////////////
     GridRedBlackCartesian * UrbGrid;
     UrbGrid = SpaceTimeGrid::makeFourDimRedBlackGrid(_UGrid);
-    std::vector<Lattice<iScalar<vInteger> > > xs(3,_UGrid);
+    //std::vector<Lattice<iScalar<vInteger> > > xs(3,_UGrid);
     LatticeComplex zeros(_UGrid); zeros = Zero();
     LatticeComplex ones(_UGrid); ones = ComplexD(1.0,0.0); 
     LatticeComplex tmp(_UGrid);
@@ -1324,8 +1515,9 @@ public:
 	masks[i+j]=Zero();
 	tmp = Zero();
 	
-	int mu= (j/4) %Nd;
+	int mu= (j/2) %Nd;
 	int cb= (j%2);
+	
 	switch (mask_type) {
 	case 1:{
 	  LatticeComplex tmpcb(UrbGrid);
@@ -1335,16 +1527,44 @@ public:
 	  break;
 	}
 	case 2:{
-	  // mu direction is trivial to reduce coding in LogDetJacobianForceLevel routine
-	  for(int nu=0, c=0; nu < Nd; nu++)
+	  std::cout << GridLogMessage <<" mask type 2 in seting up Mask"<<i<<" "<<j<<" "<<mu<<" "<<cb<<std::endl;
+	  //Lattice<iScalar<vInteger> > coor_nu(_UGrid),coor_sum(_UGrid); coor_sum = Zero();
+	  LatticeInteger  coor_nu(_UGrid),coor_sum(_UGrid), int_cb(_UGrid); coor_sum = Zero(); int_cb = LatticeInteger::scalar_type(cb);//Integer(cb);
+	  // mu direction is made trivial to reduce coding in LogDetJacobianForceLevel routine
+	  //for(int nu=0, c=0; nu < Nd; nu++)
+	  for(int nu=0; nu < Nd; nu++)
 	    if( nu != mu){
-	      LatticeCoordinate(xs[c],c);
-	      xs[c] = div(xs[c],mask_type);
-	      c++;
+	      LatticeCoordinate(coor_nu,nu);//xs[c],nu);
+	      coor_nu = div(coor_nu,mask_type);
+	      coor_sum = coor_sum + coor_nu;
+	      //xs[c] = div(xs[c],mask_type);
+	      //c++;
 	    }
-	  Lattice<iScalar<vInteger>> pred(_UGrid); pred = Zero();
-	  for(int nu=0; nu<3; nu++) pred = pred + xs[nu];
-	  tmp =  where( mod(pred,2)==(Integer)(cb), ones, zeros);
+	  coor_sum = coor_sum +int_cb;
+	  coor_sum = mod(coor_sum,2);
+	  //Lattice<iScalar<vInteger>> pred(_UGrid); pred = Zero();
+	  //for(int nu=0; nu<3; nu++) pred = pred + xs[nu];
+	  
+	  //tmp = where( mod(coor_sum,2)==(Integer)(cb), ones, zeros); std::cout << GridLogMessage <<"norm mask "<<norm2(tmp)<<std::endl;
+	  tmp = where( coor_sum, ones, zeros);
+
+	  LatticeComplex tmp2(_UGrid), tmp3(_UGrid);
+	  tmp2 = Cshift(tmp,(mu+1+Nd)%Nd,2);
+	  tmp3 = Cshift(tmp,(mu+1+Nd)%Nd,1);
+	  Coordinate point1(Nd), point2(Nd), point3(Nd);
+	  std::cout << GridLogMessage <<"norm mask "<<norm2(tmp)<<" "<<norm2(ones)<<" "<<norm2(tmp+tmp2)<<" "<<norm2(tmp+tmp3)<<std::endl;
+	  for(int nu=0;nu<Nd;nu++) {
+	    point1[nu] = 2;
+	    point3[nu] = 0;
+	  }
+	  
+	  point2 = point1; point2[mu] = 4;
+	  Complex c;
+	  peekSite(c,tmp,point1);
+	  std::cout << GridLogMessage <<"mask value:  mu="<<mu<<"cb= "<<cb<<" "<<point1<<" "<<c;
+	  peekSite(c,tmp,point2); std::cout << point2<< " "<<c;
+	  peekSite(c,tmp,point3); std::cout << point3<<" "<<c<<std::endl;
+	  
 	  break;
 	}
 	}
@@ -1386,7 +1606,7 @@ public:
 
       double end = usecond();
       double time = (end - start)/ 1e3;
-      std::cout << GridLogMessage << " GaugeConfigurationMasked: Smeared Force chain rule took " << time << " ms" << std::endl;
+      std::cout << GridLogMessage << " GaugeConfigurationRect: Smeared Force chain rule took " << time << " ms" << std::endl;
 
     }  // if smearingLevels = 0 do nothing
     SigmaTilde=Gimpl::projectForce(SigmaTilde); // Ta

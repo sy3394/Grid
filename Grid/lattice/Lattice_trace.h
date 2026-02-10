@@ -226,7 +226,7 @@ Lattice<iScalar<iScalar<iMatrix<vComplexD, N> > > > Inverse_RealPart(const Latti
   auto osites = grid->oSites();
   const int Nsimd=grid->Nsimd();
   Lattice<iScalar<iScalar<iMatrix<vComplexD, N> > > > ret(grid);
-#if 0 // CPU version
+#if 1 // CPU version
   autoView(Umu_v,Umu,CpuRead);
   autoView(ret_v,ret,CpuWrite);
   thread_for(site,osites,{

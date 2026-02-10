@@ -40,6 +40,11 @@ NAMESPACE_BEGIN(Grid);
      @details kernel: plaquette, 2x1 rectangle, 1x2 rectangle <- mu-dir in the x-dir
               Rs: 2x1 rectangle: U_\mu is the shorter side of the rectangle
 	      Rl: 1x2 rectangle: U_\mu is part of the longer side of the rectangle
+
+!!! Fow now, smearing is done in the order plq -> Rs -> Rl
+     However, the order matters, and this complicate force calculation.  Also, it is diff 
+     from the one with its kernel sum of the three, i.e., C in Morningstar and Peardon
+      => the user should specify which kernel (Rs, Rl) at the time of construction
   
 */
 template <class Gimpl>
@@ -52,7 +57,39 @@ public:
   INHERIT_GIMPL_TYPES(Gimpl)
     
   const std::vector<double> SmearRhoRs, SmearRhoRl;
+
+  // to be used in analytic smearing and derivative
+  // mu: dir along which force is computed, i.e., dir of updating link; nu: dir of link smeared in a given step
+  static void RectStapleUnoptimisedRsUpper(GaugeLinkField &Stap, const GaugeField &Umu,
+					   int mu, int nu) {
+    GridBase *grid = Umu.Grid();
+
+    std::vector<GaugeLinkField> U(Nd, grid);
+    for (int d = 0; d < Nd; d++) {
+      U[d] = PeekIndex<LorentzIndex>(Umu, d);
+    }
+    Stap = Zero();
+
+    if (nu != mu) {
+
+      //  ^ mu  
+      //  |     --> nu
+      //      ->-
+      //      |  |
+      //         |
+      //      x-<-
+      // shift by mu Umu(x)Unu(x+mu)Udag_mu(x-mu+nu+mu)Udag_mu(x-mu-mu+nu+mu)Udag_nu(x-nu-2mu+nu+mu)
+      Stap += Gimpl::ShiftStaple(Gimpl::CovShiftForward( U[mu], mu,
+				       Gimpl::CovShiftForward( U[nu], nu,
+							       Gimpl::CovShiftBackward( U[mu], mu,
+										       Gimpl::CovShiftBackward( U[mu], mu,
+													       Gimpl::CovShiftIdentityBackward(U[nu], nu)))))
+				 ,mu);
+
+    }
+  }
   
+
 protected:
 
   // Assume: SmearRhoRs is set
@@ -68,11 +105,13 @@ protected:
 	  //      |  |
 	  //
 	  //      |  |
+	  //      x
 	  
+	  // U_nu(x+mu)... => Umu(x)*Stap is a rectangle staple
 	  tmp = Gimpl::CshiftLink(adj(U2[nu]), nu, -2);
 	  tmp = Gimpl::CovShiftBackward(U[mu], mu, tmp);
 	  tmp = U2[nu] * Gimpl::CshiftLink(tmp, nu, 2);
-	  Stap += Gimpl::CshiftLink(tmp, mu, 1);
+	  Stap += SmearRhoRs[mu + Nd * nu]*Gimpl::CshiftLink(tmp, mu, 1);
 	  
 	  //      |  |
 	  //
@@ -86,7 +125,7 @@ protected:
 
 	}
       }
-      pokeLorentz(C, Stap, mu);
+      pokeLorentz(C, adj(Stap), mu); // C[mu] = Cup^dag   see conventions for Staple
     }
   }
 
@@ -117,7 +156,7 @@ protected:
 	  //             |___ ___|
 	  //
 	  
-	  Stap += Gimpl::CshiftLink(Gimpl::CovShiftForward(U[mu], mu, Staple2x1), mu, 1);
+	  Stap += SmearRhoRl[mu + Nd * nu]*Gimpl::CshiftLink(Gimpl::CovShiftForward(U[mu], mu, Staple2x1), mu, 1);
 	  
 	  //              ___ ___
 	  //             |___    |
@@ -127,7 +166,7 @@ protected:
 	  Stap += SmearRhoRl[mu + Nd * nu]*Gimpl::CshiftLink(Staple2x1, mu, 1) * Gimpl::CshiftLink(U[mu], mu, -1);
 	}
       }
-      pokeLorentz(C, Stap, mu);
+      pokeLorentz(C, adj(Stap), mu); // C[mu] = Cup^dag   see conventions for Staple  
     }
   }
   
@@ -167,14 +206,15 @@ public:
       WL.RectStapleDouble(U2s[mu], Us[mu], mu);
     }
     
-    std::cout << GridLogDebug << "Rect Stout smearing with Plq + Rect (Rs + Rl) started\n";
+    std::cout << GridLogMessage << "Rect Stout smearing with Plq + Rect (Rs + Rl) started\n";
 
     // C contains the staples multiplied by some rho
+    C = Zero();
     u_smr = U; // set the smeared field to the current gauge field
-    this->SmearBase->smear(C, U); // Assume: SmearBase = Smear_APE
-    rectStapleRs(C_tmp, Us, U2s);
+    this->SmearBase->smear(C, U);std::cout << GridLogMessage << "BaseSmearREct: " <<norm2(C)<<" "<<this->SmearRho[1]<<std::endl; // Assume: SmearBase = Smear_APE
+    rectStapleRs(C_tmp, Us, U2s);std::cout << GridLogMessage << "BaseSmearREc t rs: " <<norm2(C_tmp)<<SmearRhoRs[1]<<std::endl;
     C = C + C_tmp;
-    rectStapleRl(C_tmp, Us, U2s);
+    rectStapleRl(C_tmp, Us, U2s);std::cout << GridLogMessage << "BaseSmearREct rl: " <<norm2(C_tmp)<<" "<<SmearRhoRl[1]<<std::endl;
     C =	C + C_tmp;
     for (int mu = 0; mu < Nd; mu++) {
       if( mu == this->OrthogDim || mu == OrthogDimRs || mu == OrthogDimRl) continue ;
@@ -186,13 +226,86 @@ public:
       pokeLorentz(u_smr, tmp * Umu, mu);
     }
 
-    std::cout << GridLogDebug << "Rect Stout smearing with Plq + Rect (Rs + Rl) completed\n";
+    std::cout << GridLogMessage << "Rect Stout smearing with Plq + Rect (Rs + Rl) completed\n";
   };
 
-  // TODO: fix the below to take into account Rs, Rl
   void derivative(GaugeField& SigmaTerm, const GaugeField& iLambda,
-                  const GaugeField& Gauge) const {
-    this->SmearBase->derivative(SigmaTerm, iLambda, Gauge);
+                  const GaugeField& U) const {
+    //TODO: plq force is not to be computed in this class; will modify the class impl shortly
+    //this->SmearBase->derivative(SigmaTerm, iLambda, Gauge);
+
+    GridBase *grid = U.Grid();
+
+    WilsonLoops<Gimpl> WL;
+    GaugeLinkField staple(grid), u_tmp(grid);
+    GaugeLinkField iLambda_mu(grid), iLambda_nu(grid);
+    GaugeLinkField U_mu(grid), U_nu(grid);
+    GaugeLinkField sh_field(grid), temp_Sigma(grid);
+    Real rho_munu, rho_numu;
+    std::cout << GridLogMessage << "Rect Stout smearing deriv \n";
+    // Force from C = Rs in stout smearing
+    for(int mu = 0; mu < Nd; ++mu){
+      U_mu       = peekLorentz(      U, mu);
+      iLambda_mu = peekLorentz(iLambda, mu);
+
+      for(int nu = 0; nu < Nd; ++nu){
+        if(nu==mu) continue;
+
+        U_nu       = peekLorentz(U, nu);
+	iLambda_nu = peekLorentz(iLambda, nu);
+
+	rho_munu = SmearRhoRs[mu + Nd * nu];
+        rho_numu = SmearRhoRs[nu + Nd * mu];
+	
+	RectStapleUnoptimisedRsUpper(staple, U, mu, nu);
+
+	// 1st
+	temp_Sigma = -rho_numu*staple*iLambda_nu;
+	Gimpl::AddLink(SigmaTerm, temp_Sigma, mu);
+
+	// 2nd
+	sh_field = adj(U_mu)*Cshift(temp_Sigma*U_mu, mu, -1);
+	Gimpl::AddLink(SigmaTerm, sh_field, mu);
+
+	// 3rd
+	sh_field = Cshift(iLambda_nu, mu, 1);
+	temp_Sigma = rho_numu*sh_field*adj(U_mu)*Cshift(staple*U_mu,mu,-1);
+	Gimpl::AddLink(SigmaTerm, temp_Sigma, mu);
+	
+	// 4th
+	sh_field = Cshift(U_mu*temp_Sigma, mu,1)*adj(U_mu);
+	Gimpl::AddLink(SigmaTerm, sh_field, mu);
+
+	// 5th
+	temp_Sigma = rho_numu*adj(U_mu)*Cshift(adj(staple*U_nu)*adj(U_mu)*iLambda_nu*U_nu,nu,-1);
+	Gimpl::AddLink(SigmaTerm, temp_Sigma, mu);
+
+	// 6th
+	sh_field = adj(U_mu)*Cshift(temp_Sigma*U_mu,mu,-1);
+	Gimpl::AddLink(SigmaTerm, sh_field, mu);
+
+	// 7th
+	temp_Sigma = -rho_numu*Cshift(Cshift(adj(U_nu)*iLambda_nu*adj(adj(U_nu)*Cshift(adj(U_mu)*Cshift(staple*U_mu,mu,-1)*U_mu,mu,-1)),mu,1),nu,-1)*adj(U_mu);
+	Gimpl::AddLink(SigmaTerm,temp_Sigma, mu);
+
+	// 8th
+	sh_field = Cshift(U_mu*temp_Sigma,mu,1)*adj(U_mu);
+	Gimpl::AddLink(SigmaTerm, sh_field, mu);
+
+	// 9th: -
+	sh_field = Cshift(U_nu,mu,1);
+	temp_Sigma = -rho_munu*sh_field*Cshift(sh_field*Cshift(adj(U_mu)*iLambda_mu,nu,1)*adj(U_nu),nu,1)*adj(U_nu);
+	Gimpl::AddLink(SigmaTerm,temp_Sigma, mu);
+	
+	// 10th: -
+	sh_field = adj(sh_field);
+	temp_Sigma = -rho_munu*Cshift(sh_field*Cshift(sh_field*adj(U_mu)*iLambda_mu*U_nu,nu,-1)*U_nu,nu,-1);
+	Gimpl::AddLink(SigmaTerm,temp_Sigma, mu);
+	
+      }
+    }
+
+    // TODO: implement for the case C = Rl
   };
 
   // Retrun: fat link with staples
@@ -201,19 +314,19 @@ public:
     std::vector<GaugeLinkField> Us(Nd, U.Grid()),U2s(Nd, U.Grid());
     WilsonLoops<Gimpl> WL;
 
+    std::cout << GridLogMessage << "Rect Stout smearing base \n";
     for (int mu = 0; mu < Nd; mu++) {
       Us[mu] = PeekIndex<LorentzIndex>(U, mu);
       WL.RectStapleDouble(U2s[mu], Us[mu], mu);
     }
 
-    this->SmearBase->smear(C, U);
+    //this->SmearBase->smear(C, U);
     rectStapleRs(tmp, Us, U2s);
     C = C + tmp;
     rectStapleRl(tmp, Us, U2s);
     C = C + tmp;    
   };
   
-  // TODO: implement derivative, BaseSmear for Rs, Rl for completeness <- not yet done as not used for FTHMC
 
 };
 
