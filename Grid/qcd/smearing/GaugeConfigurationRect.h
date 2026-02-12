@@ -847,7 +847,7 @@ public:
 
 	break;
 	}
-	case 2:{
+	case 2:{std::cout << GridLogMessage << "DEBUG: entered loops for rect mu "<<mu<<" nu "<<nu<<std::endl;
 	  ///////////////// +ve nu /////////////////
 	  //     ->
 	  //    |  |
@@ -1038,11 +1038,11 @@ public:
 	  PlaqR = rho*Gimpl::CovShiftForward(Umu[nu],nu,
 					     Gimpl::CovShiftIdentityForward(Umu[nu], nu));
 	  dirs.clear();
-	  dirs = {mu+1,-(nu+1),-(nu+1),-(mu+1)};
+	  dirs = {mu+1,-(nu+1),-(nu+1),-(mu+1)};// <- so this is wrong?
 	  //linkTracer(Umu, Utmp, dirs, 4, 1.0, PlaqL);
 	  PlaqL = Gimpl::CovShiftForward(Umu[mu],mu,
-					 Gimpl::CovShiftBackward(Umu[nu],nu,
-								  Gimpl::CovShiftBackward(Umu[nu],nu,
+					 Gimpl::CovShiftForward(Umu[nu],nu,
+								  Gimpl::CovShiftForward(Umu[nu],nu,
 											   Gimpl::CovShiftIdentityBackward(Utmp,mu))));
 	
 	  dJdXe_nMpInv_y = Cshift(dJdXe_nMpInv,nu,2);
@@ -1146,8 +1146,8 @@ public:
 	}
 	default:
 	  {
-	    assert(1!=1 && " not entered force calculation");
-	      break;
+	    assert(1!=1 && " At present, the only valid choice of flow kernel is either 1 or 2");
+	    break;
 	  }
 	}
       }
@@ -1530,8 +1530,7 @@ public:
 	  std::cout << GridLogMessage <<" mask type 2 in seting up Mask"<<i<<" "<<j<<" "<<mu<<" "<<cb<<std::endl;
 	  //Lattice<iScalar<vInteger> > coor_nu(_UGrid),coor_sum(_UGrid); coor_sum = Zero();
 	  LatticeInteger  coor_nu(_UGrid),coor_sum(_UGrid), int_cb(_UGrid); coor_sum = Zero(); int_cb = LatticeInteger::scalar_type(cb);//Integer(cb);
-	  // mu direction is made trivial to reduce coding in LogDetJacobianForceLevel routine
-	  //for(int nu=0, c=0; nu < Nd; nu++)
+
 	  for(int nu=0; nu < Nd; nu++)
 	    if( nu != mu){
 	      LatticeCoordinate(coor_nu,nu);//xs[c],nu);
@@ -1540,6 +1539,12 @@ public:
 	      //xs[c] = div(xs[c],mask_type);
 	      //c++;
 	    }
+	    else{
+	      LatticeCoordinate(coor_nu,nu);
+	      coor_nu = div(coor_nu,mask_type);
+              coor_sum = coor_sum + coor_nu;
+	    }
+	  
 	  coor_sum = coor_sum +int_cb;
 	  coor_sum = mod(coor_sum,2);
 	  //Lattice<iScalar<vInteger>> pred(_UGrid); pred = Zero();
