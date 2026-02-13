@@ -180,42 +180,55 @@ public:
   */
   
   /*! Construct stout smearing object from explicitly specified rho matrix; Assume: SmearRhoP = SmearRhoRs = SmearRhoRl */
+  /* disable it; this object should perform only one type of smearing.  Otherwise, deriv becomes complicated
   Rect_Stout(const std::vector<double>& rho_)
   : Smear_Stout<Gimpl>(rho_), SmearRhoRs(rho_),SmearRhoRl(rho_) {
   }
-
+  */
   /*! Default constructor: rho is constant in all directions, optionally except for orthogonal dimension */
-  Rect_Stout(double rho = 1.0, double rho_s = 1.0, double rho_l = 1.0, int orthogdim = -1, int orthogdim_s = -1, int orthogdim_l = -1)
+  Rect_Stout(double rho = 0.0, double rho_s = 1.0, double rho_l = 0.0, int orthogdim = -1, int orthogdim_s = -1, int orthogdim_l = -1)
     : Smear_Stout<Gimpl>(rho, orthogdim),
       OrthogDimRs{orthogdim_s}, SmearRhoRs{ this->rho3D(rho_s,orthogdim_s) },
       OrthogDimRl{orthogdim_l}, SmearRhoRl{ this->rho3D(rho_l,orthogdim_l) }{
     assert(Nc == 3 && "Stout smearing currently implemented only for Nc==3");
+    assert( (rho+rho_s == 0.0 || rho+rho_l == 0.0 || rho_s+rho_l == 0.0) && "Only one of the input rho values should be non-zero");
   }
 
   ~Rect_Stout() {}  // delete SmearBase...
 
   // Return: stout link = e^(iQ)U
   void smear(GaugeField& u_smr, const GaugeField& U) const {
-    GaugeField C(U.Grid()), C_tmp(U.Grid());
+    GaugeField C(U.Grid());
     GaugeLinkField tmp(U.Grid()), iq_mu(U.Grid()), Umu(U.Grid());
-    std::vector<GaugeLinkField> Us(Nd, U.Grid()),U2s(Nd, U.Grid());
-    WilsonLoops<Gimpl> WL;
 
-    for (int mu = 0; mu < Nd; mu++) {
-      Us[mu] = PeekIndex<LorentzIndex>(U, mu);
-      WL.RectStapleDouble(U2s[mu], Us[mu], mu);
-    }
-    
-    std::cout << GridLogMessage << "Rect Stout smearing with Plq + Rect (Rs + Rl) started\n";
+    std::cout << GridLogMessage << "Rect Stout smearing started\n";
 
     // C contains the staples multiplied by some rho
     C = Zero();
+    if(this->SmearRho[1] > 0) { // If we specialize this class to only rectangler smearing, this case can be deleted
+      this->SmearBase->smear(C, U); // Assume: SmearBase = Smear_APE 
+      std::cout << GridLogMessage << "BaseSmearREct: " <<norm2(C)<<" "<<this->SmearRho[1]<<std::endl; // Assume: SmearBase = Smear_APE
+    }
+    else {
+      WilsonLoops<Gimpl> WL;
+      std::vector<GaugeLinkField> Us(Nd, U.Grid()),U2s(Nd, U.Grid());
+
+      for (int mu = 0; mu < Nd; mu++) {
+	Us[mu] = PeekIndex<LorentzIndex>(U, mu);
+	WL.RectStapleDouble(U2s[mu], Us[mu], mu);
+      }
+      
+      if(SmearRhoRs[1]>0) {
+	rectStapleRs(C, Us, U2s);
+	std::cout << GridLogMessage << "BaseSmearREc t rs: " <<norm2(C)<<SmearRhoRs[1]<<std::endl;
+      }
+      else if(SmearRhoRl[1]>0) {
+	rectStapleRl(C, Us, U2s);
+	std::cout << GridLogMessage << "BaseSmearREct rl: " <<norm2(C)<<" "<<SmearRhoRl[1]<<std::endl;
+      }
+    }
+    
     u_smr = U; // set the smeared field to the current gauge field
-    this->SmearBase->smear(C, U);std::cout << GridLogMessage << "BaseSmearREct: " <<norm2(C)<<" "<<this->SmearRho[1]<<std::endl; // Assume: SmearBase = Smear_APE
-    rectStapleRs(C_tmp, Us, U2s);std::cout << GridLogMessage << "BaseSmearREc t rs: " <<norm2(C_tmp)<<SmearRhoRs[1]<<std::endl;
-    C = C + C_tmp;
-    rectStapleRl(C_tmp, Us, U2s);std::cout << GridLogMessage << "BaseSmearREct rl: " <<norm2(C_tmp)<<" "<<SmearRhoRl[1]<<std::endl;
-    C =	C + C_tmp;
     for (int mu = 0; mu < Nd; mu++) {
       if( mu == this->OrthogDim || mu == OrthogDimRs || mu == OrthogDimRl) continue ;
       // u_smr = exp(iQ_mu)*U_mu apart from Orthogdim
@@ -226,14 +239,10 @@ public:
       pokeLorentz(u_smr, tmp * Umu, mu);
     }
 
-    std::cout << GridLogMessage << "Rect Stout smearing with Plq + Rect (Rs + Rl) completed\n";
   };
 
   void derivative(GaugeField& SigmaTerm, const GaugeField& iLambda,
                   const GaugeField& U) const {
-    //TODO: plq force is not to be computed in this class; will modify the class impl shortly
-    //this->SmearBase->derivative(SigmaTerm, iLambda, Gauge);
-
     GridBase *grid = U.Grid();
 
     WilsonLoops<Gimpl> WL;
@@ -242,70 +251,76 @@ public:
     GaugeLinkField U_mu(grid), U_nu(grid);
     GaugeLinkField sh_field(grid), temp_Sigma(grid);
     Real rho_munu, rho_numu;
-    std::cout << GridLogMessage << "Rect Stout smearing deriv \n";
-    // Force from C = Rs in stout smearing
-    for(int mu = 0; mu < Nd; ++mu){
-      U_mu       = peekLorentz(      U, mu);
-      iLambda_mu = peekLorentz(iLambda, mu);
 
-      for(int nu = 0; nu < Nd; ++nu){
-        if(nu==mu) continue;
+    if(this->SmearRho[1] > 0)
+      this->SmearBase->derivative(SigmaTerm, iLambda, U);
+    else if(SmearRhoRs[1]>0) {
+      // Force from C = Rs in stout smearing
+      for(int mu = 0; mu < Nd; ++mu){
+	U_mu       = peekLorentz(      U, mu);
+	iLambda_mu = peekLorentz(iLambda, mu);
+      
+	for(int nu = 0; nu < Nd; ++nu){
+	  if(nu==mu) continue;
+	  
+	  U_nu       = peekLorentz(U, nu);
+	  iLambda_nu = peekLorentz(iLambda, nu);
+	  
+	  rho_munu = SmearRhoRs[mu + Nd * nu];
+	  rho_numu = SmearRhoRs[nu + Nd * mu];
+	  
+	  RectStapleUnoptimisedRsUpper(staple, U, mu, nu);
+	  
+	  // 1st
+	  temp_Sigma = -rho_numu*staple*iLambda_nu;
+	  Gimpl::AddLink(SigmaTerm, temp_Sigma, mu);
+	  
+	  // 2nd
+	  sh_field = adj(U_mu)*Cshift(temp_Sigma*U_mu, mu, -1);
+	  Gimpl::AddLink(SigmaTerm, sh_field, mu);
 
-        U_nu       = peekLorentz(U, nu);
-	iLambda_nu = peekLorentz(iLambda, nu);
-
-	rho_munu = SmearRhoRs[mu + Nd * nu];
-        rho_numu = SmearRhoRs[nu + Nd * mu];
+	  // 3rd
+	  sh_field = Cshift(iLambda_nu, mu, 1);
+	  temp_Sigma = rho_numu*sh_field*adj(U_mu)*Cshift(staple*U_mu,mu,-1);
+	  Gimpl::AddLink(SigmaTerm, temp_Sigma, mu);
+	  
+	  // 4th
+	  sh_field = Cshift(U_mu*temp_Sigma, mu,1)*adj(U_mu);
+	  Gimpl::AddLink(SigmaTerm, sh_field, mu);
+	  
+	  // 5th
+	  temp_Sigma = rho_numu*adj(U_mu)*Cshift(adj(staple*U_nu)*adj(U_mu)*iLambda_nu*U_nu,nu,-1);
+	  Gimpl::AddLink(SigmaTerm, temp_Sigma, mu);
+	  
+	  // 6th
+	  sh_field = adj(U_mu)*Cshift(temp_Sigma*U_mu,mu,-1);
+	  Gimpl::AddLink(SigmaTerm, sh_field, mu);
 	
-	RectStapleUnoptimisedRsUpper(staple, U, mu, nu);
-
-	// 1st
-	temp_Sigma = -rho_numu*staple*iLambda_nu;
-	Gimpl::AddLink(SigmaTerm, temp_Sigma, mu);
-
-	// 2nd
-	sh_field = adj(U_mu)*Cshift(temp_Sigma*U_mu, mu, -1);
-	Gimpl::AddLink(SigmaTerm, sh_field, mu);
-
-	// 3rd
-	sh_field = Cshift(iLambda_nu, mu, 1);
-	temp_Sigma = rho_numu*sh_field*adj(U_mu)*Cshift(staple*U_mu,mu,-1);
-	Gimpl::AddLink(SigmaTerm, temp_Sigma, mu);
-	
-	// 4th
-	sh_field = Cshift(U_mu*temp_Sigma, mu,1)*adj(U_mu);
-	Gimpl::AddLink(SigmaTerm, sh_field, mu);
-
-	// 5th
-	temp_Sigma = rho_numu*adj(U_mu)*Cshift(adj(staple*U_nu)*adj(U_mu)*iLambda_nu*U_nu,nu,-1);
-	Gimpl::AddLink(SigmaTerm, temp_Sigma, mu);
-
-	// 6th
-	sh_field = adj(U_mu)*Cshift(temp_Sigma*U_mu,mu,-1);
-	Gimpl::AddLink(SigmaTerm, sh_field, mu);
-
-	// 7th
-	temp_Sigma = -rho_numu*Cshift(Cshift(adj(U_nu)*iLambda_nu*adj(adj(U_nu)*Cshift(adj(U_mu)*Cshift(staple*U_mu,mu,-1)*U_mu,mu,-1)),mu,1),nu,-1)*adj(U_mu);
-	Gimpl::AddLink(SigmaTerm,temp_Sigma, mu);
-
-	// 8th
-	sh_field = Cshift(U_mu*temp_Sigma,mu,1)*adj(U_mu);
-	Gimpl::AddLink(SigmaTerm, sh_field, mu);
-
-	// 9th: -
-	sh_field = Cshift(U_nu,mu,1);
-	temp_Sigma = -rho_munu*sh_field*Cshift(sh_field*Cshift(adj(U_mu)*iLambda_mu,nu,1)*adj(U_nu),nu,1)*adj(U_nu);
-	Gimpl::AddLink(SigmaTerm,temp_Sigma, mu);
-	
-	// 10th: -
-	sh_field = adj(sh_field);
-	temp_Sigma = -rho_munu*Cshift(sh_field*Cshift(sh_field*adj(U_mu)*iLambda_mu*U_nu,nu,-1)*U_nu,nu,-1);
-	Gimpl::AddLink(SigmaTerm,temp_Sigma, mu);
-	
+	  // 7th
+	  temp_Sigma = -rho_numu*Cshift(Cshift(adj(U_nu)*iLambda_nu*adj(adj(U_nu)*Cshift(adj(U_mu)*Cshift(staple*U_mu,mu,-1)*U_mu,mu,-1)),mu,1),nu,-1)*adj(U_mu);
+	  Gimpl::AddLink(SigmaTerm,temp_Sigma, mu);
+	  
+	  // 8th
+	  sh_field = Cshift(U_mu*temp_Sigma,mu,1)*adj(U_mu);
+	  Gimpl::AddLink(SigmaTerm, sh_field, mu);
+	  
+	  // 9th: -
+	  sh_field = Cshift(U_nu,mu,1);
+	  temp_Sigma = -rho_munu*sh_field*Cshift(sh_field*Cshift(adj(U_mu)*iLambda_mu,nu,1)*adj(U_nu),nu,1)*adj(U_nu);
+	  Gimpl::AddLink(SigmaTerm,temp_Sigma, mu);
+	  
+	  // 10th: -
+	  sh_field = adj(sh_field);
+	  temp_Sigma = -rho_munu*Cshift(sh_field*Cshift(sh_field*adj(U_mu)*iLambda_mu*U_nu,nu,-1)*U_nu,nu,-1);
+	  Gimpl::AddLink(SigmaTerm,temp_Sigma, mu);
+	  
+	}
       }
+    } else if (SmearRhoRl[1]>0) {
+      // TODO: implement for the case C = Rl
+      assert(1 != 1 && "Longer rectangle flow is not implemeted as yet");
     }
-
-    // TODO: implement for the case C = Rl
+  
   };
 
   // Retrun: fat link with staples
@@ -314,17 +329,15 @@ public:
     std::vector<GaugeLinkField> Us(Nd, U.Grid()),U2s(Nd, U.Grid());
     WilsonLoops<Gimpl> WL;
 
-    std::cout << GridLogMessage << "Rect Stout smearing base \n";
+    //std::cout << GridLogMessage << "Rect Stout smearing base \n";
     for (int mu = 0; mu < Nd; mu++) {
       Us[mu] = PeekIndex<LorentzIndex>(U, mu);
       WL.RectStapleDouble(U2s[mu], Us[mu], mu);
     }
 
-    //this->SmearBase->smear(C, U);
-    rectStapleRs(tmp, Us, U2s);
-    C = C + tmp;
-    rectStapleRl(tmp, Us, U2s);
-    C = C + tmp;    
+    if(this->SmearRho[1] > 0) this->SmearBase->smear(C, U);
+    else if (SmearRhoRs[1]>0) rectStapleRs(C, Us, U2s);
+    else if (SmearRhoRl[1]>0) rectStapleRl(C, Us, U2s);
   };
   
 

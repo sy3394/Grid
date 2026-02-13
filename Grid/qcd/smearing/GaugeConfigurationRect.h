@@ -62,32 +62,22 @@ private:
 
     Cmu = Zero();
     switch (flow_kernel) { 
-    case 1:{
-      GaugeLinkField tmp_stpl(grid);
-	  
-      std::cout << GridLogMessage <<"BaseSmear: 1" << std::endl;//DEBUG
-      WL.Staple(Cmu, U, mu);  //nb staple conventions of IroIro and Grid differ by a dagger
-      Cmu = adj(rho * Cmu);
-#if 0 // produced the exactly same numbers
-      for(int nu=0; nu<Nd; ++nu){
-	if (nu != mu) {
-	// get the staple in direction mu, nu
-        WL.Staple(tmp_stpl, U, mu, nu);  //nb staple conventions of IroIro and Grid differ by a dagger
-        Cmu += adj(tmp_stpl*rho);
-	}
+    case 1:
+      {
+	WL.Staple(Cmu, U, mu);  //nb staple conventions of IroIro and Grid differ by a dagger
+	//Cmu = adj(rho * Cmu);
+	break;
       }
-#endif
-      break;
-    }
     case 2:
-      // TODO: prepare optimized version
-      std::cout << GridLogMessage <<"BaseSmear: 2" << std::endl;//DEBUG     
-      WL.RectStapleUnoptimisedRs(Cmu, U, mu);
-          Cmu = adj(rho * Cmu);
-      break;
+      {
+	// TODO: prepare optimized version
+	WL.RectStapleUnoptimisedRs(Cmu, U, mu);
+	//Cmu = adj(rho * Cmu);
+	break;
+      }
     }
 
-    //    Cmu = adj(rho * Cmu);
+    Cmu = adj(rho * Cmu);
     std::cout << GridLogMessage << "BaseSmear: " << mu<<" "<<rho<<" "<<flow_kernel<<" "<<norm2(Cmu) << std::endl;//DEBUG
 
   }
@@ -183,7 +173,6 @@ private:
     
     GridBase *grid = U.Grid();
 
-    //Rect_Stout Smearer(grid);
     GaugeLinkField staple(grid), u_tmp(grid);
     GaugeLinkField iLambda_mu(grid), iLambda_nu(grid);
     GaugeLinkField U_mu(grid), U_nu(grid);
@@ -283,7 +272,7 @@ private:
       ColourMatrix te;
       SU3::generator(e, te);
       auto tmp=peekColour(Fdet_nu,e);
-      Fdet_pol=Fdet_pol + ci*tmp*te; // Fdet_pol + ci*tmp*te
+      Fdet_pol=Fdet_pol + ci*tmp*te; // Fdet_pol + ci*tmp*te; // <- to be changed to this 
     }
     pokeLorentz(Fdet, Fdet_pol, nu);
   }
@@ -300,7 +289,7 @@ private:
       SU3::generator(b, tb);
       tb = 2.0 * ci * tb; // - ci * tb; in Lucher's convention but multiplied the missing factor from below
       Nx = Ta( adj(PlaqL)*tb * PlaqR );
-      SU3::LieAlgebraProject(NxAd,Nx,b); /// needs to multiply -2 to get to Lucher's convention
+      SU3::LieAlgebraProject(NxAd,Nx,b);
     }
   }
 
@@ -363,30 +352,30 @@ private:
     // dir in dirs is 1+mu where mu=0,..3 to put sign on dir
     // ind: index of dirs for which masked gauge link field should be used.  The indexing starts from 1, not 0
     //    actually ind is always equal to size of dirs0 => can become just a flag
-    GaugeLinkField tmp(Umu[0].Grid()), U(Umu[0].Grid()), tmp1(Umu[0].Grid());
-    tmp = Zero(); U = Zero();
+    GaugeLinkField tmp(Umu[0].Grid()), U(Umu[0].Grid());
+
     std::vector<int> dirs = dirs0; 
-    std::reverse(dirs.begin(), dirs.end());for(auto i :dirs)std::cout<<i<<std::endl;
+    std::reverse(dirs.begin(), dirs.end());
+    
     for(int i=0; i<dirs.size(); i++){
-      int mu = dirs[i];
-      //-1: -2 0 0 -1 12288 0
-      std::cout << GridLogMessage <<"in_linkTracer "<<mu<<": "<<mu-1<<" "<<-mu-1<<" "<<norm2(tmp)<<" "<<ind<<" "<<norm2(U)<<" "<<std::abs(mu) - 1<<std::endl;
+      int mu  = dirs[i];
+      int sgn = mu/std::abs(mu);
+      mu = std::abs(mu) - 1; // \in {0,..,Nd-1}
+
+      if(ind>0 && dirs.size()-i-1==ind) U = Umskd;
+      else                U = Umu[mu];
       if(i == 0){
-	if ( ind>0) U = Umskd;
-	else U = Umu[std::abs(mu) - 1];
-	if(mu>0)
-	  tmp = Gimpl::CovShiftIdentityForward(U,mu-1);
+	if(sgn>0)
+	  tmp = Gimpl::CovShiftIdentityForward(U,mu);
 	else
-	  tmp = Gimpl::CovShiftIdentityBackward(U,-mu-1);
+	  tmp = Gimpl::CovShiftIdentityBackward(U,mu);
       }else{
-	if(mu>0)
-	  tmp1 = Gimpl::CovShiftForward(Umu[std::abs(mu) - 1],mu-1,tmp);
+	if(sgn>0)
+	  tmp = Gimpl::CovShiftForward(U,mu,tmp);
 	else
-	  tmp1 = Gimpl::CovShiftBackward(Umu[std::abs(mu) - 1],-mu-1,tmp);
-	tmp = tmp1;
+	  tmp = Gimpl::CovShiftBackward(U,mu,tmp);
       }
     }
-    std::cout << GridLogMessage <<"linkTracer "<<dirs.size()<<" "<<rho<<" "<<norm2(tmp)<<std::endl;
     rect = rho*tmp;
   }
     
@@ -593,7 +582,7 @@ public:
     }
     XB_JxAd = XB_t3;
     std::cout << GridLogMessage << "DEBUG: Horner's method JxAd"<<norm2(XB_JxAd-JxAd)<< " djdx ";
-    for(int i =0;i<dJdX.size();i++) std::cout<<norm2(XB_dJdX[i] - dJdX[i])<<" ";
+    for(int i =0;i<dJdX.size();i++) std::cout<<norm2(XB_dJdX[i] + dJdX[i])<<" ";//note: sign deviation of dJdX from Luscher's convention
     std::cout <<std::endl;
 #endif
     
@@ -671,12 +660,6 @@ public:
     GaugeLinkField Fdet_pol(grid); // one polarisation
 
     std::vector<int> dirs;
-#if 0
-    std::vector<GaugeLinkField> Umu_tmp(Nd,grid);
-    Umu_tmp = Umu;
-    Umu_tmp[mu] = Utmp;//vector of gauge links in each dir where Umu_tmp[mu] is masked
-    for(auto ttt: Umu_tmp) std::cout << GridLogMessage << "DEBUG: Umu_tmp[mu] "<< norm2(ttt)<<" "<<std::endl;
-#endif
     
     RealD t4 = usecond();
     for(int nu=0;nu<Nd;nu++){
@@ -694,456 +677,428 @@ public:
       /////////////////////////////////////////////////////
       if (nu!=mu) {
 	switch(flw_knl){
-	case 1:{std::cout << GridLogMessage << "DEBUG: entered loops"<<std::endl;
+	case 1:
+	  {
 
-	///////////////// +ve nu /////////////////
-	//     __
-	//    :  |
-	//    x==    // nu polarisation -- clockwise
-	// x = y
-
-	time=-usecond();
-	PlaqL=Ident;
-	PlaqR=(-rho)*Gimpl::CovShiftForward(Umu[nu], nu,
- 	       Gimpl::CovShiftForward(Umu[mu], mu,
-	         Gimpl::CovShiftBackward(Umu[nu], nu,
-		   Gimpl::CovShiftIdentityBackward(Utmp, mu))));
-	time+=usecond();
-	std::cout << GridLogMessage << "PlaqLR took "<<time<< " us"<<std::endl;
-
+	    ///////////////// +ve nu /////////////////
+	    //     __
+	    //    :  |
+	    //    x==    // nu polarisation -- clockwise
+	    // x = y
+	    
+	    time=-usecond();
+	    PlaqL=Ident;
+	    PlaqR=(-rho)*Gimpl::CovShiftForward(Umu[nu], nu,
+						Gimpl::CovShiftForward(Umu[mu], mu,
+								       Gimpl::CovShiftBackward(Umu[nu], nu,
+											       Gimpl::CovShiftIdentityBackward(Utmp, mu))));
+	    time+=usecond();
+	    std::cout << GridLogMessage << "PlaqLR took "<<time<< " us"<<std::endl;
+	    
 #if 1 //DEBUG
-	GaugeLinkField PlaqR2(grid);
-	dirs = {(nu+1),mu+1,-(nu+1),-(mu+1)};
-	linkTracer(Umu, Utmp, dirs, 4, -rho, PlaqR2);
-	std::cout << GridLogMessage << "DEBUG: PlaqR linkT: "<<norm2(PlaqR2-PlaqR)<<std::endl;
+	    GaugeLinkField PlaqR2(grid);
+	    dirs = {(nu+1),mu+1,-(nu+1),-(mu+1)};
+	    linkTracer(Umu, Utmp, dirs, 3, -rho, PlaqR2);
+	    std::cout << GridLogMessage << "DEBUG: PlaqR linkT: "<<norm2(PlaqR2-PlaqR)<<std::endl;
 #endif
 	
-	time=-usecond();
-	dJdXe_nMpInv_y =   dJdXe_nMpInv;
-	ComputeNxy(PlaqL,PlaqR,Nxy);
-	Fdet1_nu = transpose(Nxy)*dJdXe_nMpInv_y;
-	time+=usecond();
-	std::cout << GridLogMessage << "ComputeNxy (occurs 6x) took "<<time<< " us"<<std::endl;
-
-	time=-usecond();
-	PlaqR=(-1.0)*PlaqR;
-	Compute_MpInvJx_dNxxdSy(PlaqL,PlaqR,MpInvJx,FdetV);
-	Fdet2_nu = FdetV;
-	time+=usecond();
-	std::cout << GridLogMessage << "Compute_MpInvJx_dNxxSy (occurs 6x) took "<<time<< " us"<<std::endl;
-	
-	//     __
-	//    |  :
-	//    x==y    // nu polarisation -- anticlockwise
-
-	PlaqR=(rho)*Gimpl::CovShiftForward(Umu[nu], nu,
-		      Gimpl::CovShiftBackward(Umu[mu], mu,
-    	 	        Gimpl::CovShiftIdentityBackward(Umu[nu], nu)));
+	    time=-usecond();
+	    dJdXe_nMpInv_y =   dJdXe_nMpInv;
+	    ComputeNxy(PlaqL,PlaqR,Nxy);
+	    Fdet1_nu = transpose(Nxy)*dJdXe_nMpInv_y;
+	    time+=usecond();
+	    std::cout << GridLogMessage << "ComputeNxy (occurs 6x) took "<<time<< " us"<<std::endl;
+	    
+	    time=-usecond();
+	    PlaqR=(-1.0)*PlaqR;
+	    Compute_MpInvJx_dNxxdSy(PlaqL,PlaqR,MpInvJx,FdetV);
+	    Fdet2_nu = FdetV;
+	    time+=usecond();
+	    std::cout << GridLogMessage << "Compute_MpInvJx_dNxxSy (occurs 6x) took "<<time<< " us"<<std::endl;
+	    
+	    //     __
+	    //    |  :
+	    //    x==y    // nu polarisation -- anticlockwise
+	    
+	    PlaqR=(rho)*Gimpl::CovShiftForward(Umu[nu], nu,
+					       Gimpl::CovShiftBackward(Umu[mu], mu,
+								       Gimpl::CovShiftIdentityBackward(Umu[nu], nu)));
 #if 1 //DEBUG
-        //GaugeLinkField PlaqR2(grid);
-        dirs = {(nu+1),-(mu+1),-(nu+1)};
-        linkTracer(Umu, Utmp, dirs, -1, rho, PlaqR2);
-        std::cout << GridLogMessage << "DEBUG: PlaqR linkT: "<<norm2(PlaqR2-PlaqR)<<std::endl;
+	    //GaugeLinkField PlaqR2(grid);
+	    dirs = {(nu+1),-(mu+1),-(nu+1)};
+	    linkTracer(Umu, Utmp, dirs, -1, rho, PlaqR2);
+	    std::cout << GridLogMessage << "DEBUG: PlaqR linkT: "<<norm2(PlaqR2-PlaqR)<<std::endl;
 #endif
-	PlaqL=Gimpl::CovShiftIdentityBackward(Utmp, mu);
+	    PlaqL=Gimpl::CovShiftIdentityBackward(Utmp, mu);
+	    
+	    dJdXe_nMpInv_y = Cshift(dJdXe_nMpInv,mu,-1);
+	    ComputeNxy(PlaqL, PlaqR,Nxy);
+	    Fdet1_nu = Fdet1_nu+transpose(Nxy)*dJdXe_nMpInv_y;
+	    
 
-	dJdXe_nMpInv_y = Cshift(dJdXe_nMpInv,mu,-1);
-	ComputeNxy(PlaqL, PlaqR,Nxy);
-	Fdet1_nu = Fdet1_nu+transpose(Nxy)*dJdXe_nMpInv_y;
-	
+	    MpInvJx_nu = Cshift(MpInvJx,mu,-1);
+	    Compute_MpInvJx_dNxxdSy(PlaqL,PlaqR,MpInvJx_nu,FdetV);
+	    Fdet2_nu = Fdet2_nu+FdetV;
+	    
+	    ///////////////// -ve nu /////////////////
+	    // x==
+	    // :  |
+	    // y__|          // nu polarisation -- clockwise
+	    
+	    PlaqL=(rho)* Gimpl::CovShiftForward(Umu[mu], mu,
+						Gimpl::CovShiftForward(Umu[nu], nu,
+								       Gimpl::CovShiftIdentityBackward(Utmp, mu)));
+	    
+	    PlaqR = Gimpl::CovShiftIdentityForward(Umu[nu], nu);
+	    
+	    dJdXe_nMpInv_y = Cshift(dJdXe_nMpInv,nu,1);
+	    ComputeNxy(PlaqL,PlaqR,Nxy);
+	    Fdet1_nu = Fdet1_nu + transpose(Nxy)*dJdXe_nMpInv_y;
+	    
+	    MpInvJx_nu = Cshift(MpInvJx,nu,1);
+	    Compute_MpInvJx_dNxxdSy(PlaqL,PlaqR,MpInvJx_nu,FdetV);
+	    Fdet2_nu = Fdet2_nu+FdetV;
+	    
+	    // x==
+	    // |  :
+	    // |__y         // nu polarisation
+	    
+	    PlaqL=(-rho)*Gimpl::CovShiftForward(Umu[nu], nu,
+						Gimpl::CovShiftIdentityBackward(Utmp, mu));
+	    
+	    PlaqR=Gimpl::CovShiftBackward(Umu[mu], mu,
+					  Gimpl::CovShiftIdentityForward(Umu[nu], nu));
+	    
+	    dJdXe_nMpInv_y = Cshift(dJdXe_nMpInv,mu,-1);
+	    dJdXe_nMpInv_y = Cshift(dJdXe_nMpInv_y,nu,1);
+	    
+	    ComputeNxy(PlaqL,PlaqR,Nxy);
+	    Fdet1_nu = Fdet1_nu + transpose(Nxy)*dJdXe_nMpInv_y;
 
-	MpInvJx_nu = Cshift(MpInvJx,mu,-1);
-	Compute_MpInvJx_dNxxdSy(PlaqL,PlaqR,MpInvJx_nu,FdetV);
-	Fdet2_nu = Fdet2_nu+FdetV;
-	
-	///////////////// -ve nu /////////////////
-	// x==
-	// :  |
-	// y__|          // nu polarisation -- clockwise
-	
-	PlaqL=(rho)* Gimpl::CovShiftForward(Umu[mu], mu,
-		       Gimpl::CovShiftForward(Umu[nu], nu,
-			 Gimpl::CovShiftIdentityBackward(Utmp, mu)));
+	    MpInvJx_nu = Cshift(MpInvJx,mu,-1);
+	    MpInvJx_nu = Cshift(MpInvJx_nu,nu,1);
+	    Compute_MpInvJx_dNxxdSy(PlaqL,PlaqR,MpInvJx_nu,FdetV);
+	    Fdet2_nu = Fdet2_nu+FdetV;
 
-        PlaqR = Gimpl::CovShiftIdentityForward(Umu[nu], nu);
+	    /////////////////////////////////////////////////////////////////////
+	    // Set up the determinant force contribution in 3x3 algebra basis
+	    /////////////////////////////////////////////////////////////////////
+	    InsertForce(Fdet1,Fdet1_nu,nu);
+	    InsertForce(Fdet2,Fdet2_nu,nu);
+	    
+	    //////////////////////////////////////////////////
+	    // Parallel direction terms
+	    //////////////////////////////////////////////////
+	    
+	    //    y..
+	    //    |  |
+	    //    x==   // mu polarisation
+	    PlaqL=(-rho)*Gimpl::CovShiftForward(Umu[mu], mu,
+						Gimpl::CovShiftBackward(Umu[nu], nu,
+									Gimpl::CovShiftIdentityBackward(Utmp, mu)));
+	    
+	    PlaqR=Gimpl::CovShiftIdentityBackward(Umu[nu], nu);
+	    
+	    dJdXe_nMpInv_y = Cshift(dJdXe_nMpInv,nu,-1);
+	    
+	    ComputeNxy(PlaqL,PlaqR,Nxy);
+	    Fdet1_mu = Fdet1_mu + transpose(Nxy)*dJdXe_nMpInv_y;
+	    
+	    MpInvJx_nu = Cshift(MpInvJx,nu,-1);
+	    
+	    Compute_MpInvJx_dNxxdSy(PlaqL,PlaqR,MpInvJx_nu,FdetV);
+	    Fdet2_mu = Fdet2_mu+FdetV;
 
-	dJdXe_nMpInv_y = Cshift(dJdXe_nMpInv,nu,1);
-	ComputeNxy(PlaqL,PlaqR,Nxy);
-	Fdet1_nu = Fdet1_nu + transpose(Nxy)*dJdXe_nMpInv_y;
+	    // x==
+	    // |  |
+	    // y..          // mu polarisation
+	    
+	    PlaqL=(-rho)*Gimpl::CovShiftForward(Umu[mu], mu,
+						Gimpl::CovShiftForward(Umu[nu], nu,
+								       Gimpl::CovShiftIdentityBackward(Utmp, mu)));
 
-	MpInvJx_nu = Cshift(MpInvJx,nu,1);
-	Compute_MpInvJx_dNxxdSy(PlaqL,PlaqR,MpInvJx_nu,FdetV);
-	Fdet2_nu = Fdet2_nu+FdetV;
-	
-	// x==
-	// |  :
-	// |__y         // nu polarisation
-	
-	PlaqL=(-rho)*Gimpl::CovShiftForward(Umu[nu], nu,
- 	        Gimpl::CovShiftIdentityBackward(Utmp, mu));
+	    PlaqR=Gimpl::CovShiftIdentityForward(Umu[nu], nu);
 
-	PlaqR=Gimpl::CovShiftBackward(Umu[mu], mu,
-	        Gimpl::CovShiftIdentityForward(Umu[nu], nu));
+	    dJdXe_nMpInv_y = Cshift(dJdXe_nMpInv,nu,1);
+	    
+	    ComputeNxy(PlaqL,PlaqR,Nxy);
+	    Fdet1_mu = Fdet1_mu + transpose(Nxy)*dJdXe_nMpInv_y;
+	    
+	    MpInvJx_nu = Cshift(MpInvJx,nu,1);
+	    
+	    Compute_MpInvJx_dNxxdSy(PlaqL,PlaqR,MpInvJx_nu,FdetV);
+	    Fdet2_mu = Fdet2_mu+FdetV;
 
-	dJdXe_nMpInv_y = Cshift(dJdXe_nMpInv,mu,-1);
-	dJdXe_nMpInv_y = Cshift(dJdXe_nMpInv_y,nu,1);
-
-	ComputeNxy(PlaqL,PlaqR,Nxy);
-	Fdet1_nu = Fdet1_nu + transpose(Nxy)*dJdXe_nMpInv_y;
-
-	MpInvJx_nu = Cshift(MpInvJx,mu,-1);
-	MpInvJx_nu = Cshift(MpInvJx_nu,nu,1);
-	Compute_MpInvJx_dNxxdSy(PlaqL,PlaqR,MpInvJx_nu,FdetV);
-	Fdet2_nu = Fdet2_nu+FdetV;
-
-	/////////////////////////////////////////////////////////////////////
-	// Set up the determinant force contribution in 3x3 algebra basis
-	/////////////////////////////////////////////////////////////////////
-	InsertForce(Fdet1,Fdet1_nu,nu);
-	InsertForce(Fdet2,Fdet2_nu,nu);
-	
-	//////////////////////////////////////////////////
-	// Parallel direction terms
-	//////////////////////////////////////////////////
-
-        //    y..
-	//    |  |
-	//    x==   // mu polarisation
-	PlaqL=(-rho)*Gimpl::CovShiftForward(Umu[mu], mu,
-		      Gimpl::CovShiftBackward(Umu[nu], nu,
-   		        Gimpl::CovShiftIdentityBackward(Utmp, mu)));
-
-	PlaqR=Gimpl::CovShiftIdentityBackward(Umu[nu], nu);
-	
-	dJdXe_nMpInv_y = Cshift(dJdXe_nMpInv,nu,-1);
-
-	ComputeNxy(PlaqL,PlaqR,Nxy);
-	Fdet1_mu = Fdet1_mu + transpose(Nxy)*dJdXe_nMpInv_y;
-
-	MpInvJx_nu = Cshift(MpInvJx,nu,-1);
-
-	Compute_MpInvJx_dNxxdSy(PlaqL,PlaqR,MpInvJx_nu,FdetV);
-	Fdet2_mu = Fdet2_mu+FdetV;
-
-	// x==
-	// |  |
-	// y..          // mu polarisation
-
-	PlaqL=(-rho)*Gimpl::CovShiftForward(Umu[mu], mu,
-		       Gimpl::CovShiftForward(Umu[nu], nu,
-		 	 Gimpl::CovShiftIdentityBackward(Utmp, mu)));
-
-        PlaqR=Gimpl::CovShiftIdentityForward(Umu[nu], nu);
-
-	dJdXe_nMpInv_y = Cshift(dJdXe_nMpInv,nu,1);
-
-	ComputeNxy(PlaqL,PlaqR,Nxy);
-	Fdet1_mu = Fdet1_mu + transpose(Nxy)*dJdXe_nMpInv_y;
-
-	MpInvJx_nu = Cshift(MpInvJx,nu,1);
-
-	Compute_MpInvJx_dNxxdSy(PlaqL,PlaqR,MpInvJx_nu,FdetV);
-	Fdet2_mu = Fdet2_mu+FdetV;
-
-	break;
-	}
-	case 2:{std::cout << GridLogMessage << "DEBUG: entered loops for rect mu "<<mu<<" nu "<<nu<<std::endl;
-	  ///////////////// +ve nu /////////////////
-	  //     ->
-	  //    |  |
-	  //    :  |
-	  //    x==    
-	  // x = y : Computes contr. from this type to the force for U_nu(y) and U_nu(y+nu) <- similar effect happens in all calc. below
+	    break;
+	  }
+	case 2:
+	  {
+	    ///////////////// +ve nu /////////////////
+	    //     ->
+	    //    |  |
+	    //    :  |
+	    //    x==    
+	    // x = y : Computes contr. from this type to the force for U_nu(y) and U_nu(y+nu) <- similar effect happens in all calc. below
 	  
-	  time=-usecond();
-	  PlaqL=Ident;
+	    time=-usecond();
+	    PlaqL=Ident;
+	    
+	    dirs = {nu+1,nu+1,mu+1,-(nu+1),-(nu+1),-(mu+1) };
+	    linkTracer(Umu, Utmp, dirs, 5, -rho, PlaqR);
+	    time+=usecond();
+	    std::cout << GridLogMessage << "PlaqLR took "<<time<< " us Rect"<<norm2(PlaqR)<<" mu "<<mu<<" nu "<<nu<<std::endl;
+	    
+	    time=-usecond();
+	    dJdXe_nMpInv_y =   dJdXe_nMpInv;
+	    ComputeNxy(PlaqL,PlaqR,Nxy);
+	    Fdet1_nu = transpose(Nxy)*dJdXe_nMpInv_y;
+	    time+=usecond();
+	    std::cout << GridLogMessage << "ComputeNxy (occurs 10x) took "<<time<< " us"<<std::endl;
+	    
+	    time=-usecond();
+	    Compute_MpInvJx_dNxxdSy(PlaqR,PlaqL,MpInvJx,FdetV);
+	    Fdet2_nu = FdetV;
+	    time+=usecond();
+	    std::cout << GridLogMessage << "Compute_MpInvJx_dNxxSy (occurs 10x) took "<<time<< " us"<<std::endl;
 
-	  dirs.clear();
-	  dirs = {nu+1,nu+1,mu+1,-(nu+1),-(nu+1),-(mu+1) };
-	  linkTracer(Umu, Utmp, dirs, 6, -rho, PlaqR); //Umu_tmp
-	  time+=usecond();
-	  std::cout << GridLogMessage << "PlaqLR took "<<time<< " us Rect"<<norm2(PlaqR)<<" mu "<<mu<<" nu "<<nu<<std::endl;
+	    //     <-
+	    //    |  |
+	    //    |  :
+	    //    x==y    
+	    // x = y - mu 
 
-	  time=-usecond();
-	  dJdXe_nMpInv_y =   dJdXe_nMpInv;
-	  ComputeNxy(PlaqL,PlaqR,Nxy);
-	  Fdet1_nu = transpose(Nxy)*dJdXe_nMpInv_y;
-	  time+=usecond();
-	  std::cout << GridLogMessage << "ComputeNxy (occurs 10x) took "<<time<< " us"<<std::endl;
-
-	  time=-usecond();
-	  //PlaqR=(-1.0)*PlaqR; //commented out
-	  Compute_MpInvJx_dNxxdSy(PlaqR,PlaqL,MpInvJx,FdetV);//PlaqR,PlaqL,MpInvJx,FdetV);//PlaqL,PlaqR,MpInvJx,FdetV);
-	  Fdet2_nu = FdetV;
-	  time+=usecond();
-	  std::cout << GridLogMessage << "Compute_MpInvJx_dNxxSy (occurs 10x) took "<<time<< " us"<<std::endl;
-
-	  //     <-
-	  //    |  |
-	  //    |  :
-	  //    x==y    
-	  // x = y - mu 
-
-	  dirs.clear();
-	  dirs = {nu+1,nu+1,-(mu+1),-(nu+1),-(nu+1)};
-	  //linkTracer(Umu, Utmp, dirs, -1, rho, PlaqR);
-	  PlaqR = rho * Gimpl::CovShiftForward(Umu[nu],nu,
-					       Gimpl::CovShiftForward(Umu[nu],nu,
-								      Gimpl::CovShiftBackward(Umu[mu],mu,
-											      Gimpl::CovShiftBackward(Umu[nu],nu,
-														      Gimpl::CovShiftIdentityBackward(Umu[nu],nu)))));
-	  PlaqL=Gimpl::CovShiftIdentityBackward(Utmp, mu); // Note: adj(PlaqL) is used in ComputeNx & Compute_MpInvJx_dNxxdSy
-
-	  dJdXe_nMpInv_y = Cshift(dJdXe_nMpInv,mu,-1);
-	  ComputeNxy(PlaqL, PlaqR,Nxy);
-	  Fdet1_nu = Fdet1_nu+transpose(Nxy)*dJdXe_nMpInv_y;
-	
-	  MpInvJx_nu = Cshift(MpInvJx,mu,-1);
-	  Compute_MpInvJx_dNxxdSy(PlaqL,PlaqR,MpInvJx_nu,FdetV);
-	  Fdet2_nu = Fdet2_nu+FdetV;
+	    dirs = {nu+1,nu+1,-(mu+1),-(nu+1),-(nu+1)};
+	    //linkTracer(Umu, Utmp, dirs, -1, rho, PlaqR);
+	    PlaqR = rho * Gimpl::CovShiftForward(Umu[nu],nu,
+						 Gimpl::CovShiftForward(Umu[nu],nu,
+									Gimpl::CovShiftBackward(Umu[mu],mu,
+												Gimpl::CovShiftBackward(Umu[nu],nu,
+															Gimpl::CovShiftIdentityBackward(Umu[nu],nu)))));
+	    PlaqL=Gimpl::CovShiftIdentityBackward(Utmp, mu); // Note: adj(PlaqL) is used in ComputeNx & Compute_MpInvJx_dNxxdSy
+	  
+	    dJdXe_nMpInv_y = Cshift(dJdXe_nMpInv,mu,-1);
+	    ComputeNxy(PlaqL, PlaqR,Nxy);
+	    Fdet1_nu = Fdet1_nu+transpose(Nxy)*dJdXe_nMpInv_y;
+	    
+	    MpInvJx_nu = Cshift(MpInvJx,mu,-1);
+	    Compute_MpInvJx_dNxxdSy(PlaqL,PlaqR,MpInvJx_nu,FdetV);
+	    Fdet2_nu = Fdet2_nu+FdetV;
 	
 	
-	  //    :->
-	  //    y  |
-	  //    |  |
-	  //    x==    
-	  // x = y - nu
-
-	  dirs.clear();
-	  PlaqL = Gimpl::CovShiftIdentityBackward(Umu[nu], nu);
-	  dirs = {nu+1,(mu+1),-(nu+1),-(nu+1),-(mu+1)};
-	  //linkTracer(Umu, Utmp, dirs, 5,-rho, PlaqR);
-	  PlaqR = (-rho) * Gimpl::CovShiftForward(Umu[nu],nu,
-						  Gimpl::CovShiftForward(Umu[mu],mu,
-									 Gimpl::CovShiftBackward(Umu[nu],nu,
-												 Gimpl::CovShiftBackward(Umu[nu],nu,
-															 Gimpl::CovShiftIdentityBackward(Utmp,mu)))));
-												 
+	    //    :->
+	    //    y  |
+	    //    |  |
+	    //    x==    
+	    // x = y - nu
+	    
+	    PlaqL = Gimpl::CovShiftIdentityBackward(Umu[nu], nu);
+	    dirs = {nu+1,(mu+1),-(nu+1),-(nu+1),-(mu+1)};
+	    //linkTracer(Umu, Utmp, dirs, 4,-rho, PlaqR);
+	    PlaqR = (-rho) * Gimpl::CovShiftForward(Umu[nu],nu,
+						    Gimpl::CovShiftForward(Umu[mu],mu,
+									   Gimpl::CovShiftBackward(Umu[nu],nu,
+												   Gimpl::CovShiftBackward(Umu[nu],nu,
+															   Gimpl::CovShiftIdentityBackward(Utmp,mu)))));
 												 
 	  
-	  dJdXe_nMpInv_y = Cshift(dJdXe_nMpInv,nu,-1);
-	  ComputeNxy(PlaqL, PlaqR,Nxy);
-	  Fdet1_nu = Fdet1_nu+transpose(Nxy)*dJdXe_nMpInv_y;
+	    dJdXe_nMpInv_y = Cshift(dJdXe_nMpInv,nu,-1);
+	    ComputeNxy(PlaqL, PlaqR,Nxy);
+	    Fdet1_nu = Fdet1_nu+transpose(Nxy)*dJdXe_nMpInv_y;
 	  
-	  MpInvJx_nu = Cshift(MpInvJx,nu,-1);
-	  Compute_MpInvJx_dNxxdSy(PlaqR,PlaqL,MpInvJx_nu,FdetV);//PlaqL,PlaqR,MpInvJx_nu,FdetV);
-	  Fdet2_nu = Fdet2_nu+FdetV;
+	    MpInvJx_nu = Cshift(MpInvJx,nu,-1);
+	    Compute_MpInvJx_dNxxdSy(PlaqR,PlaqL,MpInvJx_nu,FdetV);
+	    Fdet2_nu = Fdet2_nu+FdetV;
 
 	
-	  //     <-:
-	  //    |  y
-	  //    |  |
-	  //    x==    
-	  // x = y - mu - nu
+	    //     <-:
+	    //    |  y
+	    //    |  |
+	    //    x==    
+	    // x = y - mu - nu
 
-	  dirs.clear();
-	  dirs = {-(nu+1),-(mu+1)};
-	  //linkTracer(Umu,Utmp, dirs, 2, 1.0,PlaqL);
-	  PlaqL = Gimpl::CovShiftBackward(Umu[nu],nu,
+	    dirs = {-(nu+1),-(mu+1)};
+	    //linkTracer(Umu,Utmp, dirs, 1, 1.0,PlaqL);
+	    PlaqL = Gimpl::CovShiftBackward(Umu[nu],nu,
 					   Gimpl::CovShiftIdentityBackward(Utmp,mu));
-	  dirs.clear();
-	  dirs = {nu+1,-(mu+1),-(nu+1),-(nu+1)};
-	  //linkTracer(Umu, Utmp, dirs, -1, rho, PlaqR);
-	  PlaqR = rho * Gimpl::CovShiftForward(Umu[nu],nu,
-					       Gimpl::CovShiftBackward(Umu[mu],mu,
-									Gimpl::CovShiftBackward(Umu[nu],nu,
+	    dirs = {nu+1,-(mu+1),-(nu+1),-(nu+1)};
+	    //linkTracer(Umu, Utmp, dirs, -1, rho, PlaqR);
+	    PlaqR = rho * Gimpl::CovShiftForward(Umu[nu],nu,
+						 Gimpl::CovShiftBackward(Umu[mu],mu,
+									 Gimpl::CovShiftBackward(Umu[nu],nu,
 												 Gimpl::CovShiftIdentityBackward(Umu[nu],nu))));
 					       
 
 
-	  //dJdXe_nMpInv_y = Cshift(Cshift(dJdXe_nMpInv,mu,-1),nu,-1);
-	  dJdXe_nMpInv_y = Cshift(dJdXe_nMpInv,mu,-1);
-	  dJdXe_nMpInv_y = Cshift(dJdXe_nMpInv_y,nu,-1);
-	  ComputeNxy(PlaqL, PlaqR,Nxy);
-	  Fdet1_nu = Fdet1_nu+transpose(Nxy)*dJdXe_nMpInv_y;
-	  
-	  //MpInvJx_nu = Cshift(Cshift(MpInvJx,mu,-1),nu,-1);
-	  MpInvJx_nu = Cshift(MpInvJx,mu,-1);
-	  MpInvJx_nu = Cshift(MpInvJx_nu,nu,-1);
-	  Compute_MpInvJx_dNxxdSy(PlaqL,PlaqR,MpInvJx_nu,FdetV);
-	  Fdet2_nu = Fdet2_nu+FdetV;
-
+	    dJdXe_nMpInv_y = Cshift(Cshift(dJdXe_nMpInv,mu,-1),nu,-1);
+	    ComputeNxy(PlaqL, PlaqR,Nxy);
+	    Fdet1_nu = Fdet1_nu+transpose(Nxy)*dJdXe_nMpInv_y;
+	    
+	    MpInvJx_nu = Cshift(Cshift(MpInvJx,mu,-1),nu,-1);
+	    Compute_MpInvJx_dNxxdSy(PlaqL,PlaqR,MpInvJx_nu,FdetV);
+	    Fdet2_nu = Fdet2_nu+FdetV;
+	    
 	
-	  ///////////////// -ve nu /////////////////
-
-	  //    x==
-	  //    :  |
-	  //    y
-	  //    |  |
-	  //     <-
-	  // x = y + nu: Computes contr. from this type to the force for U_nu(y) and U_nu(y+nu) <- similar effect happens in all calc. below
-
-	  dirs.clear();
-	  dirs = {-(nu+1),(mu+1),(nu+1),(nu+1),-(mu+1)};
-	  //linkTracer(Umu, Utmp, dirs, 5, rho, PlaqL);
-	  PlaqL = rho* Gimpl::CovShiftBackward(Umu[nu],nu,
+	    ///////////////// -ve nu /////////////////
+	    
+	    //    x==
+	    //    :  |
+	    //    y
+	    //    |  |
+	    //     <-
+	    // x = y + nu: Computes contr. from this type to the force for U_nu(y) and U_nu(y+nu) <- similar effect happens in all calc. below
+	    
+	    dirs = {-(nu+1),(mu+1),(nu+1),(nu+1),-(mu+1)};
+	    //linkTracer(Umu, Utmp, dirs, 4, rho, PlaqL);
+	    PlaqL = rho* Gimpl::CovShiftBackward(Umu[nu],nu,
 						 Gimpl::CovShiftForward(Umu[mu],mu,
 									Gimpl::CovShiftForward(Umu[nu],nu,
 											       Gimpl::CovShiftForward(Umu[nu],nu,
 														      Gimpl::CovShiftIdentityBackward(Utmp,mu)))));
 														      
-	  PlaqR = Gimpl::CovShiftIdentityForward(Umu[nu], nu);
-
-	  dJdXe_nMpInv_y = Cshift(dJdXe_nMpInv,nu,1);
-	  ComputeNxy(PlaqL, PlaqR,Nxy);
-	  Fdet1_nu = Fdet1_nu+transpose(Nxy)*dJdXe_nMpInv_y;
-	  
-	  
-	  MpInvJx_nu = Cshift(MpInvJx,nu,1);
-	  Compute_MpInvJx_dNxxdSy(PlaqL,PlaqR,MpInvJx_nu,FdetV);
-	  Fdet2_nu = Fdet2_nu+FdetV;
-
+	    PlaqR = Gimpl::CovShiftIdentityForward(Umu[nu], nu);
+	    
+	    dJdXe_nMpInv_y = Cshift(dJdXe_nMpInv,nu,1);
+	    ComputeNxy(PlaqL, PlaqR,Nxy);
+	    Fdet1_nu = Fdet1_nu+transpose(Nxy)*dJdXe_nMpInv_y;
+	    
+	    MpInvJx_nu = Cshift(MpInvJx,nu,1);
+	    Compute_MpInvJx_dNxxdSy(PlaqL,PlaqR,MpInvJx_nu,FdetV);
+	    Fdet2_nu = Fdet2_nu+FdetV;
+	    
 	
-	  //    x==
-	  //    |  :
-	  //       y
-	  //    |  |
-	  //     ->
-	  // x = y - mu + nu
+	    //    x==
+	    //    |  :
+	    //       y
+	    //    |  |
+	    //     ->
+	    // x = y - mu + nu
 
-	  dirs.clear();
-	  dirs = {-(nu+1),-(mu+1),(nu+1),(nu+1)};
-	  //linkTracer(Umu, Utmp, dirs, -1, -rho, PlaqL);
-	  PlaqL = (-rho)*Gimpl::CovShiftBackward(Umu[nu],nu,
-						  Gimpl::CovShiftBackward(Umu[mu],mu,
+	    dirs = {-(nu+1),-(mu+1),(nu+1),(nu+1)};
+	    //linkTracer(Umu, Utmp, dirs, -1, -rho, PlaqL);
+	    PlaqL = (-rho)*Gimpl::CovShiftBackward(Umu[nu],nu,
+						   Gimpl::CovShiftBackward(Umu[mu],mu,
 									   Gimpl::CovShiftForward(Umu[nu],nu,
 												  Gimpl::CovShiftIdentityForward(Umu[nu], nu))));
-	  dirs.clear();
-	  dirs = {(nu+1),-(mu+1)};
-	  //linkTracer(Umu, Utmp, dirs, 2, 1.0,PlaqR);
-	  PlaqR = Gimpl::CovShiftForward(Umu[nu],nu,
-					 Gimpl::CovShiftIdentityBackward(Utmp,mu));
-	  
-	  //dJdXe_nMpInv_y = Cshift(Cshift(dJdXe_nMpInv,mu,-1),nu,1);
-	  dJdXe_nMpInv_y = Cshift(dJdXe_nMpInv,mu,-1);
-          dJdXe_nMpInv_y = Cshift(dJdXe_nMpInv_y,nu,1);
-	  ComputeNxy(PlaqL, PlaqR,Nxy);
-	  Fdet1_nu = Fdet1_nu+transpose(Nxy)*dJdXe_nMpInv_y;
+	    dirs = {(nu+1),-(mu+1)};
+	    //linkTracer(Umu, Utmp, dirs, 1, 1.0,PlaqR);
+	    PlaqR = Gimpl::CovShiftForward(Umu[nu],nu,
+					   Gimpl::CovShiftIdentityBackward(Utmp,mu));
+	    
+	    dJdXe_nMpInv_y = Cshift(Cshift(dJdXe_nMpInv,mu,-1),nu,1);
+	    ComputeNxy(PlaqL, PlaqR,Nxy);
+	    Fdet1_nu = Fdet1_nu+transpose(Nxy)*dJdXe_nMpInv_y;
+	    
+	    MpInvJx_nu = Cshift(Cshift(MpInvJx,mu,-1),nu,1);
+	    Compute_MpInvJx_dNxxdSy(PlaqR,PlaqL,MpInvJx_nu,FdetV);
+	    Fdet2_nu = Fdet2_nu+FdetV;
+	    
 
-	  //MpInvJx_nu = Cshift(Cshift(MpInvJx,mu,-1),nu,1);
-	  MpInvJx_nu = Cshift(MpInvJx,mu,-1);
-	  MpInvJx_nu = Cshift(MpInvJx_nu,nu,1);
-	  Compute_MpInvJx_dNxxdSy(PlaqR,PlaqL,MpInvJx_nu,FdetV);//PlaqL,PlaqR,MpInvJx_nu,FdetV);
-	  Fdet2_nu = Fdet2_nu+FdetV;
-	  
-
-	  //    x==
-	  //    |  |
-	  //    :  |
-	  //    y->
-	  // x = y + 2nu
-	  dirs.clear();
-	  dirs = {nu+1,nu+1};
-	  //linkTracer(Umu, Utmp, dirs, -1, rho, PlaqR);
-	  PlaqR = rho*Gimpl::CovShiftForward(Umu[nu],nu,
-					     Gimpl::CovShiftIdentityForward(Umu[nu], nu));
-	  dirs.clear();
-	  dirs = {mu+1,-(nu+1),-(nu+1),-(mu+1)};// <- so this is wrong?
-	  //linkTracer(Umu, Utmp, dirs, 4, 1.0, PlaqL);
-	  PlaqL = Gimpl::CovShiftForward(Umu[mu],mu,
-					 Gimpl::CovShiftForward(Umu[nu],nu,
-								  Gimpl::CovShiftForward(Umu[nu],nu,
-											   Gimpl::CovShiftIdentityBackward(Utmp,mu))));
-	
-	  dJdXe_nMpInv_y = Cshift(dJdXe_nMpInv,nu,2);
-	  ComputeNxy(PlaqL,PlaqR,Nxy);
-	  Fdet1_nu = Fdet1_nu + transpose(Nxy)*dJdXe_nMpInv_y;
-
-	  MpInvJx_nu = Cshift(MpInvJx,nu,2);
-	  Compute_MpInvJx_dNxxdSy(PlaqL,PlaqR,MpInvJx_nu,FdetV);
-	  Fdet2_nu = Fdet2_nu + FdetV;
-
-	  //    x==
-	  //    |  |
-	  //    |  :
-	  //     ->y
-	  // x = y + 2nu - mu
-
-	  dirs.clear();
-	  dirs = {nu+1,nu+1,-(mu+1)};
-	  //linkTracer(Umu, Utmp, dirs, 3, -rho, PlaqR);
-	  PlaqR = (-rho)*Gimpl::CovShiftForward(Umu[nu],nu,
-						Gimpl::CovShiftForward(Umu[nu],nu,
-								       Gimpl::CovShiftIdentityBackward(Utmp,mu)));
-	  dirs.clear();
-	  dirs = {-(mu+1),nu+1,nu+1};
-          //linkTracer(Umu, Utmp, dirs, -1, 1.0, PlaqL);
-	  PlaqL = Gimpl::CovShiftBackward(Umu[mu],mu,
+	    //    x==
+	    //    |  |
+	    //    :  |
+	    //    y->
+	    // x = y + 2nu
+	    
+	    dirs = {nu+1,nu+1};
+	    //linkTracer(Umu, Utmp, dirs, -1, rho, PlaqR);
+	    PlaqR = rho*Gimpl::CovShiftForward(Umu[nu],nu,
+					       Gimpl::CovShiftIdentityForward(Umu[nu], nu));
+	    dirs = {mu+1,-(nu+1),(nu+1),(mu+1)};
+	    //linkTracer(Umu, Utmp, dirs, 3, 1.0, PlaqL);
+	    PlaqL = Gimpl::CovShiftForward(Umu[mu],mu,
 					   Gimpl::CovShiftForward(Umu[nu],nu,
-								  Gimpl::CovShiftIdentityForward(Umu[nu], nu)));
+								  Gimpl::CovShiftForward(Umu[nu],nu,
+											 Gimpl::CovShiftIdentityBackward(Utmp,mu))));
+	    
+	    dJdXe_nMpInv_y = Cshift(dJdXe_nMpInv,nu,2);
+	    ComputeNxy(PlaqL,PlaqR,Nxy);
+	    Fdet1_nu = Fdet1_nu + transpose(Nxy)*dJdXe_nMpInv_y;
+	    
+	    MpInvJx_nu = Cshift(MpInvJx,nu,2);
+	    Compute_MpInvJx_dNxxdSy(PlaqL,PlaqR,MpInvJx_nu,FdetV);
+	    Fdet2_nu = Fdet2_nu + FdetV;
+	  
+	    //    x==
+	    //    |  |
+	    //    |  :
+	    //     ->y
+	    // x = y + 2nu - mu
+	    
+	    dirs = {nu+1,nu+1,-(mu+1)};
+	    //linkTracer(Umu, Utmp, dirs, 2, -rho, PlaqR);
+	    PlaqR = (-rho)*Gimpl::CovShiftForward(Umu[nu],nu,
+						  Gimpl::CovShiftForward(Umu[nu],nu,
+									 Gimpl::CovShiftIdentityBackward(Utmp,mu)));
+	    dirs = {-(mu+1),nu+1,nu+1};
+	    //linkTracer(Umu, Utmp, dirs, -1, 1.0, PlaqL);
+	    PlaqL = Gimpl::CovShiftBackward(Umu[mu],mu,
+					    Gimpl::CovShiftForward(Umu[nu],nu,
+								   Gimpl::CovShiftIdentityForward(Umu[nu], nu)));
+	    
+	    dJdXe_nMpInv_y = Cshift(Cshift(dJdXe_nMpInv,mu,-1),nu,2);
+	    ComputeNxy(PlaqL, PlaqR,Nxy);
+	    Fdet1_nu = Fdet1_nu+transpose(Nxy)*dJdXe_nMpInv_y;
+	    
+	    MpInvJx_nu = Cshift(Cshift(MpInvJx,mu,-1),nu,2);
+	    Compute_MpInvJx_dNxxdSy(PlaqR,PlaqL,MpInvJx_nu,FdetV);
+	    Fdet2_nu = Fdet2_nu+FdetV;
 
-	  //dJdXe_nMpInv_y = Cshift(Cshift(dJdXe_nMpInv,mu,-1),nu,2);
-	  dJdXe_nMpInv_y = Cshift(dJdXe_nMpInv,mu,-1);
-          dJdXe_nMpInv_y = Cshift(dJdXe_nMpInv_y,nu,2);
-	  ComputeNxy(PlaqL, PlaqR,Nxy);
-	  Fdet1_nu = Fdet1_nu+transpose(Nxy)*dJdXe_nMpInv_y;
+	    /////////////////////////////////////////////////////////////////////
+	    // Set up the determinant force contribution in 3x3 algebra basis
+	    /////////////////////////////////////////////////////////////////////
+	    InsertForce(Fdet1,Fdet1_nu,nu);
+	    InsertForce(Fdet2,Fdet2_nu,nu);
+	    
 	  
-	  //MpInvJx_nu = Cshift(Cshift(MpInvJx,mu,-1),nu,2);
-	  MpInvJx_nu = Cshift(MpInvJx,mu,-1);
-          MpInvJx_nu = Cshift(MpInvJx_nu,nu,2);
-	  Compute_MpInvJx_dNxxdSy(PlaqR,PlaqL,MpInvJx_nu,FdetV);//PlaqL,PlaqR,MpInvJx_nu,FdetV);
-	  Fdet2_nu = Fdet2_nu+FdetV;
-
-	  /////////////////////////////////////////////////////////////////////
-	  // Set up the determinant force contribution in 3x3 algebra basis
-	  /////////////////////////////////////////////////////////////////////
-	  InsertForce(Fdet1,Fdet1_nu,nu);
-	  InsertForce(Fdet2,Fdet2_nu,nu);
-
+	    //////////////////////////////////////////////////
+	    // Parallel direction terms
+	    //////////////////////////////////////////////////
+	    
+	    //    y..
+	    //    |  |
+	    //    |  |
+	    //    x=<=
+	    // x = y - 2nu : Computes contr. from this type to the force for U_nu(y) and U_nu(y+nu) <- similar effect happens in all calc. below
 	  
-	  //////////////////////////////////////////////////
-	  // Parallel direction terms
-	  //////////////////////////////////////////////////
+	    PlaqL=Gimpl::CovShiftBackward(Umu[nu],nu,Gimpl::CovShiftIdentityBackward(Umu[nu], nu));
+	    dirs = {(mu+1),-(nu+1),-(nu+1),-(mu+1)};
+	    //linkTracer(Umu, Utmp, dirs, 3, -rho,PlaqR);
+	    PlaqR = (-rho)*Gimpl::CovShiftForward(Umu[mu],mu,
+						  Gimpl::CovShiftBackward(Umu[nu],nu,
+									  Gimpl::CovShiftBackward(Umu[nu],nu,
+												  Gimpl::CovShiftIdentityBackward(Utmp,mu))));
+	    dJdXe_nMpInv_y = Cshift(dJdXe_nMpInv,nu,-2);
+	    ComputeNxy(PlaqL,PlaqR,Nxy);
+	    Fdet1_mu = Fdet1_mu + transpose(Nxy)*dJdXe_nMpInv_y;
 	  
-	  //    y..
-	  //    |  |
-	  //    |  |
-	  //    x=<=
-	  // x = y - 2nu : Computes contr. from this type to the force for U_nu(y) and U_nu(y+nu) <- similar effect happens in all calc. below
-	  
-	  PlaqL=Gimpl::CovShiftBackward(Umu[nu],nu,Gimpl::CovShiftIdentityBackward(Umu[nu], nu));
-	  dirs.clear();
-	  dirs = {(mu+1),-(nu+1),-(nu+1),-(mu+1)};
-	  //linkTracer(Umu, Utmp, dirs, 4, -rho,PlaqR);
-	  PlaqR = (-rho)*Gimpl::CovShiftForward(Umu[mu],mu,
-						Gimpl::CovShiftBackward(Umu[nu],nu,
-									Gimpl::CovShiftBackward(Umu[nu],nu,
-												Gimpl::CovShiftIdentityBackward(Utmp,mu))));
-	  dJdXe_nMpInv_y = Cshift(dJdXe_nMpInv,nu,-2);
-	  
-	  ComputeNxy(PlaqL,PlaqR,Nxy);
-	  Fdet1_mu = Fdet1_mu + transpose(Nxy)*dJdXe_nMpInv_y;
-	  
-	  MpInvJx_nu = Cshift(MpInvJx,nu,-2);
-	  Compute_MpInvJx_dNxxdSy(PlaqR,PlaqL,MpInvJx_nu,FdetV);//PlaqL,PlaqR,MpInvJx_nu,FdetV);
-	  Fdet2_mu = Fdet2_mu+FdetV;
+	    MpInvJx_nu = Cshift(MpInvJx,nu,-2);
+	    Compute_MpInvJx_dNxxdSy(PlaqR,PlaqL,MpInvJx_nu,FdetV);
+	    Fdet2_mu = Fdet2_mu+FdetV;
 	  
 	
-	  //    x<=
-	  //    |  |
-	  //    |  |
-	  //    y..
-	  // x = y + 2nu
+	    //    x<=
+	    //    |  |
+	    //    |  |
+	    //    y..
+	    // x = y + 2nu
 
-	  dirs.clear();
-	  PlaqL=Gimpl::CovShiftForward(Umu[nu],nu,Gimpl::CovShiftIdentityForward(Umu[nu], nu));
-	  dirs = {(mu+1),(nu+1),(nu+1),-(mu+1)};
-	  //linkTracer(Umu, Utmp, dirs, 4, -rho,PlaqR);
-	  PlaqR = (-rho)*Gimpl::CovShiftForward(Umu[mu],mu,
-						Gimpl::CovShiftForward(Umu[nu],nu,
-								       Gimpl::CovShiftForward(Umu[nu],nu,
+	    PlaqL=Gimpl::CovShiftForward(Umu[nu],nu,Gimpl::CovShiftIdentityForward(Umu[nu], nu));
+	    dirs = {(mu+1),(nu+1),(nu+1),-(mu+1)};
+	    //linkTracer(Umu, Utmp, dirs, 3, -rho,PlaqR);
+	    PlaqR = (-rho)*Gimpl::CovShiftForward(Umu[mu],mu,
+						  Gimpl::CovShiftForward(Umu[nu],nu,
+									 Gimpl::CovShiftForward(Umu[nu],nu,
 											      Gimpl::CovShiftIdentityBackward(Utmp,mu))));
 
-	  dJdXe_nMpInv_y = Cshift(dJdXe_nMpInv,nu,2);
-
-	  ComputeNxy(PlaqL,PlaqR,Nxy);
-	  Fdet1_mu = Fdet1_mu + transpose(Nxy)*dJdXe_nMpInv_y;
-	  
-	  MpInvJx_nu = Cshift(MpInvJx,nu,2);
-	  Compute_MpInvJx_dNxxdSy(PlaqR,PlaqL,MpInvJx_nu,FdetV);//PlaqL,PlaqR,MpInvJx_nu,FdetV);
-	  Fdet2_mu = Fdet2_mu+FdetV;
-	  break;
-	}
+	    dJdXe_nMpInv_y = Cshift(dJdXe_nMpInv,nu,2);
+	    ComputeNxy(PlaqL,PlaqR,Nxy);
+	    Fdet1_mu = Fdet1_mu + transpose(Nxy)*dJdXe_nMpInv_y;
+	    
+	    MpInvJx_nu = Cshift(MpInvJx,nu,2);
+	    Compute_MpInvJx_dNxxdSy(PlaqR,PlaqL,MpInvJx_nu,FdetV);
+	    Fdet2_mu = Fdet2_mu+FdetV;
+	    break;
+	  }
 	default:
 	  {
 	    assert(1!=1 && " At present, the only valid choice of flow kernel is either 1 or 2");
@@ -1458,15 +1413,13 @@ public:
     //    for (int mu = 0; mu < Nd; mu++)
     int mu =mmu;
     BaseSmear(Cmu, GaugeK,mu,rho,mask_type);
-        //7 0 1 7 0.1 120790.48252695
-    std::cout << GridLogMessage <<"AnalyticSmearedForce REct "<<level<<" "<<smr_ind<<" "<<mask_type<<" "<<sub_level<<" "<<rho<<" "<<norm2(SigmaKPrimeB)<<" "<<norm2(SigmaKPrimeA)<<" "<<norm2(Cmu)<<" "<<norm2(GaugeK)<<std::endl;//DEBUG
 
     {
-      GaugeKmu = peekLorentz(GaugeK, mu); std::cout << GridLogMessage <<"AnalyticSmearedForce REct gaugek "<<norm2(GaugeKmu)<<std::endl;//DEBUG   
-      SigmaKPrime_mu = peekLorentz(SigmaKPrimeA, mu);  std::cout << GridLogMessage <<"AnalyticSmearedForce REct SigmaKPrime_mu "<<norm2(SigmaKPrime_mu)<<std::endl;//DEBUG       
-      iQ = Ta(Cmu * adj(GaugeKmu));  std::cout << GridLogMessage <<"AnalyticSmearedForce REct iQ "<<norm2(iQ)<<std::endl;//DEBUG                                   
-      this->set_iLambda(iLambda_mu, e_iQ, iQ, SigmaKPrime_mu, GaugeKmu);  std::cout << GridLogMessage <<"AnalyticSmearedForce REct iLambda_mu "<<norm2(iLambda_mu)<<std::endl;//DEBUG
-      pokeLorentz(SigmaK, SigmaKPrime_mu * e_iQ + adj(Cmu) * iLambda_mu, mu); std::cout << GridLogMessage <<"AnalyticSmearedForce REct SigmaK "<<norm2(SigmaK)<<std::endl;//DEBUG 
+      GaugeKmu = peekLorentz(GaugeK, mu);
+      SigmaKPrime_mu = peekLorentz(SigmaKPrimeA, mu);
+      iQ = Ta(Cmu * adj(GaugeKmu));
+      this->set_iLambda(iLambda_mu, e_iQ, iQ, SigmaKPrime_mu, GaugeKmu);
+      pokeLorentz(SigmaK, SigmaKPrime_mu * e_iQ + adj(Cmu) * iLambda_mu, mu); 
       pokeLorentz(iLambda, iLambda_mu, mu);
       std::cout << " mu "<<mu<<" SigmaKPrime_mu "<<norm2(SigmaKPrime_mu)<< " iLambda_mu " <<norm2(iLambda_mu)<<std::endl;
     }
@@ -1519,57 +1472,45 @@ public:
 	int cb= (j%2);
 	
 	switch (mask_type) {
-	case 1:{
-	  LatticeComplex tmpcb(UrbGrid);
-
-	  pickCheckerboard(cb,tmpcb,ones);
-	  setCheckerboard(tmp,tmpcb);
-	  break;
-	}
-	case 2:{
-	  std::cout << GridLogMessage <<" mask type 2 in seting up Mask"<<i<<" "<<j<<" "<<mu<<" "<<cb<<std::endl;
-	  //Lattice<iScalar<vInteger> > coor_nu(_UGrid),coor_sum(_UGrid); coor_sum = Zero();
-	  LatticeInteger  coor_nu(_UGrid),coor_sum(_UGrid), int_cb(_UGrid); coor_sum = Zero(); int_cb = LatticeInteger::scalar_type(cb);//Integer(cb);
-
-	  for(int nu=0; nu < Nd; nu++)
-	    if( nu != mu){
-	      LatticeCoordinate(coor_nu,nu);//xs[c],nu);
-	      coor_nu = div(coor_nu,mask_type);
-	      coor_sum = coor_sum + coor_nu;
-	      //xs[c] = div(xs[c],mask_type);
-	      //c++;
-	    }
-	    else{
-	      LatticeCoordinate(coor_nu,nu);
-	      coor_nu = div(coor_nu,mask_type);
-              coor_sum = coor_sum + coor_nu;
-	    }
-	  
-	  coor_sum = coor_sum +int_cb;
-	  coor_sum = mod(coor_sum,2);
-	  //Lattice<iScalar<vInteger>> pred(_UGrid); pred = Zero();
-	  //for(int nu=0; nu<3; nu++) pred = pred + xs[nu];
-	  
-	  //tmp = where( mod(coor_sum,2)==(Integer)(cb), ones, zeros); std::cout << GridLogMessage <<"norm mask "<<norm2(tmp)<<std::endl;
-	  tmp = where( coor_sum, ones, zeros);
-
-	  LatticeComplex tmp2(_UGrid), tmp3(_UGrid);
-	  tmp2 = Cshift(tmp,(mu+1+Nd)%Nd,2);
-	  tmp3 = Cshift(tmp,(mu+1+Nd)%Nd,1);
-	  Coordinate point1(Nd), point2(Nd), point3(Nd);
-	  std::cout << GridLogMessage <<"norm mask "<<norm2(tmp)<<" "<<norm2(ones)<<" "<<norm2(tmp+tmp2)<<" "<<norm2(tmp+tmp3)<<std::endl;
-	  for(int nu=0;nu<Nd;nu++) {
-	    point1[nu] = 2;
-	    point3[nu] = 0;
+	case 1:
+	  {
+	    LatticeComplex tmpcb(UrbGrid);
+	    
+	    pickCheckerboard(cb,tmpcb,ones);
+	    setCheckerboard(tmp,tmpcb);
+	    break;
 	  }
-	  
-	  point2 = point1; point2[mu] = 4;
-	  Complex c;
-	  peekSite(c,tmp,point1);
-	  std::cout << GridLogMessage <<"mask value:  mu="<<mu<<"cb= "<<cb<<" "<<point1<<" "<<c;
-	  peekSite(c,tmp,point2); std::cout << point2<< " "<<c;
-	  peekSite(c,tmp,point3); std::cout << point3<<" "<<c<<std::endl;
-	  
+	case 2:
+	  {
+	    LatticeInteger  coor_nu(_UGrid),coor_sum(_UGrid); coor_sum = Zero();
+
+	    for(int nu=0; nu < Nd; nu++){
+	      LatticeCoordinate(coor_nu,nu);
+	      if( nu != mu) coor_nu = div(coor_nu,mask_type);
+	      coor_sum = coor_sum + coor_nu;
+	    }
+	    tmp = where( mod(coor_sum,2)==(Integer)(cb), ones, zeros);
+
+#if 0 //DEBUG
+	    std::cout << GridLogMessage <<"norm mask "<<norm2(tmp)<<std::endl;
+	    
+	    LatticeComplex tmp2(_UGrid), tmp3(_UGrid);
+	    tmp2 = Cshift(tmp,(mu+1+Nd)%Nd,2);
+	    tmp3 = Cshift(tmp,(mu+1+Nd)%Nd,1);
+	    Coordinate point1(Nd), point2(Nd), point3(Nd);
+	    std::cout << GridLogMessage <<"norm mask "<<norm2(tmp)<<" "<<norm2(ones)<<" "<<norm2(tmp+tmp2)<<" "<<norm2(tmp+tmp3)<<std::endl;
+	    for(int nu=0;nu<Nd;nu++) {
+	      point1[nu] = 2;
+	      point3[nu] = 0;
+	    }
+	    
+	    point2 = point1; point2[mu] = 3;
+	    Complex c;
+	    peekSite(c,tmp,point1);
+	    std::cout << GridLogMessage <<"mask value:  mu="<<mu<<"cb= "<<cb<<" "<<point1<<" "<<c;
+	    peekSite(c,tmp,point2); std::cout << point2<< " "<<c;
+	    peekSite(c,tmp,point3); std::cout << point3<<" "<<c<<std::endl;
+#endif	  
 	  break;
 	}
 	}
