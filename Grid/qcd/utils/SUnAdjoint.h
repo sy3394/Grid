@@ -96,7 +96,7 @@ public:
     for (int a = 0; a < Dimension; a++) {
       generator(a, adjTa);
       std::cout << GridLogMessage << a << std::endl;
-      assert(norm2(adjTa - conjugate(adjTa)) < 1.0e-6);
+      GRID_ASSERT(norm2(adjTa - conjugate(adjTa)) < 1.0e-6);
     }
     std::cout << GridLogMessage << std::endl;
 
@@ -105,7 +105,7 @@ public:
     for (int a = 0; a < Dimension; a++) {
       generator(a, adjTa);
       std::cout << GridLogMessage << a << std::endl;
-      assert(norm2(adjTa + transpose(adjTa)) < 1.0e-6);
+      GRID_ASSERT(norm2(adjTa + transpose(adjTa)) < 1.0e-6);
     }
     std::cout << GridLogMessage << std::endl;
   }

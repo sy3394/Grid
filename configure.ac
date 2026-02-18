@@ -222,7 +222,7 @@ esac
 
 ############### Symplectic group
 AC_ARG_ENABLE([Sp],
-    [AC_HELP_STRING([--enable-Sp=yes|no], [enable gauge group Sp2n])],
+    [AS_HELP_STRING([--enable-Sp=yes|no],[enable gauge group Sp2n])],
     [ac_ENABLE_SP=${enable_Sp}], [ac_ENABLE_SP=no])
 
 AM_CONDITIONAL(BUILD_SP, [ test "${ac_ENABLE_SP}X" == "yesX" ])
@@ -263,6 +263,28 @@ case ${ac_ACCELERATOR_AWARE_MPI} in
     *);;
 esac
 
+############### CHECKSUM COMMS
+AC_ARG_ENABLE([checksum-comms],
+    [AS_HELP_STRING([--enable-checksum-comms=yes|no],[checksum all communication])],
+    [ac_CHECKSUM_COMMS=${enable_checksum_comms}], [ac_CHECKSUM_COMMS=yes])
+
+case ${ac_CHECKSUM_COMMS} in
+    yes)
+      AC_DEFINE([GRID_CHECKSUM_COMMS],[1],[checksum all communication]);;
+    *);;
+esac
+
+############### LOG VIEWS
+AC_ARG_ENABLE([log-views],
+    [AS_HELP_STRING([--enable-log-views=yes|no],[log information on all view open/close])],
+    [ac_LOG_VIEWS=${enable_log_views}], [ac_LOG_VIEWS=yes])
+
+case ${ac_LOG_VIEWS} in
+    yes)
+      AC_DEFINE([GRID_LOG_VIEWS],[1],[log information on all view open/close]);;
+    *);;
+esac
+
 ############### SYCL/CUDA/HIP/none
 AC_ARG_ENABLE([accelerator],
     [AS_HELP_STRING([--enable-accelerator=cuda|sycl|hip|none],[enable none,cuda,sycl,hip acceleration])],
@@ -270,13 +292,14 @@ AC_ARG_ENABLE([accelerator],
 case ${ac_ACCELERATOR} in
     cuda)
       echo CUDA acceleration
-      LIBS="${LIBS} -lcuda"
+      LIBS="${LIBS} -lcuda -lcublas -lcufft"
       AC_DEFINE([GRID_CUDA],[1],[Use CUDA offload]);;
     sycl)
       echo SYCL acceleration
       AC_DEFINE([GRID_SYCL],[1],[Use SYCL offload]);;
     hip)
       echo HIP acceleration
+      LIBS="${LIBS} -lhipblas -lrocblas -lhipfft"
       AC_DEFINE([GRID_HIP],[1],[Use HIP offload]);;
     none)
       echo NO acceleration    ;;
