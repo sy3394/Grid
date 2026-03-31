@@ -358,9 +358,9 @@ int main(int argc, char* argv[])
     //   directly avoids explicit m_f dependence and works correctly even at m_f=0.
     //
     // -----------------------------------------------------------------------
-    // FORMULA A:  eps_code(s)-chirality density   (from Blum Eq. 17 / tr[Gamma5])
+    // FORMULA B:  eps_code(s)-chirality density   (Bulk form, from Blum Eq. 17 / tr[Gamma5])
     // -----------------------------------------------------------------------
-    //   q_A(x) = sum_n sign(mu_n) * sum_s eps_code(s) * rho_n(x,s)
+    //   q_B(x) = sum_n sign(mu_n) * sum_s eps_code(s) * rho_n(x,s)
     //
     //   Derivation:
     //     Q = -(1/2) sum_n sign(mu_n) <psi_n|Gamma5_Blum|psi_n>
@@ -372,9 +372,9 @@ int main(int argc, char* argv[])
     //   cancel because eps_code sums to zero over a uniformly distributed mode.
     //
     // -----------------------------------------------------------------------
-    // FORMULA B:  boundary projection density      (related to Blum Eq. 8)
+    // FORMULA C:  boundary projection density      (Boundary form, related to Blum Eq. 8)
     // -----------------------------------------------------------------------
-    //   q_B(x) = -sum_n sign(mu_n) * [rho_n(x,Ls-1) - rho_n(x,0)]
+    //   q_C(x) = -sum_n sign(mu_n) * [rho_n(x,Ls-1) - rho_n(x,0)]
     //
     //   Derivation:
     //     q_top(x) = -m_f * tr[gamma5 * S^{4D}(x,x)]
@@ -391,12 +391,12 @@ int main(int argc, char* argv[])
     //   convention (eps(Ls-1)=+1, eps(0)=-1).
     //
     // -----------------------------------------------------------------------
-    // FORMULA C:  midpoint density                 (analog of Blum Eq. 9)
+    // FORMULA A:  midpoint density                 (Midpoint form, analog of Blum Eq. 9)
     // -----------------------------------------------------------------------
-    //   q_C(x) = -sum_n sign(mu_n) * 0.5 * [rho_n(x,Ls/2) - rho_n(x,Ls/2-1)]
+    //   q_A(x) = -sum_n sign(mu_n) * 0.5 * [rho_n(x,Ls/2) - rho_n(x,Ls/2-1)]
     //
     //   Derivation:
-    //     Analogous to Formula B but using the midpoint slices s=Ls/2 and s=Ls/2-1
+    //     Analogous to Formula C but using the midpoint slices s=Ls/2 and s=Ls/2-1
     //     instead of the physical walls s=Ls-1 and s=0.  Corresponds to the
     //     "midpoint axial current" J^a_{5q,mid}(x) defined in Blum Eq. (9).
     //     The factor 0.5 normalises relative to the wall formula.
@@ -414,8 +414,8 @@ int main(int argc, char* argv[])
       // Guard against division by zero (should never occur with physical evals).
       double w_Ap = (mu_n != 0.0) ? (m_gap / mu_n) : 0.0;
 
-      // --- Formula A:  sign(mu_n)-weighted eps_code chirality sum ---
-      // --- Formula A': m_gap/mu_n-weighted eps_code chirality sum  ---
+      // --- Formula B:  sign(mu_n)-weighted eps_code chirality sum ---
+      // --- Formula B': m_gap/mu_n-weighted eps_code chirality sum  ---
       // Both accumulate sum_s eps_code(s) * rho_n(x,s); they differ only in weight.
       // eps_code(s) = -1 for s < Ls/2  (left),  +1 for s >= Ls/2  (right).
       {
@@ -423,13 +423,13 @@ int main(int argc, char* argv[])
         for(int s = 0; s < Ls; s++){
           ExtractSlice(eps_slice, tmp, s, 0);
           double eps_s = (s >= Ls/2) ? 1.0 : -1.0;   // eps_code(s)
-          q_eps   = q_eps   + (sign_mu * eps_s) * eps_slice;  // Formula A
-          q_prime = q_prime + (w_Ap    * eps_s) * eps_slice;  // Formula A'
+          q_eps   = q_eps   + (sign_mu * eps_s) * eps_slice;  // Formula B
+          q_prime = q_prime + (w_Ap    * eps_s) * eps_slice;  // Formula B'
         }
       }
 
-      // --- Formula B: boundary projection ---
-      // q_B(x) += -sign(mu_n) * [rho_n(x,Ls-1) - rho_n(x,0)]
+      // --- Formula C: boundary projection ---
+      // q_C(x) += -sign(mu_n) * [rho_n(x,Ls-1) - rho_n(x,0)]
       // s=Ls-1: right wall (eps_code=+1),  s=0: left wall (eps_code=-1).
       // Scalar proxy for the exact spinor boundary formula (see comment above).
       {
@@ -439,9 +439,9 @@ int main(int argc, char* argv[])
         q_bdy = q_bdy - sign_mu * (bdy_sLs - bdy_s0);
       }
 
-      // --- Formula C: midpoint density ---
-      // q_C(x) += -sign(mu_n) * 0.5 * [rho_n(x,Ls/2) - rho_n(x,Ls/2-1)]
-      // Midpoint slices straddle the 5D bulk; analogous to Formula B at mid-plane.
+      // --- Formula A: midpoint density ---
+      // q_A(x) += -sign(mu_n) * 0.5 * [rho_n(x,Ls/2) - rho_n(x,Ls/2-1)]
+      // Midpoint slices straddle the 5D bulk; analogous to Formula C at mid-plane.
       // Corresponds to Blum Eq. (9) J^a_{5q,mid}(x).
       if(Ls >= 2){
         LatticeComplexD mid_lo(grid), mid_hi(grid);
@@ -452,11 +452,11 @@ int main(int argc, char* argv[])
 
       std::cout << "TopoContrib evec=" << c
                 << " mu_n=" << mu_n << " sign(mu_n)=" << sign_mu
-                << " w_Ap=" << w_Ap
-                << " Q_A="  << real(TensorRemove(sum(q_eps)))
-                << " Q_A'=" << real(TensorRemove(sum(q_prime)))
-                << " Q_B="  << real(TensorRemove(sum(q_bdy)))
-                << " Q_C="  << real(TensorRemove(sum(q_mid))) << std::endl;
+                << " w_Bp=" << w_Ap
+                << " Q_B="  << real(TensorRemove(sum(q_eps)))
+                << " Q_B'=" << real(TensorRemove(sum(q_prime)))
+                << " Q_C="  << real(TensorRemove(sum(q_bdy)))
+                << " Q_A="  << real(TensorRemove(sum(q_mid))) << std::endl;
     }
     // ==========================================================================
   }
@@ -484,35 +484,35 @@ int main(int argc, char* argv[])
   
   /****** Write topo charge density reconstructed from eigenvectors (4 formulas) *****/
   // q_A, q_B, q_C use sign(mu_n) (Approximation 1).
-  // q_A' uses m_gap/mu_n weight — proper bulk suppression, valid at m_f=0.
-  // Output files: _q_A_eps, _q_Ap_mgap, _q_B_bdy, _q_C_mid.
+  // q_B' uses m_gap/mu_n weight — proper bulk suppression, valid at m_f=0.
+  // Output files: _q_B_eps, _q_Bp_mgap, _q_C_bdy, _q_A_mid.
   if(compute_topo && !evals.empty()){
-    // Formula A: eps_code(s)-chirality density  [sign(mu_n) weight]
-    //   q_A(x) = sum_n sign(mu_n) * sum_s eps_code(s) * rho_n(x,s)
-    writeFile(q_eps, topo_out + "_q_A_eps.dat");
-    std::cout << "Wrote q_A   -> " << topo_out << "_q_A_eps.dat"
-              << "  Q_A=" << real(TensorRemove(sum(q_eps))) << std::endl;
+    // Formula B: eps_code(s)-chirality density  [sign(mu_n) weight, bulk form]
+    //   q_B(x) = sum_n sign(mu_n) * sum_s eps_code(s) * rho_n(x,s)
+    writeFile(q_eps, topo_out + "_q_B_eps.dat");
+    std::cout << "Wrote q_B   -> " << topo_out << "_q_B_eps.dat"
+              << "  Q_B=" << real(TensorRemove(sum(q_eps))) << std::endl;
 
-    // Formula A': m_gap-weighted chirality density  [m_gap/mu_n weight]
-    //   q_A'(x) = sum_n (m_gap/mu_n) * sum_s eps_code(s) * rho_n(x,s)
+    // Formula B': m_gap-weighted chirality density  [m_gap/mu_n weight, bulk improved]
+    //   q_B'(x) = sum_n (m_gap/mu_n) * sum_s eps_code(s) * rho_n(x,s)
     //   Bulk modes suppressed by m_gap/Lambda_bulk << 1.
     //   Recommended for pointwise comparison with gradient-flowed q^gf(x).
-    writeFile(q_prime, topo_out + "_q_Ap_mgap.dat");
-    std::cout << "Wrote q_A'  -> " << topo_out << "_q_Ap_mgap.dat"
-              << "  Q_A'=" << real(TensorRemove(sum(q_prime)))
+    writeFile(q_prime, topo_out + "_q_Bp_mgap.dat");
+    std::cout << "Wrote q_B'  -> " << topo_out << "_q_Bp_mgap.dat"
+              << "  Q_B'=" << real(TensorRemove(sum(q_prime)))
               << "  (m_gap=" << m_gap << ")" << std::endl;
 
-    // Formula B: boundary projection density  [Blum Eq. 8 scalar proxy]
-    //   q_B(x) = -sum_n sign(mu_n) * [rho_n(x,Ls-1) - rho_n(x,0)]
-    writeFile(q_bdy, topo_out + "_q_B_bdy.dat");
-    std::cout << "Wrote q_B   -> " << topo_out << "_q_B_bdy.dat"
-              << "  Q_B=" << real(TensorRemove(sum(q_bdy))) << std::endl;
+    // Formula C: boundary projection density  [Blum Eq. 8 scalar proxy]
+    //   q_C(x) = -sum_n sign(mu_n) * [rho_n(x,Ls-1) - rho_n(x,0)]
+    writeFile(q_bdy, topo_out + "_q_C_bdy.dat");
+    std::cout << "Wrote q_C   -> " << topo_out << "_q_C_bdy.dat"
+              << "  Q_C=" << real(TensorRemove(sum(q_bdy))) << std::endl;
 
-    // Formula C: midpoint density  [Blum Eq. 9 analog]
-    //   q_C(x) = -sum_n sign(mu_n) * 0.5 * [rho_n(x,Ls/2) - rho_n(x,Ls/2-1)]
-    writeFile(q_mid, topo_out + "_q_C_mid.dat");
-    std::cout << "Wrote q_C   -> " << topo_out << "_q_C_mid.dat"
-              << "  Q_C=" << real(TensorRemove(sum(q_mid))) << std::endl;
+    // Formula A: midpoint density  [Blum Eq. 9 analog]
+    //   q_A(x) = -sum_n sign(mu_n) * 0.5 * [rho_n(x,Ls/2) - rho_n(x,Ls/2-1)]
+    writeFile(q_mid, topo_out + "_q_A_mid.dat");
+    std::cout << "Wrote q_A   -> " << topo_out << "_q_A_mid.dat"
+              << "  Q_A=" << real(TensorRemove(sum(q_mid))) << std::endl;
   }
   /******************************************************************************/
 
