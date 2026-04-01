@@ -131,7 +131,7 @@ public:
 		if(dynm_dir<n_dims) site[dynm_dir] = x3;    // dynm_dir != file index => coor_map[2] != latt index 
 		else                site[coor_map[2]] = x2; // dynm_dir == file index => coor_map[2] == latt index
 
-		for(int i=0; i<omit_dirs.size(); i++) site[omit_dirs[i]] = omit_intcpts[i];
+		for(int i=0; i<(int)omit_dirs.size(); i++) site[omit_dirs[i]] = omit_intcpts[i];
 		/***  The last elem of omit_dirs can be the file index  ***/
 		
 		// The last omit dir != file index => one frame index can be a file index
@@ -158,7 +158,7 @@ public:
 	    snprintf(text_string,max,"%s=%s",dynm_labels[dynm_dir].c_str(),dynmIndexF[x3].c_str());
 	  else
 	    snprintf(text_string,max,"%s=%d",dynm_labels[dynm_dir].c_str(),x3);
-	  for(int i_omit=0; i_omit<omit_dirs.size(); i_omit++){
+	  for(int i_omit=0; i_omit<(int)omit_dirs.size(); i_omit++){
 	    if(std::find(xlate_omit_dirs.begin(), xlate_omit_dirs.end(), i_omit) != xlate_omit_dirs.end()){ // corresp. omit_dir == xlated_dir
 	      char tmp[max];
 	      strncpy(tmp,text_string, max);
@@ -213,7 +213,6 @@ public:
   int* coor_map;
   vtkImageData* imageData = nullptr;
   vtkTextActor* text = nullptr;
-  vtkFFMPEGWriter *writer = nullptr;
   int timerId ;
   int maxCount ;
   double rms;
@@ -276,7 +275,7 @@ int main(int argc, char* argv[])
   Display axes are the 3 dirs left unassigned.
   ************************************************************************************/
   std::string separator = "smr.";
-  std::vector<std::string> file_list, data_fname;
+  std::vector<std::string> file_list;
   double default_contour = 1.0;
   bool use_fname_as_frame_counter = false;
   std::ifstream index_list;
@@ -461,16 +460,14 @@ int main(int argc, char* argv[])
   /********   Preprocess Data   **********************************/
   /***************************************************************/
   // Read in data
-  FieldMetaData header;
   std::vector<LatticeComplexD> data(file_list.size(),grid);
-  for(int c=0;c<data.size();c++) {
+  for(int c=0;c<(int)data.size();c++) {
     std::cout << "Reading file: "<<file_list[c]<<std::endl;
     readFile(data[c],file_list[c]);
-    data[c] = data[c];
   }
   int flag = 0; for(auto dir:omit_intcpts) if(dir<0) flag++;
   std::string display_info = flag ? "summed over ":"";
-  for( int i_od=0; i_od<omit_dirs.size(); i_od++){
+  for( int i_od=0; i_od<(int)omit_dirs.size(); i_od++){
     int odir    = omit_dirs[i_od];
     int intcpts = omit_intcpts[i_od];
 
@@ -483,7 +480,7 @@ int main(int argc, char* argv[])
       // odir != file_index
       if(odir < latt_size.size()){
 	Lattice<iScalar<vInteger> > x_odir(grid); LatticeCoordinate(x_odir,odir);
-	for(int c=0;c<data.size();c++) {
+	for(int c=0;c<(int)data.size();c++) {
 	  Fsum = Zero();
 	  for(int i=0; i<latt_size[odir];i++){
 	    filter = where( x_odir==i, ones, zeros);
@@ -499,7 +496,7 @@ int main(int argc, char* argv[])
       // Sum over odir where odir == file_index
       else if(odir == latt_size.size()){
 	Fsum = Zero();
-	for(int c=0;c<data.size();c++)
+	for(int c=0;c<(int)data.size();c++)
 	  Fsum = Fsum + data[c];
 	data.clear();
 	data.push_back(Fsum);
@@ -512,28 +509,25 @@ int main(int argc, char* argv[])
   
   // take diff when demanded
   if(take_diff){
-    for(int c=0;c<data.size()-1;c++)
+    assert(data.size() > 1 && "take_diff requires at least 2 files");
+    for(int c=0;c<(int)data.size()-1;c++)
       data[c] = data[c+1] - data[c];
-    if(data.size()>1) data.pop_back();
+    data.pop_back();
   }
   
   /****************************************************************/
   /**************      Determine Frame Dimensions    **************/
   /****************************************************************/
-  int coor_map[3] = {0,1,2}, ext_latt_size[latt_size.size()+1];
-  for(int d=0,d_c=0,i_o=0; d<3; d++, d_c++){
+  int coor_map[3] = {0,1,2};
+  std::vector<int> ext_latt_size(latt_size.size()+1);
+  for(int d=0,d_c=0; d<3; d++, d_c++){
     if( d_c == dynm_dir ) d_c++;
     for(auto omit_dir:omit_dirs) if( omit_dir == d_c ) d_c++;
     coor_map[d] = d_c; 
   }
-  for(int d=0; d<latt_size.size();d++) ext_latt_size[d] = latt_size[d]; ext_latt_size[latt_size.size()] = data.size();
+  for(int d=0; d<(int)latt_size.size();d++) ext_latt_size[d] = latt_size[d];
+  ext_latt_size[latt_size.size()] = data.size();
 
-  // DEBUG
-  for(auto F: data) std::cout<<"Max: "<<std::sqrt(maxLocalNorm2(F))<<" "<<real(TensorRemove(sum(F)))<<" "<<std::sqrt(maxLocalNorm2(F)/norm2(F)*grid->gSites() )<<std::endl;
-  for(int d=0;d<3;d++) std::cout<<d<<" "<<coor_map[d]<<std::endl;
-  for(int s : ext_latt_size) std::cout<<s<<std::endl;
-  for(int s : omit_dirs) std::cout<<s<<std::endl;
-  for(int s : omit_intcpts) std::cout<<s<<std::endl;
 
   /****************************************************************/
   /****************    Setup Frames    ****************************/
@@ -711,7 +705,7 @@ int main(int argc, char* argv[])
     vtkNew<FrameUpdater> fu;
     fu->imageData = imageData;
     fu->grid_data = tmp;
-    fu->ext_latt_size = ext_latt_size;
+    fu->ext_latt_size = ext_latt_size.data();
     fu->coor_map  = coor_map;
     fu->text      = TextT;
     fu->maxCount = frameCount;
@@ -734,8 +728,7 @@ int main(int argc, char* argv[])
       assert(!use_fname_as_frame_counter && "file name is not to be used as a frame counter");
 
       std::string line;
-      while(!index_list.eof()){
-	getline(index_list,line);
+      while(getline(index_list, line)){
 	ind_list.push_back(line);
       }
       fu->dynmIndexF = ind_list;
@@ -773,6 +766,7 @@ int main(int argc, char* argv[])
 
   iren->Initialize();
 
+  double nf = fc;
   if ( mpeg ) {
 #ifdef MPEG
     vtkWindowToImageFilter *imageFilter = vtkWindowToImageFilter::New();
@@ -822,7 +816,6 @@ int main(int argc, char* argv[])
     sliderRep->SetSliderWidth(0.025);
     sliderRep->SetEndCapLength(0.02);
 
-    double nf = fc;//file_list.size();
     sliderRep->GetPoint1Coordinate()->SetCoordinateSystemToNormalizedDisplay();
     sliderRep->GetPoint1Coordinate()->SetValue(0.1, 0.1);
     sliderRep->GetPoint2Coordinate()->SetCoordinateSystemToNormalizedDisplay();
