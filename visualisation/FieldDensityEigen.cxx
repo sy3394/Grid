@@ -34,17 +34,10 @@
 
 #include <array>
 #include <string>
+#include <fstream>
+#include <sstream>
 
 #include <Grid/Grid.h>
-
-#define USE_FLYING_EDGES
-#ifdef USE_FLYING_EDGES
-#include <vtkFlyingEdges3D.h>
-typedef vtkFlyingEdges3D isosurface;
-#else
-#include <vtkMarchingCubes.h>
-typedef vtkMarchingCubes isosurface;
-#endif
 
 int mpeg = 0 ;
 int Ls = -1;
@@ -79,140 +72,6 @@ using namespace Grid;
 
 int n_dims = Nd; //can remove this if define it in class FrameUpdater based on ext_latt_size  
 
-class FrameUpdater : public vtkCallbackCommand
-{
-public:
-
-  FrameUpdater() {
-    TimerCount = 0;
-    xoff       = 0;
-    x3         = 0;
-    imageData  = nullptr;
-    grid_data.clear();
-    frame_size = nullptr;
-    coor_map   = nullptr;
-    timerId    = 0;
-    maxCount   = -1;
-  }
-  
-  static FrameUpdater* New()
-  {
-    FrameUpdater* cb = new FrameUpdater;
-    cb->TimerCount = 0;
-    return cb;
-  }
-
-  virtual void Execute(vtkObject* caller, unsigned long eventId,void* vtkNotUsed(callData))
-  {
-    const int max=256;
-    char text_string[max];
-
-    if (this->TimerCount < this->maxCount) {
-
-      if (vtkCommand::TimerEvent == eventId)
-	{
-	  ++this->TimerCount;
-	  
-	  // Make a new frame
-	  int dims[5];
-	  auto latt_size = grid_data[0]->Grid()->GlobalDimensions();
-	  for(int d=0; d<latt_size.size(); d++) dims[d] = latt_size[d]; dims[4] = grid_data.size();
-									  
-	  for(int x0=0;x0<frame_size[0];x0++){
-	    for(int x1=0;x1<frame_size[1];x1++){
-	      for(int x2=0;x2<frame_size[2];x2++){
-		Coordinate site({0,0,0,0}); // can take (omit_dir)-intercepts from input
-		// the first two frame dim's are always latt dim
-		site[coor_map[0]] = (x0+xoff)%frame_size[0]; site[coor_map[1]] = x1;
-		RealD value;
-		if(dynm_dir<4){ 
-		  site[dynm_dir] = x3;
-		  if(coor_map[2]<4) site[coor_map[2]] = x2;
-		  value = coor_map[2] == 4? real(peekSite(*grid_data[x2],site)) : real(peekSite(*grid_data[0],site));
-		}
-		else {
-		  site[coor_map[2]] = x2;
-		  value = real(peekSite(*grid_data[x3],site));
-		}
-		imageData->SetScalarComponentFromDouble(x0,x1,x2,0,value);
-	  }}}
-
-	  if ( xlate ) { 
-	    xoff = (xoff + 1)%frame_size[0];
-	    if ( xoff== 0 ) x3 = (x3+1)%dims[dynm_dir];
-	  } else {
-	    x3 = (x3+1)%dims[dynm_dir];
-	    if ( x3== 0 ) 	xoff = (xoff + 1)%frame_size[0];
-	  }
-
-	  snprintf(text_string,max,"%s=%d",dynm_labels[dynm_dir].c_str(),x3);
-	  text->SetInput(text_string);
-      
-	  std::cout << this->TimerCount<<"/"<<maxCount<< " xoff "<<xoff<<" t_updated "<<x3  <<std::endl;
-	  imageData->Modified();
-
-	  vtkRenderWindowInteractor* iren = dynamic_cast<vtkRenderWindowInteractor*>(caller);
-	  iren->GetRenderWindow()->Render();
-	  
-	}
-    }
-    
-    if (this->TimerCount >= this->maxCount) {
-      vtkRenderWindowInteractor* iren = dynamic_cast<vtkRenderWindowInteractor*>(caller);
-      if (this->timerId > -1)
-      {
-        iren->DestroyTimer(this->timerId);
-      }
-    }
-  }
-
-private:
-  int TimerCount;
-  int xoff;
-  int x3;
-public:
-  std::vector<Grid::LatticeComplexD *> grid_data;
-  int* frame_size;
-  int* coor_map;
-  vtkImageData* imageData = nullptr;
-  vtkTextActor* text = nullptr;
-  vtkFFMPEGWriter *writer = nullptr;
-  int timerId ;
-  int maxCount ;
-  double rms;
-  isosurface * posExtractor;
-  isosurface * negExtractor;
-};
-
-
-class SliderCallback : public vtkCommand
-{
-public:
-    static SliderCallback* New()
-    {
-        return new SliderCallback;
-    }
-    virtual void Execute(vtkObject* caller, unsigned long eventId, void* callData)
-    {
-        vtkSliderWidget *sliderWidget = vtkSliderWidget::SafeDownCast(caller);
-        if (sliderWidget)
-        {
-	  contour = ((vtkSliderRepresentation *)sliderWidget->GetRepresentation())->GetValue();
-        }
-	for(int i=0;i<fu_list.size();i++){
-	  fu_list[i]->posExtractor->SetValue(0,  SliderCallback::contour*fu_list[i]->rms);
-	  fu_list[i]->negExtractor->SetValue(0, -SliderCallback::contour*fu_list[i]->rms);
-	  fu_list[i]->posExtractor->Modified();
-	  fu_list[i]->negExtractor->Modified();
-	}
-    }
-public:
-  static double contour;
-  std::vector<FrameUpdater *> fu_list;
-};
-
-
-double SliderCallback::contour;
 
 int main(int argc, char* argv[])
 {
@@ -346,6 +205,85 @@ int main(int argc, char* argv[])
     if(!arg.empty()) data_f.open(arg,std::ios::trunc);
   }
 
+  // ---------- Topo charge density from eigenvectors ----------
+  // evals: eigenvalues of H_DWF = Gamma5R5 * D_DWF(mass).
+  //   These come from Compute_DWF_G5R5.cc (eMe[i]) and INCLUDE m_f.
+  //   Near-zero modes have |mu_n| ~ m_f; bulk modes have |mu_n| ~ O(1).
+  //   --evals accepts either:
+  //     (a) a comma-separated list:  --evals 0.012,0.015,-0.011
+  //     (b) a path to a text file:   --evals /path/to/evals.txt
+  //         File format: one eigenvalue per line (blank lines / '#' comments ignored).
+  //   The number of eigenvalues should match the number of --f2 density files;
+  //   if fewer are provided the remaining modes are treated as mu_n=0 (sign=+1).
+  // mass_f: input quark mass m_f used when generating the eigenvectors.
+  // m_gap:  spectral gap m_gap = m_f + m_res (physical quark mass including residual
+  //         chiral symmetry breaking).  Used as the weight in Formula A'.
+  //         If not supplied via --m_gap it is estimated as min_n|mu_n| from --evals.
+  // topo_out: output file prefix for the four q_top fields.
+  double mass_f = 0.0;
+  double m_gap  = -1.0;   // sentinel: negative means "not yet set"
+  std::vector<double> evals;
+  std::string topo_out = "topo_evec";
+
+  if( GridCmdOptionExists(argv,argv+argc,"--mass") ){
+    arg = GridCmdOptionPayload(argv,argv+argc,"--mass");
+    GridCmdOptionFloat(arg, mass_f);
+  }
+  if( GridCmdOptionExists(argv,argv+argc,"--evals") ){
+    arg = GridCmdOptionPayload(argv,argv+argc,"--evals");
+    // Detect file vs inline list: try parsing the first token as a double.
+    // If that fails (or arg contains a '/' or '.txt'), treat as a filename.
+    bool is_file = false;
+    {
+      // Heuristic: if arg contains a path separator or cannot be parsed as a
+      // number at all, assume it is a file path.
+      std::istringstream probe(arg);
+      double v; probe >> v;
+      is_file = probe.fail() || (arg.find('/') != std::string::npos)
+                              || (arg.find('\\') != std::string::npos);
+    }
+    if(is_file){
+      // Read one eigenvalue per line; skip blank lines and '#' comments.
+      std::ifstream fin(arg);
+      if(!fin) { std::cerr << "ERROR: cannot open evals file: " << arg << std::endl; exit(1); }
+      std::string line;
+      while(std::getline(fin, line)){
+        // Strip inline comments
+        auto pos = line.find('#');
+        if(pos != std::string::npos) line = line.substr(0, pos);
+        std::istringstream iss(line);
+        double v;
+        while(iss >> v) evals.push_back(v);
+      }
+      std::cout << "Loaded " << evals.size() << " eigenvalues from file: " << arg << std::endl;
+    } else {
+      // Comma-separated inline list, e.g. --evals 0.012,0.015,-0.011
+      std::vector<std::string> eval_strs;
+      GridCmdOptionCSL(arg, eval_strs);
+      for(auto& s: eval_strs) evals.push_back(std::stod(s));
+      std::cout << "Loaded " << evals.size() << " eigenvalues (inline)" << std::endl;
+    }
+  }
+  if( GridCmdOptionExists(argv,argv+argc,"--topo_out") ){
+    topo_out = GridCmdOptionPayload(argv,argv+argc,"--topo_out");
+  }
+  if( GridCmdOptionExists(argv,argv+argc,"--m_gap") ){
+    arg = GridCmdOptionPayload(argv,argv+argc,"--m_gap");
+    GridCmdOptionFloat(arg, m_gap);
+    std::cout << "m_gap set explicitly: " << m_gap << std::endl;
+  }
+  // If m_gap was not supplied, estimate it as min_n |mu_n|.
+  // This approximates m_f + m_res = m_phys (the spectral gap of H_DWF).
+  if(m_gap < 0.0 && !evals.empty()){
+    m_gap = std::fabs(evals[0]);
+    for(auto& v : evals) if(std::fabs(v) < m_gap) m_gap = std::fabs(v);
+    std::cout << "m_gap auto-estimated as min|mu_n| = " << m_gap << std::endl;
+  } else if(m_gap < 0.0){
+    m_gap = mass_f;  // last-resort fallback
+    std::cout << "m_gap fallback to mass_f = " << m_gap << std::endl;
+  }
+  // ------------------------------------------------------------
+
   assert( omit_dir != dynm_dir && "The omitted dir cannot be the same as updated dimension" );
 
   /**************   Read in Files   ************************************/
@@ -373,6 +311,12 @@ int main(int argc, char* argv[])
   }
 
   // 5D fields: data2
+  //   data2[c]: plain sum over s (existing behaviour, used for visualisation)
+  //   q_eps, q_bdy, q_mid: three q_top formulas accumulated over eigenvectors
+  bool compute_topo = (Ls > 0) && !file_list2.empty();
+  LatticeComplexD q_eps(grid), q_bdy(grid), q_mid(grid), q_prime(grid);
+  if(compute_topo){ q_eps = Zero(); q_bdy = Zero(); q_mid = Zero(); q_prime = Zero(); }
+
   std::vector<LatticeComplexD> data2(file_list2.size()-take_diff,grid);
   for(int c=0;c<data2.size();c++) {
     std::cout << "Reading file2: "<<file_list2[c]<<std::endl;
@@ -383,8 +327,138 @@ int main(int argc, char* argv[])
       ExtractSlice(tmp4D,tmp,i,0);
       data2[c] = data2[c] + tmp4D;
     }
-
     std::cout<<"Sum "<<c<<" "<<real(TensorRemove(sum(data2[c])))<<std::endl;
+
+    // ==================== Topo charge density (3 formulas) ====================
+    //
+    // Background (Blum et al. 2004, arXiv:hep-lat/0105006):
+    //
+    //   D_H = gamma5 * R5 * D_DWF    (Eq. 12, Hermitian DWF operator)
+    //   D_H psi_n = mu_n psi_n        (real eigenvalues mu_n)
+    //   H_DWF^2 = D_DWF† D_DWF       => D†D evecs phi_k are related to psi_n
+    //                                    (Compute_DWF_G5R5.cc rotates phi->psi)
+    //
+    // Input files (file_list2) contain the 5D scalar density per mode:
+    //   rho_n(x,s) = |psi_n(x,s)|^2  (sum over spinor & color indices)
+    // as written by the "evec_density" output of Compute_DWF_G5R5.cc.
+    //
+    // Scalar sign function eps_code(s)  [= -Gamma5_Blum, Blum Eq. 17]:
+    //   eps_code(s) = -1  for s <  Ls/2   (left-wall side)
+    //   eps_code(s) = +1  for s >= Ls/2   (right-wall side)
+    // This sign convention matches G5evec construction in Compute_DWF_G5R5.cc
+    // (axpby_ssp applies factor -1 for s < Ls/2, +1 for s >= Ls/2).
+    //
+    // evals[c] = mu_n = eigenvalue of H_DWF (includes m_f).
+    //   Near-zero (topological) modes: |mu_n| ~ m_f  -> sign(mu_n) captures chirality.
+    //   Bulk (+/-mu) pairs:            contributions cancel in the sum.
+    //
+    // WHY sign(mu_n) instead of m_f/mu_n:
+    //   The exact formula contains the factor m_f/mu_n, but for near-zero modes
+    //   |mu_n| ~ m_f (up to m_res), so m_f/mu_n ~ sign(mu_n).  Using sign(mu_n)
+    //   directly avoids explicit m_f dependence and works correctly even at m_f=0.
+    //
+    // -----------------------------------------------------------------------
+    // FORMULA B:  eps_code(s)-chirality density   (Bulk form, from Blum Eq. 17 / tr[Gamma5])
+    // -----------------------------------------------------------------------
+    //   q_B(x) = sum_n sign(mu_n) * sum_s eps_code(s) * rho_n(x,s)
+    //
+    //   Derivation:
+    //     Q = -(1/2) sum_n sign(mu_n) <psi_n|Gamma5_Blum|psi_n>
+    //       =  (1/2) sum_n sign(mu_n) sum_s eps_code(s) |psi_n(x,s)|^2   (summed over x)
+    //   Here Gamma5_Blum = delta_{ss'} sgn((Ls-1)/2 - s)  (Blum Eq. 17, SCALAR sign,
+    //   not gamma5*R5).  The factor 1/2 is absorbed into the normalization convention;
+    //   we accumulate without it to match the other two formulas.
+    //   Near-zero modes localized at one wall contribute +/-1; bulk symmetric modes
+    //   cancel because eps_code sums to zero over a uniformly distributed mode.
+    //
+    // -----------------------------------------------------------------------
+    // FORMULA C:  boundary projection density      (Boundary form, related to Blum Eq. 8)
+    // -----------------------------------------------------------------------
+    //   q_C(x) = -sum_n sign(mu_n) * [rho_n(x,Ls-1) - rho_n(x,0)]
+    //
+    //   Derivation:
+    //     q_top(x) = -m_f * tr[gamma5 * S^{4D}(x,x)]
+    //              = -m_f * sum_n (1/mu_n) * [psi_n†(x,Ls-1) P_R psi_n(x,Ls-1)
+    //                                        + psi_n†(x,0)   P_L psi_n(x,0)]
+    //   where P_R = (1+gamma5)/2, P_L = (1-gamma5)/2  with the STANDARD 4D gamma5,
+    //   and the PLUS sign between the two wall terms is exact (it arises from the
+    //   gamma5 factor inside tr[gamma5 D^{-1}] when D^{-1} is expressed via D_H^{-1}).
+    //   Replacing m_f/mu_n -> sign(mu_n) and the spinor-projected densities by the
+    //   scalar proxy rho(x,s) = |psi(x,s)|^2:
+    //     psi†(x,Ls-1) P_R psi(x,Ls-1) ~ rho(x,Ls-1)  [right-wall mode: P_R ~ 1]
+    //     psi†(x,0)    P_L psi(x,0)    ~ rho(x,0)      [left-wall mode:  P_L ~ 1]
+    //   The relative minus sign in (rho(Ls-1) - rho(0)) encodes the eps_code
+    //   convention (eps(Ls-1)=+1, eps(0)=-1).
+    //
+    // -----------------------------------------------------------------------
+    // FORMULA A:  midpoint density                 (Midpoint form, analog of Blum Eq. 9)
+    // -----------------------------------------------------------------------
+    //   q_A(x) = -sum_n sign(mu_n) * 0.5 * [rho_n(x,Ls/2) - rho_n(x,Ls/2-1)]
+    //
+    //   Derivation:
+    //     Analogous to Formula C but using the midpoint slices s=Ls/2 and s=Ls/2-1
+    //     instead of the physical walls s=Ls-1 and s=0.  Corresponds to the
+    //     "midpoint axial current" J^a_{5q,mid}(x) defined in Blum Eq. (9).
+    //     The factor 0.5 normalises relative to the wall formula.
+    // ===========================================================================
+    if(compute_topo) {
+      // Eigenvalue of H_DWF = gamma5*R5*D_DWF (includes m_f, passed via --evals).
+      double mu_n    = (c < (int)evals.size()) ? evals[c] : 0.0;
+      // sign(mu_n): +1 or -1.  For near-zero modes, m_f/mu_n ~ sign(mu_n)*1.
+      // Bulk (+/-mu) pairs cancel automatically in the sum over modes.
+      double sign_mu = (mu_n >= 0.0) ? 1.0 : -1.0;
+      // m_gap/mu_n weight for Formula A' (q_prime).
+      // Uses the spectral gap m_gap = m_f + m_res instead of sign(mu_n):
+      //   - topological modes: |mu_n| ~ m_gap  =>  w_Ap ~ sign(mu_n)  (same as q_A)
+      //   - bulk modes:        |mu_n| ~ Lambda  =>  w_Ap ~ m_gap/Lambda << 1  (suppressed)
+      // Guard against division by zero (should never occur with physical evals).
+      double w_Ap = (mu_n != 0.0) ? (m_gap / mu_n) : 0.0;
+
+      // --- Formula B:  sign(mu_n)-weighted eps_code chirality sum ---
+      // --- Formula B': m_gap/mu_n-weighted eps_code chirality sum  ---
+      // Both accumulate sum_s eps_code(s) * rho_n(x,s); they differ only in weight.
+      // eps_code(s) = -1 for s < Ls/2  (left),  +1 for s >= Ls/2  (right).
+      {
+        LatticeComplexD eps_slice(grid);
+        for(int s = 0; s < Ls; s++){
+          ExtractSlice(eps_slice, tmp, s, 0);
+          double eps_s = (s >= Ls/2) ? 1.0 : -1.0;   // eps_code(s)
+          q_eps   = q_eps   + (sign_mu * eps_s) * eps_slice;  // Formula B
+          q_prime = q_prime + (w_Ap    * eps_s) * eps_slice;  // Formula B'
+        }
+      }
+
+      // --- Formula C: boundary projection ---
+      // q_C(x) += -sign(mu_n) * [rho_n(x,Ls-1) - rho_n(x,0)]
+      // s=Ls-1: right wall (eps_code=+1),  s=0: left wall (eps_code=-1).
+      // Scalar proxy for the exact spinor boundary formula (see comment above).
+      {
+        LatticeComplexD bdy_s0(grid), bdy_sLs(grid);
+        ExtractSlice(bdy_s0,  tmp, 0,    0);   // left wall,  s=0
+        ExtractSlice(bdy_sLs, tmp, Ls-1, 0);   // right wall, s=Ls-1
+        q_bdy = q_bdy - sign_mu * (bdy_sLs - bdy_s0);
+      }
+
+      // --- Formula A: midpoint density ---
+      // q_A(x) += -sign(mu_n) * 0.5 * [rho_n(x,Ls/2) - rho_n(x,Ls/2-1)]
+      // Midpoint slices straddle the 5D bulk; analogous to Formula C at mid-plane.
+      // Corresponds to Blum Eq. (9) J^a_{5q,mid}(x).
+      if(Ls >= 2){
+        LatticeComplexD mid_lo(grid), mid_hi(grid);
+        ExtractSlice(mid_lo, tmp, Ls/2-1, 0);   // below midpoint (eps_code=-1)
+        ExtractSlice(mid_hi, tmp, Ls/2,   0);   // above midpoint (eps_code=+1)
+        q_mid = q_mid - sign_mu * 0.5 * (mid_hi - mid_lo);
+      }
+
+      std::cout << "TopoContrib evec=" << c
+                << " mu_n=" << mu_n << " sign(mu_n)=" << sign_mu
+                << " w_Bp=" << w_Ap
+                << " Q_B="  << real(TensorRemove(sum(q_eps)))
+                << " Q_B'=" << real(TensorRemove(sum(q_prime)))
+                << " Q_C="  << real(TensorRemove(sum(q_bdy)))
+                << " Q_A="  << real(TensorRemove(sum(q_mid))) << std::endl;
+    }
+    // ==========================================================================
   }
   if(take_diff){
     for(int c=0;c<data2.size()-1;c++)
@@ -408,6 +482,40 @@ int main(int argc, char* argv[])
     }
   }
   
+  /****** Write topo charge density reconstructed from eigenvectors (4 formulas) *****/
+  // q_A, q_B, q_C use sign(mu_n) (Approximation 1).
+  // q_B' uses m_gap/mu_n weight — proper bulk suppression, valid at m_f=0.
+  // Output files: _q_B_eps, _q_Bp_mgap, _q_C_bdy, _q_A_mid.
+  if(compute_topo && !evals.empty()){
+    // Formula B: eps_code(s)-chirality density  [sign(mu_n) weight, bulk form]
+    //   q_B(x) = sum_n sign(mu_n) * sum_s eps_code(s) * rho_n(x,s)
+    writeFile(q_eps, topo_out + "_q_B_eps.dat");
+    std::cout << "Wrote q_B   -> " << topo_out << "_q_B_eps.dat"
+              << "  Q_B=" << real(TensorRemove(sum(q_eps))) << std::endl;
+
+    // Formula B': m_gap-weighted chirality density  [m_gap/mu_n weight, bulk improved]
+    //   q_B'(x) = sum_n (m_gap/mu_n) * sum_s eps_code(s) * rho_n(x,s)
+    //   Bulk modes suppressed by m_gap/Lambda_bulk << 1.
+    //   Recommended for pointwise comparison with gradient-flowed q^gf(x).
+    writeFile(q_prime, topo_out + "_q_Bp_mgap.dat");
+    std::cout << "Wrote q_B'  -> " << topo_out << "_q_Bp_mgap.dat"
+              << "  Q_B'=" << real(TensorRemove(sum(q_prime)))
+              << "  (m_gap=" << m_gap << ")" << std::endl;
+
+    // Formula C: boundary projection density  [Blum Eq. 8 scalar proxy]
+    //   q_C(x) = -sum_n sign(mu_n) * [rho_n(x,Ls-1) - rho_n(x,0)]
+    writeFile(q_bdy, topo_out + "_q_C_bdy.dat");
+    std::cout << "Wrote q_C   -> " << topo_out << "_q_C_bdy.dat"
+              << "  Q_C=" << real(TensorRemove(sum(q_bdy))) << std::endl;
+
+    // Formula A: midpoint density  [Blum Eq. 9 analog]
+    //   q_A(x) = -sum_n sign(mu_n) * 0.5 * [rho_n(x,Ls/2) - rho_n(x,Ls/2-1)]
+    writeFile(q_mid, topo_out + "_q_A_mid.dat");
+    std::cout << "Wrote q_A   -> " << topo_out << "_q_A_mid.dat"
+              << "  Q_A=" << real(TensorRemove(sum(q_mid))) << std::endl;
+  }
+  /******************************************************************************/
+
   /****************   Filter Gluonic TCD by Fermionic Chiral Eigen Modes  ******/
   if( CTCDs ){
     std::vector<int> shift_c(4,0);
@@ -472,263 +580,6 @@ int main(int argc, char* argv[])
       Coordinate site({xi/(latt_size[1]*latt_size[2]*latt_size[3]),xi/(latt_size[2]*latt_size[3]),xi/latt_size[3],xi%latt_size[3]});
       data_f << real(TensorRemove(peekSite(F,site))) << std::endl;
     }
-  }
-  */
-  /*
-  // Common things:
-  vtkNew<vtkNamedColors> colors;
-  std::array<unsigned char, 4> posColor{{240, 184, 160, 255}};  colors->SetColor("posColor", posColor.data());
-  std::array<unsigned char, 4> bkg{{51, 77, 102, 255}};         colors->SetColor("BkgColor", bkg.data());
-
-  // Create the renderer, the render window, and the interactor. The renderer
-  // draws into the render window, the interactor enables mouse- and
-  // keyboard-based interaction with the data within the render window.
-  //
-  vtkNew<vtkRenderWindow> renWin;
-  vtkNew<vtkRenderWindowInteractor> iren;
-  iren->SetRenderWindow(renWin);
-
-  int frameCount = dynm_dir<4?latt_size[dynm_dir]:data.size();//can take from input which dir is translated
-  if ( !mpeg ) frameCount *= frame_size[0];
-
-  int fc = omit_dir<4? 1: data.size(); // can increase #frames corresp. to diff (omit_dir)-intercepts if omit_dir<4
-  std::vector<FrameUpdater *> fu_list;
-  for (int f=0;f<fc;f++){
-
-    // It is convenient to create an initial view of the data. The FocalPoint
-    // and Position form a vector direction. Later on (ResetCamera() method)
-    // this vector is used to position the camera to look at the data in
-    // this direction.
-    vtkNew<vtkCamera> aCamera;
-    aCamera->SetViewUp(0, 0, -1);
-    aCamera->SetPosition(0, -1000, 0);
-    aCamera->SetFocalPoint(0, 0, 0);
-    aCamera->ComputeViewPlaneNormal();
-    aCamera->Azimuth(30.0);
-    aCamera->Elevation(30.0);
-
-    
-    vtkNew<vtkRenderer> aRenderer;
-    renWin->AddRenderer(aRenderer);
-    
-    double vol = data[f].Grid()->gSites();
-
-    auto max_norm= std::sqrt(maxLocalNorm2(data[f]));
-    auto nrm    = norm2(data[f]);
-    auto nrmbar = nrm/vol;
-    auto rms    = sqrt(nrmbar);
-    std::cout<<"ratio: "<<max_norm/rms<<std::endl;
-    double contour = default_contour * rms; // default to 1 x RMS
-
-    // The following reader is used to read a series of 2D slices (images)
-    // that compose the volume. The slice dimensions are set, and the
-    // pixel spacing. The data Endianness must also be specified. The reader
-    // uses the FilePrefix in combination with the slice number to construct
-    // filenames using the format FilePrefix.%d. (In this case the FilePrefix
-    // is the root name of the file: quarter.)
-    vtkNew<vtkImageData> imageData;
-    imageData->SetDimensions(latt_size[0],latt_size[1],latt_size[2]);
-    imageData->AllocateScalars(VTK_DOUBLE, 1);
-    for(int x0=0;x0<frame_size[0];x0++){
-      for(int x1=0;x1<frame_size[1];x1++){
-	for(int x2=0;x2<frame_size[2];x2++){
-	  Coordinate site({0,0,0,0}); // can take (omit_dir)-intercepts from input
-	  // the first two frame dim's are always latt dim
-	  site[coor_map[0]] = x0; site[coor_map[1]] = x1;
-	  if(coor_map[2]<4) site[coor_map[2]] = x2;
-	  RealD value = (coor_map[2] == 4) ? real(peekSite(data[0],site)) : real(peekSite(data[f],site));
-	  imageData->SetScalarComponentFromDouble(x0,x1,x2,0,value);
-    }}}
-
-    vtkNew<isosurface> posExtractor;
-    posExtractor->SetInputData(imageData);
-    posExtractor->SetValue(0, contour);
-  
-    vtkNew<vtkStripper> posStripper;
-    posStripper->SetInputConnection(posExtractor->GetOutputPort());
-
-    vtkNew<vtkPolyDataMapper> posMapper;
-    posMapper->SetInputConnection(posStripper->GetOutputPort());
-    posMapper->ScalarVisibilityOff();
-
-    vtkNew<vtkActor> pos;
-    pos->SetMapper(posMapper);
-    pos->GetProperty()->SetDiffuseColor(colors->GetColor3d("posColor").GetData());
-    pos->GetProperty()->SetSpecular(0.3);
-    pos->GetProperty()->SetSpecularPower(20);
-    pos->GetProperty()->SetOpacity(0.5);
-
-    // An isosurface, or contour value is set
-    // The triangle stripper is used to create triangle strips from the
-    // isosurface; these render much faster on may systems.
-    vtkNew<isosurface> negExtractor;
-    negExtractor->SetInputData(imageData);
-    negExtractor->SetValue(0, -contour);
-
-    vtkNew<vtkStripper> negStripper;
-    negStripper->SetInputConnection(negExtractor->GetOutputPort());
-
-    vtkNew<vtkPolyDataMapper> negMapper;
-    negMapper->SetInputConnection(negStripper->GetOutputPort());
-    negMapper->ScalarVisibilityOff();
-
-    vtkNew<vtkActor> neg;
-    neg->SetMapper(negMapper);
-    neg->GetProperty()->SetDiffuseColor(colors->GetColor3d("Ivory").GetData());
-
-    // An outline provides context around the data.
-    vtkNew<vtkOutlineFilter> outlineData;
-    outlineData->SetInputData(imageData);
-
-    vtkNew<vtkPolyDataMapper> mapOutline;
-    mapOutline->SetInputConnection(outlineData->GetOutputPort());
-
-    vtkNew<vtkActor> outline;
-    outline->SetMapper(mapOutline);
-    outline->GetProperty()->SetColor(colors->GetColor3d("Black").GetData());
-
-    std::string txt = omit_dir<4?"All Files Displayed" : file_list[f];
-    if(take_diff) txt = "Diff: Next File - "+txt+" )";
-    if(mpeg) txt += " cntr="+std::to_string(contour);
-    vtkNew<vtkTextActor> Text;
-    Text->SetInput(txt.c_str());
-    Text->SetPosition2(0,0);
-    Text->GetTextProperty()->SetFontSize(48);
-    Text->GetTextProperty()->SetColor(colors->GetColor3d("Gold").GetData());
-
-    vtkNew<vtkTextActor> TextT;
-    TextT->SetInput((dynm_labels[dynm_dir]+"=0").c_str());
-    TextT->SetPosition(0,.9*1025);
-    TextT->GetTextProperty()->SetFontSize(48);
-    TextT->GetTextProperty()->SetColor(colors->GetColor3d("Gold").GetData());
-    
-  
-    // Actors are added to the renderer. An initial camera view is created.
-    // The Dolly() method moves the camera towards the FocalPoint,
-    // thereby enlarging the image.
-    aRenderer->AddActor(Text);
-    aRenderer->AddActor(TextT);
-    aRenderer->AddActor(outline);
-    aRenderer->AddActor(pos);
-    aRenderer->AddActor(neg);
-
-    // Sign up to receive TimerEvent
-    std::vector<LatticeComplexD*> tmp;
-    if(omit_dir<4) for(auto e: data) tmp.push_back(&e);
-    else tmp.push_back(&data[f]);
-    vtkNew<FrameUpdater> fu;
-    fu->imageData = imageData;
-    fu->grid_data = tmp;
-    fu->frame_size= frame_size;
-    fu->coor_map  = coor_map;
-    fu->text      = TextT;
-    fu->maxCount = frameCount;
-    fu->posExtractor = posExtractor;
-    fu->negExtractor = negExtractor;
-    fu->rms = rms;
-      
-    iren->AddObserver(vtkCommand::TimerEvent, fu);
-
-    aRenderer->SetActiveCamera(aCamera);
-    aRenderer->ResetCamera();
-    aRenderer->SetBackground(colors->GetColor3d("BkgColor").GetData());
-    aCamera->Dolly(1.0);
-
-    double nf = fc;//file_list.size();
-    std::cout << " Adding renderer " <<f<<" of "<<nf<<std::endl;
-    aRenderer->SetViewport((1.0/nf)*f, 0.0,(1.0/nf)*(f+1) , 1.0);
-
-    // Note that when camera movement occurs (as it does in the Dolly()
-    // method), the clipping planes often need adjusting. Clipping planes
-    // consist of two planes: near and far along the view direction. The
-    // near plane clips out objects in front of the plane; the far plane
-    // clips out objects behind the plane. This way only what is drawn
-    // between the planes is actually rendered.
-    aRenderer->ResetCameraClippingRange();
-    
-    fu_list.push_back(fu);
-  }
-
-
-  // Set a background color for the renderer and set the size of the
-  // render window (expressed in pixels).
-  // Initialize the event loop and then start it.
-  renWin->SetSize(1024*file_list.size(), 1024);
-  renWin->SetWindowName("FieldDensity");
-  renWin->Render();
-
-  iren->Initialize();
-
-  if ( mpeg ) {
-#ifdef MPEG
-    vtkWindowToImageFilter *imageFilter = vtkWindowToImageFilter::New();
-    imageFilter->SetInput( renWin );
-    imageFilter->SetInputBufferTypeToRGB();
-    
-    vtkFFMPEGWriter *writer = vtkFFMPEGWriter::New();
-    writer->SetFileName(mpeg_fname.c_str());
-    writer->SetRate(1);
-    writer->SetInputConnection(imageFilter->GetOutputPort());
-    writer->Start();
-
-    for(int i=0;i<fu_list[0]->maxCount;i++){
-      for(int f=0;f<fu_list.size();f++){
-	fu_list[f]->Execute(iren,vtkCommand::TimerEvent,nullptr);
-      }
-      imageFilter->Modified();
-      writer->Write();
-    }
-    writer->End();
-    writer->Delete();
-#else
-    assert(-1 && "MPEG support not compiled");
-#endif
-  } else { 
-  
-    // Add control of contour threshold
-    // Create a slider widget
-    vtkSmartPointer<vtkSliderRepresentation2D> sliderRep = vtkSmartPointer<vtkSliderRepresentation2D>::New();
-    sliderRep->SetMinimumValue(0.1);
-    sliderRep->SetMaximumValue(15.0);
-    sliderRep->SetValue(1.0);
-    sliderRep->SetTitleText("Fraction RMS");
-    // Set color properties:
-
-    // Change the color of the knob that slides
-    //  sliderRep->GetSliderProperty()->SetColor(colors->GetColor3d("Green").GetData());
-    sliderRep->GetTitleProperty()->SetColor(colors->GetColor3d("AliceBlue").GetData());
-    sliderRep->GetLabelProperty()->SetColor(colors->GetColor3d("AliceBlue").GetData());
-    sliderRep->GetSelectedProperty()->SetColor(colors->GetColor3d("DeepPink").GetData());
-
-    // Change the color of the bar
-    sliderRep->GetTubeProperty()->SetColor(colors->GetColor3d("MistyRose").GetData());
-    sliderRep->GetCapProperty()->SetColor(colors->GetColor3d("Yellow").GetData());
-    sliderRep->SetSliderLength(0.05);
-    sliderRep->SetSliderWidth(0.025);
-    sliderRep->SetEndCapLength(0.02);
-
-    double nf = file_list.size();
-    sliderRep->GetPoint1Coordinate()->SetCoordinateSystemToNormalizedDisplay();
-    sliderRep->GetPoint1Coordinate()->SetValue(0.1, 0.1);
-    sliderRep->GetPoint2Coordinate()->SetCoordinateSystemToNormalizedDisplay();
-    sliderRep->GetPoint2Coordinate()->SetValue(0.9/nf, 0.1);
-  
-    vtkSmartPointer<vtkSliderWidget> sliderWidget = vtkSmartPointer<vtkSliderWidget>::New();
-    sliderWidget->SetInteractor(iren);
-    sliderWidget->SetRepresentation(sliderRep);
-    sliderWidget->SetAnimationModeToAnimate();
-    sliderWidget->EnabledOn();
-  
-    // Create the slider callback
-    vtkSmartPointer<SliderCallback> slidercallback = vtkSmartPointer<SliderCallback>::New();
-    slidercallback->fu_list = fu_list;
-    sliderWidget->AddObserver(vtkCommand::InteractionEvent, slidercallback);
-
-    int timerId = iren->CreateRepeatingTimer(300);
-    std::cout << "timerId: " << timerId << std::endl;
-
-    // Start the interaction and timer
-    iren->Start();
   }
   */
   data_f.close();

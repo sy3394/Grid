@@ -59,15 +59,14 @@ typedef vtkMarchingCubes isosurface;
 
 int mpeg = 0;
 int Ls = -1;
-int xlate = 0 ;
 int take_diff = 0;
-int dynm_dir = 3;
+int dynm_dir = 3;           // set by --animate; default: T
 std::vector<int> omit_dirs(1,4);
 std::vector<int> omit_intcpts(1,0);
 std::vector<int> xlate_omit_dirs;
 bool save_file=0;
 
-std::vector<std::string> dynm_labels = {"X", "Y", "Z", "T", "tau"};
+std::vector<std::string> dynm_labels = {"X", "Y", "Z", "T", "configs"};
 std::ofstream data_f;
 
 template <class T> void readFile(T& out, std::string const fname){
@@ -89,7 +88,6 @@ public:
 
   FrameUpdater() {
     TimerCount = 0;
-    xoff       = 0;
     x3         = 0;
     imageData  = nullptr;
     grid_data.clear();
@@ -129,7 +127,7 @@ public:
 		Coordinate site(std::vector(n_dims,0));
 		
 		// the first two frame dim's are always latt dim
-		site[coor_map[0]] = (x0+xoff)%ext_latt_size[coor_map[0]]; site[coor_map[1]] = x1;
+		site[coor_map[0]] = x0; site[coor_map[1]] = x1;
 		if(dynm_dir<n_dims) site[dynm_dir] = x3;    // dynm_dir != file index => coor_map[2] != latt index 
 		else                site[coor_map[2]] = x2; // dynm_dir == file index => coor_map[2] == latt index
 
@@ -172,6 +170,7 @@ public:
 	  text->SetInput(text_string);
       
 
+	  // --- orig ver ----
 	  /*****  Update frame dims   *************************/
 	  if ( xlate ) {
 	    // When translating the first frame index, dynamic index is updated only after a complete translation
@@ -188,14 +187,26 @@ public:
 	      }
 	    }
 	    //if ( x3 == 0 ) 	xoff = (xoff + 1)%ext_latt_size[coor_map[0]];
+	    //-- orig ver end --
+	    // -- new ver ---
+	  /*****  Advance animate index; on wrap, step any cycle dirs  *****/
+	  x3 = (x3+1)%ext_latt_size[dynm_dir];
+	  if( x3==0 ) {
+	    for(int i_ind=0 ; i_ind<(int)xlate_omit_dirs.size(); i_ind++){
+	      if(i_ind == 0 )
+		omit_intcpts[xlate_omit_dirs[i_ind]] = (omit_intcpts[xlate_omit_dirs[i_ind]]+1)%ext_latt_size[omit_dirs[xlate_omit_dirs[i_ind]]];
+	      else if(omit_intcpts[xlate_omit_dirs[i_ind-1]] == 0)
+		omit_intcpts[xlate_omit_dirs[i_ind]] = (omit_intcpts[xlate_omit_dirs[i_ind]]+1)%ext_latt_size[omit_dirs[xlate_omit_dirs[i_ind]]];
+	    }
+	    // -- new ver end --
 	  }
 
-	  
 	  /*****   Print the log to stdout   ***********/
-	  std::cout << this->TimerCount<<"/"<<maxCount<< " xoff "<<xoff<<" t_updated "<< x3 <<" ";
-	  for(int ind : xlate_omit_dirs) std::cout << dynm_labels[omit_dirs[ind]] <<" = "<<omit_intcpts[ind] << " ";
-	  if(use_dynmIndexF) std::cout<<" "<<dynmIndexF[x3]<<std::endl;
-	  else std::cout<<std::endl;
+	  std::cout << this->TimerCount<<"/"<<maxCount
+		    << " " << dynm_labels[dynm_dir] <<"="<< x3 <<" ";
+	  for(int ind : xlate_omit_dirs) std::cout << dynm_labels[omit_dirs[ind]] <<"="<<omit_intcpts[ind] << " ";
+	  if(use_dynmIndexF) std::cout<<dynmIndexF[x3];
+	  std::cout<<std::endl;
 	  imageData->Modified();
 
 	  vtkRenderWindowInteractor* iren = dynamic_cast<vtkRenderWindowInteractor*>(caller);
@@ -215,7 +226,6 @@ public:
 
 private:
   int TimerCount;
-  int xoff;
   int x3;
 public:
   std::vector<Grid::LatticeComplexD *> grid_data;
@@ -278,24 +288,12 @@ int main(int argc, char* argv[])
     
  
   /***********   READ INPUT           *******************************************
-
-
-    
-  For now,
-    - xlate: the first non-omitted coor
-    - n_dim: #dimensions of the lattice
-    - dynm_dir: dir along which 3D plot is updated
-    - omit_dir: != dynm_dir & dir to be omitted completely from the 3D plot
-        ASSUME: it is sorted when mulltiple vals are given
-    - default: omit_dir = n_dim = file_index && dynm_dir = n_dim-1 = the last lattice index
-                i.e., data in diff files are put to diff frames & time change is reflected in the frame updates
-    - if omit_dir < n_dim-1;
-        - index on input files is treated as a dimension of the frame
-	- if dynm_dir = n_dim; n_dim-1 out of n_dim latt dim's are displayed
-	- if dynm_dir < n_dim; only 2 out of 4 latt dim is displayed + sim. time
-    - omit_intcpt \in omit_intcpts
-        omit_intcpt<0:  input is summed over the corresp dir
-        omit_intcpt>=0: input[..., omit_dir, ...] = omit_intcpt
+  CLI layout (direction names: X Y Z T [Ls] configs):
+    --animate dir       fast animation axis (default: T)
+    --fix     dir=N     hold 'dir' at slice N (repeatable)
+    --cycle   dir[=N]   outer loop: step 'dir' after each animate wrap (repeatable)
+    --sum     dir       sum over all slices of 'dir' before display (repeatable)
+  Display axes are the 3 dirs left unassigned.
   ************************************************************************************/
   std::string separator = "smr.";
   std::vector<std::string> file_list, data_fname;
@@ -325,38 +323,124 @@ int main(int argc, char* argv[])
     grid = SpaceTimeGrid::makeFiveDimGrid(Ls, &UGrid);
     latt_size = grid->GlobalDimensions();
     dynm_labels.insert(dynm_labels.begin(),"Ls");
-    omit_dirs[0] = 5;
     n_dims++;
     std::cout<<grid->GlobalDimensions()<<" "<<latt_size<<std::endl;
   }
-  if( GridCmdOptionExists(argv,argv+argc,"--xlate") ){
-    xlate = 1;
+
+  // =========================================================================
+  // Animation layout: --animate / --fix / --cycle / --sum
+  // =========================================================================
+  // Build direction name map after --Ls (which may shift indices).
+  // latt_size.size() == n_dims == 4 (no Ls) or 5 (with Ls).
+  // configs is always at index n_dims (one past the last lattice dim).
+  std::map<std::string,int> dir_map;
+  if(Ls > 0)
+    dir_map = {{"Ls",0},{"X",1},{"Y",2},{"Z",3},{"T",4},{"configs",n_dims}};
+  else
+    dir_map = {{"X",0},{"Y",1},{"Z",2},{"T",3},{"configs",n_dims}};
+  const int n_dirs_total = n_dims + 1; // lattice dims + configs
+
+  auto dir_name = [&](int d) -> std::string {
+    for(auto& kv : dir_map) if(kv.second == d) return kv.first;
+    return std::to_string(d);
+  };
+  auto parse_dir_val = [&](const char* tok, int& d, int& v) -> bool {
+    std::string s(tok);
+    auto eq = s.find('=');
+    std::string name = (eq != std::string::npos) ? s.substr(0,eq) : s;
+    v = (eq != std::string::npos) ? std::stoi(s.substr(eq+1)) : 0;
+    auto it = dir_map.find(name);
+    if(it == dir_map.end()) return false;
+    d = it->second; return true;
+  };
+
+  // Default animate direction: T (index 3 in 4D, index 4 in 5D)
+  std::string animate_name = (Ls > 0) ? "T" : "T";
+  if( GridCmdOptionExists(argv,argv+argc,"--animate") )
+    animate_name = GridCmdOptionPayload(argv,argv+argc,"--animate");
+
+  std::map<int,int> fix_init;   // dir → initial/fixed slice
+  std::set<int>     cycle_dirs; // dirs that cycle as outer loop
+  std::set<int>     sum_dirs;   // dirs to sum over before display
+  for(int i = 1; i < argc-1; i++){
+    int d, v;
+    if(std::string(argv[i]) == "--fix"){
+      if(!parse_dir_val(argv[i+1], d, v)){
+        std::cerr << "ERROR: unknown direction in --fix " << argv[i+1] << std::endl; exit(1);
+      }
+      fix_init[d] = v; i++;
+    } else if(std::string(argv[i]) == "--cycle"){
+      if(!parse_dir_val(argv[i+1], d, v)){
+        std::cerr << "ERROR: unknown direction in --cycle " << argv[i+1] << std::endl; exit(1);
+      }
+      fix_init[d] = v; cycle_dirs.insert(d); i++;
+    } else if(std::string(argv[i]) == "--sum"){
+      std::string s(argv[i+1]);
+      auto it = dir_map.find(s);
+      if(it == dir_map.end()){
+        std::cerr << "ERROR: unknown direction in --sum " << argv[i+1] << std::endl; exit(1);
+      }
+      sum_dirs.insert(it->second); i++;
+    }
   }
-  if( GridCmdOptionExists(argv,argv+argc,"--dynm_dir") ){
-    arg=GridCmdOptionPayload(argv,argv+argc,"--dynm_dir");
-    GridCmdOptionInt(arg,dynm_dir);
+
+  // Translate --animate → dynm_dir
+  {
+    auto it = dir_map.find(animate_name);
+    if(it == dir_map.end()){
+      std::cerr << "ERROR: unknown --animate direction '" << animate_name << "'" << std::endl; exit(1);
+    }
+    dynm_dir = it->second;
   }
-  if( GridCmdOptionExists(argv,argv+argc,"--omit_dirs") ){
-    arg=GridCmdOptionPayload(argv,argv+argc,"--omit_dirs");
-    GridCmdOptionIntVector(arg,omit_dirs);
-    assert( 3 <= latt_size.size() + 1 - omit_dirs.size() && "Too much dirs are omitted to make a 3D plot");
-    for(int &omit_dir : omit_dirs)
-      assert( omit_dir != dynm_dir && "The omitted dir cannot be the same as updated direction" );
+
+  // --- Consistency check ---
+  {
+    std::map<int,std::string> role;
+    role[dynm_dir] = "animate";
+    std::vector<std::string> errs;
+    auto assign = [&](int d, const std::string& r){
+      if(role.count(d))
+        errs.push_back("'" + dir_name(d) + "' assigned to both '" + role[d] + "' and '" + r + "'");
+      else role[d] = r;
+    };
+    for(auto& [d,v] : fix_init)
+      assign(d, cycle_dirs.count(d) ? "cycle" : "fix");
+    for(int d : sum_dirs) assign(d, "sum");
+
+    if(!errs.empty()){
+      for(auto& e : errs) std::cerr << "ERROR: " << e << std::endl; exit(1);
+    }
+    std::vector<int> disp;
+    for(int d = 0; d < n_dirs_total; d++) if(!role.count(d)) disp.push_back(d);
+    if((int)disp.size() != 3){
+      std::cerr << "ERROR: " << disp.size() << " display dims inferred (need exactly 3).\n"
+                << "  Unassigned:";
+      for(int d : disp) std::cerr << " " << dir_name(d);
+      std::cerr << "\n  Assign extras via --fix, --cycle, --sum, or --animate." << std::endl;
+      exit(1);
+    }
+    std::cout << "Display axes:";
+    for(int d : disp) std::cout << " " << dir_name(d);
+    std::cout << "  animate=" << dir_name(dynm_dir) << std::endl;
   }
-  if( GridCmdOptionExists(argv,argv+argc,"--omit_intcpts") ){
-    arg=GridCmdOptionPayload(argv,argv+argc,"--omit_intcpts");
-    GridCmdOptionIntVector(arg,omit_intcpts);
-    assert( omit_intcpts.size() == omit_dirs.size() && "omit_dirs and omit_intcpts should have the same size" );
-    for(int &dir : omit_intcpts) if( dir==latt_size.size() ) std::cout<<"--omit_intcpt in "<<dir<<" dir has no effect"<<std::endl;
+
+  // --- Translate to internal representation ---
+  omit_dirs.clear(); omit_intcpts.clear(); xlate_omit_dirs.clear();
+  for(auto& [d,v] : fix_init)
+    if(!cycle_dirs.count(d)){ omit_dirs.push_back(d); omit_intcpts.push_back(v); }
+  for(int d : cycle_dirs){
+    xlate_omit_dirs.push_back((int)omit_dirs.size());
+    omit_dirs.push_back(d);
+    omit_intcpts.push_back(fix_init.count(d) ? fix_init.at(d) : 0);
   }
-  if( GridCmdOptionExists(argv,argv+argc,"--xlate_omit_dirs") ){
-    arg=GridCmdOptionPayload(argv,argv+argc,"--xlate_omit_dirs");
-    GridCmdOptionIntVector(arg,xlate_omit_dirs);
-    int n_summed_dirs=0;
-    for(int & dir: omit_intcpts) if(dir<0) n_summed_dirs++;
-    assert( xlate_omit_dirs.size()<=omit_dirs.size()-n_summed_dirs &&
-	   "xlate_omit_dirs is an array of looping indices that are different from summed dirs and is sub-array of omit_dirs");
-  }
+  for(int d : sum_dirs){ omit_dirs.push_back(d); omit_intcpts.push_back(-1); }
+  std::cout << "omit_dirs:";
+  for(int d : omit_dirs) std::cout << " " << dir_name(d);
+  std::cout << "  cycle:";
+  for(int i : xlate_omit_dirs) std::cout << " " << dir_name(omit_dirs[i]);
+  std::cout << "  sum:";
+  for(int d : sum_dirs) std::cout << " " << dir_name(d);
+  std::cout << std::endl;
 
   if( GridCmdOptionExists(argv,argv+argc,"--take_adj_diff") ){
     take_diff = 1;
@@ -487,16 +571,15 @@ int main(int argc, char* argv[])
   vtkNew<vtkRenderWindowInteractor> iren;
   iren->SetRenderWindow(renWin);
 
-  // Set #Total Frames
+  // Total frame count: animate range × outer-loop (cycle) ranges
   int frameCount = ext_latt_size[dynm_dir];
-  if ( !mpeg ) frameCount *= ext_latt_size[coor_map[0]]; // TODO: can take from input which dir is translated
-  for(auto ind: xlate_omit_dirs) frameCount *= ext_latt_size[omit_dirs[ind]];
+  for(auto ind : xlate_omit_dirs) frameCount *= ext_latt_size[omit_dirs[ind]];
 
-  /*
-    fc = #3D_Frames to be shown concurrently
-      If file_index is not dynamic index nor one of axes, each file has its own frame
-   */
-  int fc = omit_dirs.back()<latt_size.size()? 1: data.size(); // TODO: can increase #frames corresp. to diff (omit_dir)-intercepts if omit_dir<4
+  // fc = number of panels shown simultaneously.
+  // If configs is the animate axis → one panel cycling through all files.
+  // If configs is fixed/omitted    → each file gets its own panel.
+  int configs_idx = dir_map.at("configs");
+  int fc = (dynm_dir == configs_idx) ? 1 : (int)data.size();
   std::vector<FrameUpdater *> fu_list;
   double max_cntr = 0; // max slider value; used in interactive slider widget
   for (int f=0;f<fc;f++){

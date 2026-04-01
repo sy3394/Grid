@@ -373,6 +373,94 @@ int main(int argc, char** argv) {
     writeFile(sp_sum4D,
 	      LanParams.outpath + "/" + std::to_string(i_conf) + "/sp_sum_tau_"+tau+"."+std::to_string(i_conf));
 
+    /***********************************************************************/
+    /*   Four topological charge density estimators (q_A, q_B, q_B', q_C) */
+    /*                                                                      */
+    /*  q_B : sign(mu_n) weight, all 5D slices   — Bulk (Formula B)        */
+    /*  q_Bp: m_gap/mu_n weight, all 5D slices   — Bulk improved (B')      */
+    /*  q_C : sign(mu_n) weight, boundary slices — Boundary (Formula C)    */
+    /*  q_A : sign(mu_n) weight, midpoint slices — Midpoint (Formula A)    */
+    /*                                                                      */
+    /*  m_gap = min_n |mu_n|  ~  m_f + m_res  (spectral gap of H_DWF).    */
+    /*  For q_Bp: bulk modes are suppressed by m_gap/|mu_n| << 1,          */
+    /*  making q_Bp the recommended estimator for pointwise comparison      */
+    /*  with gradient-flowed gauge q(x).  q_A/B/C are recommended for      */
+    /*  global Q and topological susceptibility chi_t.                      */
+    /***********************************************************************/
+
+    // --- Spectral-gap estimate: m_gap ~ m_f + m_res ---
+    // The smallest |mu_n| among converged eigenvectors approximates m_gap.
+    RealD m_gap = std::fabs(eMe[0]);
+    for(int i = 1; i < Nconv; i++)
+      if(std::fabs(eMe[i]) < m_gap) m_gap = std::fabs(eMe[i]);
+    std::cout << GridLogMessage << "m_gap estimate (min|mu_n|) = " << m_gap << std::endl;
+
+    // --- 4D accumulators ---
+    LatticeComplexD q_B_4D(UGrid), q_Bp_4D(UGrid), q_C_4D(UGrid), q_A_4D(UGrid);
+    q_B_4D = Zero(); q_Bp_4D = Zero(); q_C_4D = Zero(); q_A_4D = Zero();
+
+    for(int i = 0; i < Nconv; i++){
+      RealD mu_n    = eMe[i];
+      RealD sign_mu = (mu_n >= 0.0) ? 1.0 : -1.0;
+      // m_gap/mu_n weight for Formula B'.  Guard against mu_n==0 (should not occur).
+      RealD w_Bp    = (mu_n != 0.0) ? (m_gap / mu_n) : 0.0;
+
+      // 5D scalar density: rho_n(x,s) = |psi_n(x,s)|^2  (already stored as G5evec)
+      // G5evec[i] was built with eps_code(s) applied:
+      //   s <  Ls/2: G5evec[i] = -finalevec[i]   (eps_code = -1)
+      //   s >= Ls/2: G5evec[i] = +finalevec[i]   (eps_code = +1)
+      // So localInnerProduct(finalevec[i], G5evec[i]) = eps_code(s)*rho_n(x,s).
+      // Summing over s gives chi_n^B(x) = sum_s eps_code(s) * rho_n(x,s).
+      LatticeComplexD chi_B(UGrid); chi_B = Zero();
+      {
+        LatticeComplexD g5rho5D = localInnerProduct(finalevec[i], G5evec[i]); // 5D field
+        LatticeComplexD sl(UGrid);
+        for(int s = 0; s < Ls; s++){
+          ExtractSlice(sl, g5rho5D, s, 0);
+          chi_B = chi_B + sl;   // accumulate sum_s eps_code(s)*rho_n(x,s)
+        }
+      }
+      // Formula B:  q_B(x)  += sign(mu_n) * chi_B(x)
+      q_B_4D  = q_B_4D  + sign_mu * chi_B;
+      // Formula B': q_B'(x) += (m_gap/mu_n) * chi_B(x)   [proper bulk suppression]
+      q_Bp_4D = q_Bp_4D + w_Bp    * chi_B;
+
+      // 5D scalar density rho_n(x,s) = |psi_n(x,s)|^2 (no eps_code factor)
+      LatticeComplexD rho5D = localInnerProduct(finalevec[i], finalevec[i]);
+
+      // Formula C: q_C(x) += -sign(mu_n) * [rho_n(x,Ls-1) - rho_n(x,0)]
+      {
+        LatticeComplexD bdy_s0(UGrid), bdy_sLs(UGrid);
+        ExtractSlice(bdy_s0,  rho5D, 0,    0);  // left wall  s=0
+        ExtractSlice(bdy_sLs, rho5D, Ls-1, 0);  // right wall s=Ls-1
+        q_C_4D = q_C_4D - sign_mu * (bdy_sLs - bdy_s0);
+      }
+
+      // Formula A: q_A(x) += -sign(mu_n) * 0.5 * [rho_n(x,Ls/2) - rho_n(x,Ls/2-1)]
+      if(Ls >= 2){
+        LatticeComplexD mid_lo(UGrid), mid_hi(UGrid);
+        ExtractSlice(mid_lo, rho5D, Ls/2-1, 0);  // below midpoint
+        ExtractSlice(mid_hi, rho5D, Ls/2,   0);  // above midpoint
+        q_A_4D = q_A_4D - sign_mu * 0.5 * (mid_hi - mid_lo);
+      }
+    }
+
+    // --- Report global charges ---
+    std::cout << GridLogMessage
+              << "TCD estimators:"
+              << "  Q_B="  << real(TensorRemove(sum(q_B_4D)))
+              << "  Q_B'=" << real(TensorRemove(sum(q_Bp_4D)))
+              << "  Q_C="  << real(TensorRemove(sum(q_C_4D)))
+              << "  Q_A="  << real(TensorRemove(sum(q_A_4D))) << std::endl;
+
+    // --- Write 4D fields ---
+    std::string obase = LanParams.outpath + "/" + std::to_string(i_conf) + "/";
+    writeFile(q_B_4D,  obase + "topo_q_B_tau_"  + tau + "." + std::to_string(i_conf));
+    writeFile(q_Bp_4D, obase + "topo_q_Bp_tau_" + tau + "." + std::to_string(i_conf));
+    writeFile(q_C_4D,  obase + "topo_q_C_tau_"  + tau + "." + std::to_string(i_conf));
+    writeFile(q_A_4D,  obase + "topo_q_A_tau_"  + tau + "." + std::to_string(i_conf));
+    /******************* end four-estimator block ****************************/
+
     for(int i = 0; i < Nconv; i++){
       chiral_matrix_real[i].resize(Nconv);
       chiral_matrix[i].resize(Nconv);
