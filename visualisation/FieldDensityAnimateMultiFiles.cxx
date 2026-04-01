@@ -528,6 +528,12 @@ int main(int argc, char* argv[])
   for(int d=0; d<(int)latt_size.size();d++) ext_latt_size[d] = latt_size[d];
   ext_latt_size[latt_size.size()] = data.size();
 
+  // DEBUG
+  for(auto F: data) std::cout<<"Max: "<<std::sqrt(maxLocalNorm2(F))<<" "<<real(TensorRemove(sum(F)))<<" "<<std::sqrt(maxLocalNorm2(F)/norm2(F)*grid->gSites() )<<std::endl;
+  for(int d=0;d<3;d++) std::cout<<d<<" "<<coor_map[d]<<std::endl;
+  for(int s : ext_latt_size) std::cout<<s<<std::endl;
+  for(int s : omit_dirs) std::cout<<s<<std::endl;
+  for(int s : omit_intcpts) std::cout<<s<<std::endl;
 
   /****************************************************************/
   /****************    Setup Frames    ****************************/
