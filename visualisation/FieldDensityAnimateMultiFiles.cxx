@@ -170,25 +170,6 @@ public:
 	  text->SetInput(text_string);
       
 
-	  // --- orig ver ----
-	  /*****  Update frame dims   *************************/
-	  if ( xlate ) {
-	    // When translating the first frame index, dynamic index is updated only after a complete translation
-	    xoff = (xoff + 1)%ext_latt_size[coor_map[0]];
-	    if ( xoff== 0 ) x3 = (x3+1)%ext_latt_size[dynm_dir];
-	  } else {
-	    x3 = (x3+1)%ext_latt_size[dynm_dir];
-	    if( x3==0 ) {
-	      for(int i_ind=0 ; i_ind<xlate_omit_dirs.size(); i_ind++){
-		if(i_ind == 0 )
-		  omit_intcpts[xlate_omit_dirs[i_ind]] = (omit_intcpts[xlate_omit_dirs[i_ind]]+1)%ext_latt_size[omit_dirs[xlate_omit_dirs[i_ind]]];
-		else if(omit_intcpts[xlate_omit_dirs[i_ind-1]] == 0)
-		  omit_intcpts[xlate_omit_dirs[i_ind]] = (omit_intcpts[xlate_omit_dirs[i_ind]]+1)%ext_latt_size[omit_dirs[xlate_omit_dirs[i_ind]]];
-	      }
-	    }
-	    //if ( x3 == 0 ) 	xoff = (xoff + 1)%ext_latt_size[coor_map[0]];
-	    //-- orig ver end --
-	    // -- new ver ---
 	  /*****  Advance animate index; on wrap, step any cycle dirs  *****/
 	  x3 = (x3+1)%ext_latt_size[dynm_dir];
 	  if( x3==0 ) {
@@ -198,7 +179,6 @@ public:
 	      else if(omit_intcpts[xlate_omit_dirs[i_ind-1]] == 0)
 		omit_intcpts[xlate_omit_dirs[i_ind]] = (omit_intcpts[xlate_omit_dirs[i_ind]]+1)%ext_latt_size[omit_dirs[xlate_omit_dirs[i_ind]]];
 	    }
-	    // -- new ver end --
 	  }
 
 	  /*****   Print the log to stdout   ***********/
