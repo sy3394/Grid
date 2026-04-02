@@ -1,8 +1,48 @@
 #!/bin/bash -l
 
+########################################################################################################################
+# Generate_data_mvi.sh
+#
+# Orchestration script run on Frontier (ORNL) to process eigenvector and topological
+# charge density data produced by the DWF HMC simulation, generate VTK movies (.avi),
+# write compressed data files (.dat), and archive everything to Lustre.
+#
+# INDEX
+# =====
+#  §1   Configuration & global input parameters
+#  §2   Ensemble averages (configs CONF_S .. CONF_F)
+#       §2.1  Chiral matrix
+#       §2.2  Gluonic E density & topo charge (T-summed, configs as animation axis)
+#       §2.3  H_DWF eigenvector density (TLs-summed, configs as animation axis)
+#       §2.4  Chiral density (ZT-summed, configs as animation axis)
+#       §2.5  Spectral sum topo charge (T-summed, configs as animation axis)
+#       §2.6  Similarity: spectral sum vs gluonic TCD (IP & corr coeff)
+#  §3   Trajectory analysis — H_DWF evecs, config 702
+#       §3.1  Per-evec density movies: ZT-summed, ZT-updated, T-updated (5D & 4D)
+#       §3.2  Sum over all modes at each tau_MD snapshot (FieldDensityEigen)
+#       §3.3  Summed-evec density movie (T-updated, 4D)
+#  §4   Trajectory analysis — H_W (Wilson) evecs via specflow
+#       §4.1  Sum evec density at each M_5 step (initial config t_MD=0)
+#       §4.2  Summed evec density movies (T-updated) for t_MD=0 and m=-1.8
+#       §4.3  0th evec density over trajectory at m=-1.8 (multi-config loop)
+#  §5   Gluonic E & TC density along trajectory (multi-config loop)
+#  §6   Fermion force density along trajectory (multi-config loop)
+#  §7   Gauge action force density (Iwasaki, Jacobian)
+#  §8   Gluonic TCD filtering via fermion zero modes (FieldDensityEigen --compareTCD_defs)
+#  §9   Fermion topo charge density movies & IP/corr vs gluonic TCD  [NEW]
+#       §9.1  Compute q_A/B/B'/C density fields at each tau_MD (config 702)
+#       §9.2  Density movies: T-summed, tau_MD as dynamic index
+#       §9.3  IP and correlation: each fermion def vs gluonic TCD
+#  §10  Archive to Lustre
+########################################################################################################################
+
+
+########################################################################################################################
+####################  §1  Configuration & global input parameters  ####################################################
+########################################################################################################################
+
 dfiles=()
 
-##### INPUT ####################
 CDIR=$(pwd)
 PDIR=/ccs/home/syamamoto/tmp/src/Grid_cleanedup_for_pullrequest/systems/Frontier/HMC
 LDIR=/lustre/orion/phy157/proj-shared/phy157_dwf/syamamoto
@@ -10,29 +50,23 @@ HMC=32cube-rho0.124-tau4
 HMC_DIR=$PDIR/$HMC
 vol=32.32.32.32
 REGEN=1
-###############################
 
 
 ########################################################################################################################
-####################      Analyze Dnsty & Evec Data for Each Config      ###############################################
+####################  §2  Ensemble averages (configs CONF_S .. CONF_F)  ##############################################
 ########################################################################################################################
-# Chiral Matrix
-# E density & Topo charge
-# evec dnsty
-# chiral dnsty                                     <- not necessary?
-# spectral reconstruction of TC dnsty
-# Measure Similarity of Sp reconst & topo charge
-# NOTE:
-#   For now) data file format: (slow -> fast) : config, X, Y, Z where T summed over
-
 
 ########    INPUT: DDIR dependent   #########
 CONF_S=700
 CONF_F=709
-nconv=15  #relevant for Evec
+nconv=15  # number of converged H_DWF eigenvectors
 #############################################
 
-### Chiral Matrix
+
+########################################################################################################################
+### §2.1  Chiral matrix
+# Reads chiral_matrix_real_tau_* per config, concatenates into one file per tau.
+########################################################################################################################
 
 for tau in 0 4; do
     dfile=${HMC}/eigen/chiral_matrix_real_tau_$tau
@@ -45,7 +79,11 @@ for tau in 0 4; do
 dfiles+=( $dfile )
 done
 
-### E density & Topo charge
+
+########################################################################################################################
+### §2.2  Gluonic E density & topo charge (T-summed, configs animated)
+# Animates over configs; T is summed; saves compressed 4D (X,Y,Z) data and MPEG.
+########################################################################################################################
 
 DATA_DIR=${HMC_DIR}/dnsty
 
@@ -53,68 +91,76 @@ for tau in 0 4; do
     for D_TYPE in E_dnsty Top_dnsty; do
 
 	ext=T_summed
-	
+
 	fname=${D_TYPE}_${tau}_ckpoint_EODWF_lat_smr
 	dpath=${HMC_DIR}/${fname}_${ext}.dat
 	dfile=${HMC}/${fname}_${ext}.dat
 	mpeg=${HMC_DIR}/${fname}_${ext}.avi
 	dfiles+=( $dfile )
-	
+
 	if [[ $REGEN == 0 ]] ; then
 	    F=""
 	    for conf in `seq -f "%03g" $((CONF_S)) 1 $CONF_F`; do F+=$DATA_DIR/${fname}.${conf},;done
 	    Fs=${F%?}
 	    seq -f "%03g" $((CONF_S)) 1 $CONF_F > foo_ind
-	    
-	    ${CDIR}/FieldDensityAnimateMultiFiles --files $Fs --grid $vol --dynm_dir 4 --omit_dirs 3 --omit_intcpts -1 \
+
+	    ${CDIR}/FieldDensityAnimateMultiFiles --files $Fs --grid $vol --animate configs --sum T \
 		   --mpeg $mpeg --isosurface -0.75 --save_data_to $dpath --index_file foo_ind
 	fi
-    
+
     done
 done
 
-### Evec
-# Assume: nconv=15
+
+########################################################################################################################
+### §2.3  H_DWF eigenvector density (TLs-summed, configs animated)
+# 5D input; sums over Ls and T to display 3D (X,Y,Z) density per mode.
+########################################################################################################################
 
 DATA_DIR=${HMC_DIR}/eigen
 
 for tau in 0 4; do
     for i_evec in `seq 0 1 $nconv`; do
-	
+
 	ext=TLs_summed
-	
+
 	fname=evec_density_${i_evec}_tau_$tau
 	dpath=${HMC_DIR}/${fname}_${ext}.dat
 	dfile=${HMC}/${fname}_${ext}.dat
 	mpeg=${HMC_DIR}/${fname}_${ext}.avi
 	dfiles+=( $dfile )
-	
+
 	if [[ $REGEN == 0 ]] ; then
-	    
+
 	    F=""
 	    for conf in `seq -f "%03g" $((CONF_S)) 1 $CONF_F`; do F+=$DATA_DIR/${conf}/${fname}.${conf},;done
 	    Fs=${F%?}
 	    seq -f "%03g" $((CONF_S)) 1 $CONF_F > foo_ind
 
 	    sf=`awk -v t=$tau -v n=$i_evec -v N=$nconv 'BEGIN{print -1*( 0.3 + 0.4*t/4 + 0.9*n/N)}'`
-	    ${CDIR}/FieldDensityAnimateMultiFiles --files $Fs --grid $vol --Ls 48 --dynm_dir 5 --omit_dirs 0.4 --omit_intcpts -1.-1 \
+	    ${CDIR}/FieldDensityAnimateMultiFiles --files $Fs --grid $vol --Ls 48 --animate configs --sum Ls --sum T \
 		   --mpeg $mpeg --isosurface $sf --save_data_to $dpath --index_file foo_ind
 	fi
-	
+
     done
 done
 
-### Chiral
+
+########################################################################################################################
+### §2.4  Chiral density (ZT-summed, per-config movies)
+# 5D input; sums over Z and T; per-config loop (Ls modes as animation axis).
+########################################################################################################################
 
 for tau in 0 4; do
     for conf in `seq -f "%03g" $((CONF_S)) 1 $CONF_F`; do
 
 	ext=ZT_summed
-	
+
+	# Note: fname ends with trailing '_'; do NOT insert extra '_' before ext
 	fname=chiral_density_tau_${tau}_
-	dfile=${HMC}/${fname}${ext}_${ext}_${conf}.dat
-	dpath=${HMC_DIR}/${fname}_${ext}_${conf}.dat
-	mpeg=${HMC_DIR}/${fname}_${ext}_${conf}.avi
+	dfile=${HMC}/${fname}${ext}_${conf}.dat
+	dpath=${HMC_DIR}/${fname}${ext}_${conf}.dat
+	mpeg=${HMC_DIR}/${fname}${ext}_${conf}.avi
 	dfiles+=( $dfile )
 
 	if [[ $REGEN == 0 ]] ; then
@@ -122,47 +168,56 @@ for tau in 0 4; do
 	    for f in `ls $DATA_DIR/${conf}/${fname}_* | grep tau_${tau} | sort -n -t _ -k3`; do F+=$f,; done
 	    Fs=${F%?}
 	    seq -f "%03g" $((CONF_S)) 1 $CONF_F > foo_ind
-	    
-	    ${CDIR}/FieldDensityAnimateMultiFiles --files $Fs --grid $vol --Ls 48 --dynm_dir 5 --omit_dirs 3.4 --omit_intcpts -1.-1 \
+
+	    ${CDIR}/FieldDensityAnimateMultiFiles --files $Fs --grid $vol --Ls 48 --animate configs --sum Z --sum T \
 		   --mpeg $mpeg --isosurface -0.7 --save_data_to $dpath --index_file foo_ind
 	fi
 
     done
 done
 
-### Spectral sum
+
+########################################################################################################################
+### §2.5  Spectral sum topo charge (T-summed, configs animated)
+# Spectral reconstruction of topo charge density; sums T; saves data and movie.
+########################################################################################################################
 
 for tau in 0 4; do
 
     ext=T_summed
-    
+
     fname=sp_sum_tau_${tau}
     dfile=${HMC}/${fname}_${ext}.dat
     dpath=${HMC_DIR}/${fname}_${ext}.dat
     mpeg=${HMC_DIR}/${fname}_${ext}.avi
     dfiles+=( $dfile )
-    
+
     if [[ $REGEN == 0 ]] ; then
 	F=""
 	for conf in `seq -f "%03g" $((CONF_S)) 1 $CONF_F`; do F+=$DATA_DIR/${conf}/${fname}.${conf},;done
 	Fs=${F%?}
-	${CDIR}/FieldDensityAnimateMultiFiles --files $Fs --grid $vol --dynm_dir 4 --omit_dirs 3 --omit_intcpts -1 --mpeg $mpeg --isosurface -0.5 --save_data_to $dpath
+	${CDIR}/FieldDensityAnimateMultiFiles --files $Fs --grid $vol --animate configs --sum T \
+	       --mpeg $mpeg --isosurface -0.5 --save_data_to $dpath
     fi
-    
+
     dfile=${HMC}/eigen/evec_tensor_tau_$tau
     dfiles+=( $dfile )
-    
+
 done
 
 
-### Measure Similarity of Sp reconst & topo charge
+########################################################################################################################
+### §2.6  Similarity: spectral sum vs gluonic TCD (IP & corr coeff)
+# Compares spectral sum topo charge density with gluonic TCD via FieldDensityFindRegion.
+# Loops over flow times (TD_tau) and Wilson flow times (tau); outputs corr_ip.dat.
+########################################################################################################################
 
 dfile=${HMC}/data/corr_ip.dat
 dpath=${HMC_DIR}/data/corr_ip.dat
 dfiles+=( $dfile )
 
 if [[ $REGEN == 0 ]] ; then
-    
+
     >$dpath
     for TD_tau in 0 4 16; do
 	for tau in 0 4; do
@@ -177,9 +232,10 @@ if [[ $REGEN == 0 ]] ; then
     done
 fi
 
-####################################################################################################################
-######################    Analyze Evec & Dnsty Data along Trajectory     ###########################################
-####################################################################################################################
+
+########################################################################################################################
+####################  §3  Trajectory analysis — H_DWF evecs, config 702  #############################################
+########################################################################################################################
 
 
 ###########   INPUT   ###########################
@@ -189,21 +245,27 @@ NCUT=4
 
 DATA_DIR=${HMC_DIR}/eigen/${conf}
 
-###################################################################
-### H_DWF: Generate time lapse of evec density over a trajectory
-###################################################################
+
+########################################################################################################################
+### §3.1  Per-evec density movies (ZT-summed, ZT-updated, T-updated)
+# Each mode n=0..NCUT is shown in four presentations:
+#   (a) ZT-summed: 5D, sum Z+T → show (Ls,X,Y); tau_MD animated
+#   (b) ZT-updated: 5D, cycle Z and T → show (Ls,X,Y) at each (Z,T); tau_MD animated
+#   (c) Z-updated, T=23: 5D, cycle Z, fix T=23 → show (Ls,X,Y); tau_MD animated
+#   (d) T-updated: 5D, sum Ls, cycle T → show (X,Y,Z) at each T; tau_MD animated
+########################################################################################################################
 
 for dof in smr lat; do
     for tau in 0 4; do
 
-	#########   Separetely for Each Vector      #############
-	
+	#########   Separately for each eigenvector      #############
+
 	for n in `seq 0 1 $NCUT`; do
-	    	    
+
 	    fname=evec_density_sorted_${n}_tau_${tau}_${dof}
 
-	    ### (Ls, X, Y) => Z,T summed
-	    
+	    ### (a) (Ls, X, Y): Z,T summed
+
 	    ext=${conf}_ZT_summed
 
 	    mpeg=${HMC_DIR}/${fname}_${ext}.avi
@@ -220,11 +282,11 @@ for dof in smr lat; do
 		#eigen/702/evec_density_sorted_0_tau_0_smr_702_3.345833
 		iso="-0.01" #`awk -v t=$tau -v n=$i_evec -v N=$nconv 'BEGIN{print -1*( 0.3 + 0.4*t/4 + 0.9*n/N)}'`
 		sep=${conf}_
-		${CDIR}/FieldDensityAnimateMultiFiles --files $Fs --grid $vol --Ls 48 --dynm_dir 5 --omit_dirs 3.4 --omit_intcpts -1.-1 \
-		       --mpeg $mpeg --isosurface $iso -use_fname_as_frame_counter $sep
+		${CDIR}/FieldDensityAnimateMultiFiles --files $Fs --grid $vol --Ls 48 --animate configs --sum Z --sum T \
+		       --mpeg $mpeg --isosurface $iso --use_fname_as_frame_counter $sep
             fi
 
-	    ### (Ls, X, Y) => Z,T looped <- takes too much time
+	    ### (b) (Ls, X, Y): Z,T looped (takes too much time — disabled)
 
 	    ext=${conf}_ZT_update
 
@@ -241,11 +303,11 @@ for dof in smr lat; do
 
                 iso="-0.01"
                 sep=${conf}_
-                ${CDIR}/FieldDensityAnimateMultiFiles --files $Fs --grid $vol --Ls 48 --dynm_dir 5 --omit_dirs 3.4 --xlate_omit_dirs 0.1 --omit_intcpts 0.0 \
+                ${CDIR}/FieldDensityAnimateMultiFiles --files $Fs --grid $vol --Ls 48 --animate configs --cycle Z=0 --cycle T=0 \
                        --mpeg $mpeg --isosurface $iso --use_fname_as_frame_counter $sep
             fi
 
-	    ### (Ls, X, Y) => Z looped, T=23
+	    ### (c) (Ls, X, Y): Z looped, T=23 fixed
 
 	    ext=${conf}_Z_update_T23
 
@@ -262,20 +324,20 @@ for dof in smr lat; do
 
                 iso="-0.01"
                 sep=${conf}_
-                ${CDIR}/FieldDensityAnimateMultiFiles --files $Fs --grid $vol --Ls 48 --dynm_dir 5 --omit_dirs 3.4 --xlate_omit_dirs 0 --omit_intcpts 0.23 \
+                ${CDIR}/FieldDensityAnimateMultiFiles --files $Fs --grid $vol --Ls 48 --animate configs --cycle Z=0 --fix T=23 \
                        --mpeg $mpeg --isosurface $iso --use_fname_as_frame_counter $sep
             fi
-	    
-	    ### (X, Y, Z) + T looped: for comparison with H_W modes
+
+	    ### (d) (X, Y, Z): T looped; for comparison with H_W modes
 
 	    ext=T_update
-	    
+
 	    mpeg=${HMC_DIR}/${fname}_${ext}.avi
             dpath=${HMC_DIR}/${fname}_${ext}.dat
             dfile=${HMC}/${fname}_${ext}.dat
             mfile=${HMC}/${fname}_${ext}.avi
             #dfiles+=( $dfile ) #$mfile )
-	    
+
 	    if [[ $REGEN == 1 ]] ; then
 		F=""
                 for f in `ls $DATA_DIR/${fname}_* | sort -n` ; do F+=$f,; done
@@ -283,56 +345,60 @@ for dof in smr lat; do
 
 		iso="-0.05" #`awk -v t=$tau -v n=$i_evec -v N=$nconv 'BEGIN{print -1*( 0.3 + 0.4*t/4 + 0.9*n/N)}'`
                 sep=${conf}_
-                ${CDIR}/FieldDensityAnimateMultiFiles --files $Fs --grid $vol --Ls 48 --dynm_dir 5 --omit_dirs 0.4 --xlate_omit_dirs 1 --omit_intcpts -1.0 \
+                ${CDIR}/FieldDensityAnimateMultiFiles --files $Fs --grid $vol --Ls 48 --animate configs --sum Ls --cycle T=0 \
 		       --mpeg $mpeg --isosurface $iso --use_fname_as_frame_counter $sep
 	    fi
 
 	done
 
 
-	#######   All Evecs upto NCUT Summed Over     ########################
-	
-	#### Sum over Ls and converged evecs for a given tau_W, dof, and t_MD
-	    
+	########################################################################################################################
+	### §3.2  Sum over all modes at each tau_MD snapshot (FieldDensityEigen --sum_all_files)
+	# Sums evec density across all converged modes at a given tau_MD and dof, writing one file per snapshot.
+	########################################################################################################################
+
 	if [[ $REGEN == 0 ]] ; then
 	    for t in `ls $DATA_DIR/evec_density_sorted_0_tau_${tau}_${dof}_${conf}_*| awk -F _ '{print $NF}' | sort -n`; do
 		F=""
 		for f in `ls $DATA_DIR/evec_density_sorted_*_tau_${tau}_${dof}_${conf}_${t} | sort -n` ; do F+=$f,; done
 		Fs=${F%?}
-		
+
 		save_fname=$DATA_DIR/summed_evec_density_sorted_tau_${tau}_${dof}_${conf}_${t}
 		${CDIR}/FieldDensityEigen --grid $vol --files2 $Fs --Ls 48 --sum_all_files $save_fname
 	    done
 	fi
 
-		
-	### (X, Y, Z) + T looped: for comparison with fermion force
-	
+
+	########################################################################################################################
+	### §3.3  Summed-evec density movie (T-updated, 4D)
+	# Animates summed evec density over trajectory; T cycles; for comparison with fermion force.
+	########################################################################################################################
+
 	fname=summed_evec_density_sorted_tau_${tau}_${dof}
 	ext=${conf}_T_update
-	
+
 	mpeg=${HMC_DIR}/${fname}_${ext}.avi
 	dpath=${HMC_DIR}/${fname}_${ext}.dat
 	dfile=${HMC}/${fname}_${ext}.dat
 	mfile=${HMC}/${fname}_${ext}.avi
-	
+
 	if [[ $REGEN == 0 ]] ; then
 	    F=""
             for f in `ls $DATA_DIR/${fname}_* | sort -n` ; do F+=$f,; done
             Fs=${F%?}
-	    
+
 	    iso="-0.05"
 	    sep=${conf}_
-	    ${CDIR}/FieldDensityAnimateMultiFiles --files $Fs --grid $vol --dynm_dir 4 --omit_dirs 3 --xlate_omit_dirs 0 --omit_intcpts 0 \
+	    ${CDIR}/FieldDensityAnimateMultiFiles --files $Fs --grid $vol --animate configs --cycle T=0 \
 		   --mpeg $mpeg --isosurface $iso --use_fname_as_frame_counter $sep
 	fi
     done
 done
 
 
-#######################################################################################################
-####  H_W: Evecs from Specflow  #######################################################################
-#######################################################################################################
+########################################################################################################################
+####################  §4  Trajectory analysis — H_W (Wilson) evecs via specflow  #####################################
+########################################################################################################################
 
 ############  INPUT ##################
 CONF=702
@@ -341,7 +407,11 @@ tau=0
 
 DATA_DIR=${HMC_DIR}/eigen_Wilson/${CONF}/${CONF}
 
-###### Sum all evec density at each M_5 along the trajectory    #############
+
+########################################################################################################################
+### §4.1  Sum evec density at each M_5 (initial config, all t_MD directories)
+# For each t_MD step and each M_5 mass, sums all eigenvector density files via FieldDensityEigen.
+########################################################################################################################
 
 if [[ $REGEN == 0 ]] ; then
     for d in `ls -d $DATA_DIR/U_smr_*| sort -n`; do
@@ -352,14 +422,19 @@ if [[ $REGEN == 0 ]] ; then
 
 	    save_fname=$d/evec_sum_${m5}_${CONF}
 	    ${CDIR}/FieldDensityEigen --files1 $Fs --grid $vol --sum_all_files $save_fname
-	    
+
 	done
     done
 fi
 
-###### Summed evec density along M_5 for the initial config    ############
 
-### (X, Y, Z) + T looped:
+########################################################################################################################
+### §4.2  Summed evec density movies (T-updated, initial t_MD and fixed m=-1.8)
+# (a) Animates over M_5 at fixed t_MD=0; T cycles.
+# (b) Animates over t_MD steps at fixed m=-1.8; T cycles.
+########################################################################################################################
+
+### (a) T-updated: animate over M_5 values at t_MD=0
 
 t_MD=0.000000
 ext=T_update
@@ -378,11 +453,11 @@ if [[ $REGEN == 0 ]] ; then
 
     ls $DATA_DIR/U_smr_${t_MD}/evec_sum_* | awk -F _ '{print $NF}' | sort -n > foo_ind
     iso="-0.01"
-    ${CDIR}/FieldDensityAnimateMultiFiles --files $Fs --grid $vol --dynm_dir 4 --omit_dirs 3 --xlate_omit_dirs 0 --omit_intcpts 0 \
+    ${CDIR}/FieldDensityAnimateMultiFiles --files $Fs --grid $vol --animate configs --cycle T=0 \
 	   --mpeg $mpeg --isosurface $iso --index_file foo_ind
 fi
 
-### (X, Y, Z) + T summed: Fix input mass to m=-1.8
+### (b) T-updated: animate over t_MD at fixed m=-1.8
 
 m=-1.800000
 ext=T_update
@@ -400,14 +475,17 @@ if [[ $REGEN == 0 ]] ; then
 
     ls $DATA_DIR/U_smr_*/evec_sum_-1.800000 | awk -F _ '{print $(NF-2)}' | awk -F '/' '{print $1}' | sort -n > foo_ind
     iso="-0.01"
-    ${CDIR}/FieldDensityAnimateMultiFiles --files $Fs --grid $vol --dynm_dir 4 --omit_dirs 3 --xlate_omit_dirs 0 --omit_intcpts 0 \
+    ${CDIR}/FieldDensityAnimateMultiFiles --files $Fs --grid $vol --animate configs --cycle T=0 \
 	   --mpeg $mpeg --isosurface $iso --index_file foo_ind
 fi
 
 
-###### 0^th Evec density along M_5 for tau_W = 0   ################
+########################################################################################################################
+### §4.3  0th evec density over trajectory at m=-1.8 (multi-config loop)
+# For each config in CONFS: animate over M_5 (T-updated) and over t_MD (T-summed and T-updated) at m=-1.8.
+########################################################################################################################
 
-#########   INNPUT   #################
+#########   INPUT   #################
 CONFS=( 702 7026 70201 70202 70203 70204 70205 703 70301 718 719 )
 regens=( 0   0     0     0     0     0     0    0    0    0   0  )
 ######################################
@@ -415,9 +493,9 @@ regens=( 0   0     0     0     0     0     0    0    0    0   0  )
 for((i_conf=0; i_conf<${#CONFS[@]}; i_conf++)); do
     CONF=${CONFS[i_conf]}
     DATA_DIR=${HMC_DIR}/eigen_Wilson/${CONF}/
-    
-    ### (X, Y, Z) + T looped: 
-    
+
+    ### T-updated: animate over M_5 at t_MD=0
+
     t_MD=0.000000
     ext=T_update
 
@@ -427,33 +505,31 @@ for((i_conf=0; i_conf<${#CONFS[@]}; i_conf++)); do
     dfile=${HMC}/${fname}_${ext}.dat
     mfile=${HMC}/${fname}_${ext}.avi
     #dfiles+=( $dfile )
-    
+
     if [[ $REGEN == ${regens[i_conf]} ]] ; then
-    
+
 	F=""
 	for f in `ls $DATA_DIR/U_smr_${t_MD}/evec_*_0 | sort -n` ; do F+=$f,; done
 	Fs=${F%?}
-    
+
 	ls $DATA_DIR/U_smr_${t_MD}/evec_*_0 | awk -F _ '{print $(NF-1)}' | sort -n > foo_ind
 	iso="-0.01"
-	${CDIR}/FieldDensityAnimateMultiFiles --files $Fs --grid $vol --dynm_dir 4 --omit_dirs 3 --xlate_omit_dirs 0 --omit_intcpts 0 \
+	${CDIR}/FieldDensityAnimateMultiFiles --files $Fs --grid $vol --animate configs --cycle T=0 \
 	       --mpeg $mpeg --isosurface $iso --index_file foo_ind
     fi
 
 
-    ###### 0^th Evec density over a trajectory at m=-1.8   ###############
-
-    ### (X, Y, Z) + T summed: Fix input mass to m=-1.8
+    ### T-summed: animate over t_MD at m=-1.8
 
     m=-1.800000
     ext=T_summed
-    
+
     fname=evec_density_Wilson_0_tau_${tau}_m_${m}_${CONF}
     mpeg=${HMC_DIR}/${fname}_${ext}.avi
     dpath=${HMC_DIR}/${fname}_${ext}.dat
     dfile=${HMC}/${fname}_${ext}.dat
     mfile=${HMC}/${fname}_${ext}.avi
-    #dfiles+=( $dfile ) 
+    #dfiles+=( $dfile )
     if [[ $REGEN == ${regens[i_conf]} ]] ; then
     F=""
     for f in `ls $DATA_DIR/U_smr_*/evec_-1.800000_0 | sort -n` ; do F+=$f,; done
@@ -461,60 +537,58 @@ for((i_conf=0; i_conf<${#CONFS[@]}; i_conf++)); do
 
     ls $DATA_DIR/U_smr_*/evec_-1.800000_0 | awk -F _ '{print $(NF-2)}' | awk -F '/' '{print $1}' | sort -n > foo_ind
     iso="-0.01"
-    ${CDIR}/FieldDensityAnimateMultiFiles --files $Fs --grid $vol --dynm_dir 4 --omit_dirs 3 --omit_intcpts -1 \
+    ${CDIR}/FieldDensityAnimateMultiFiles --files $Fs --grid $vol --animate configs --sum T \
 	   --mpeg $mpeg --isosurface $iso --save_data_to $dpath --index_file foo_ind
     fi
-    
-    ### (X, Y, Z) + T looped: Fix input mass to m=-1.8
-    
-    tau=0
+
+    ### T-updated: animate over t_MD at m=-1.8
+
+    tau=0   # only tau=0 data available
     m=-1.800000
     ext=T_update
-    
+
     fname=evec_density_Wilson_0_tau_${tau}_m_${m}_${CONF}
     mpeg=${HMC_DIR}/${fname}_${ext}.avi
     dpath=${HMC_DIR}/${fname}_${ext}.dat
     dfile=${HMC}/${fname}_${ext}.dat
     mfile=${HMC}/${fname}_${ext}.avi
     #dfiles+=( $dfile )
-    
+
     if [[ $REGEN == ${regens[i_conf]} ]] ; then
 	F=""
 	for f in `ls $DATA_DIR/U_smr_*/evec_-1.800000_0 | sort -n` ; do F+=$f,; done
 	Fs=${F%?}
-	
+
 	ls $DATA_DIR/U_smr_*/evec_-1.800000_0 | awk -F _ '{print $(NF-2)}' | awk -F '/' '{print $1}' | sort -n > foo_ind
 	iso="-0.01"
-	${CDIR}/FieldDensityAnimateMultiFiles --files $Fs --grid $vol --dynm_dir 4 --omit_dirs 3 --xlate_omit_dirs 0 --omit_intcpts 0 \
-	       --mpeg $mpeg --isosurface $iso --save_data_to $dpath --index_file foo_ind 
+	${CDIR}/FieldDensityAnimateMultiFiles --files $Fs --grid $vol --animate configs --cycle T=0 \
+	       --mpeg $mpeg --isosurface $iso --save_data_to $dpath --index_file foo_ind
     fi
-    
-    # (X, Y, Z) + T looped: can we track poles of specflow of each mode and visualize the corresp evecs?
-    # SKIP FOR NOW
+
+    # (X, Y, Z) + T looped: track specflow poles, visualize corresp. evecs — SKIP FOR NOW
 done
 
 
-#######################################################################################################
-###########   E & TC Dnsty along the trajectory
-#######################################################################################################
+########################################################################################################################
+####################  §5  Gluonic E & TC density along trajectory (multi-config loop)  ###############################
+########################################################################################################################
 
-
-#########   INNPUT   #################
+#########   INPUT   #################
 CONFS=( 702 7026 70201 70202 70203 70204 70205 703 70301 718 719 )
 regens=( 1   0     0     0     0     0     0    0    0    0   0  )
 ######################################
 
-
-##### Topo density over a trajectory (tau_T = 4)  ##########
+# Gluonic topological charge density files: ${HMC_DIR}/dnsty/${conf}/${fname}.${tau_MD}
+# tau_MD is the molecular-dynamics time used as the animation frame index.
 
 DATA_DIR=${HMC_DIR}/dnsty
 
 for((i_conf=0; i_conf<${#CONFS[@]}; i_conf++)); do
     conf=${CONFS[i_conf]}
-    
+
     for tau in 0 4; do
 	for dof in smr lat; do
-	    
+
 	    ext=${conf}_T_update #summed
 
 	    flow_kernel= #_Iwasaki
@@ -530,14 +604,14 @@ for((i_conf=0; i_conf<${#CONFS[@]}; i_conf++)); do
 	    fi
 
 	    fname=Top_dnsty_${tau}${flow_kernel}_${dof}
-    
+
 	    mpeg=${HMC_DIR}/${fname}_${ext}.avi
 	    dpath=${HMC_DIR}/${fname}_${ext}.dat
 	    dfile=${HMC}/${fname}_${ext}.dat
 	    mfile=${HMC}/${fname}_${ext}.avi
 	    #dfiles+=( $dfile ) #$mfile )
 	    echo $fname $tau $dof
-	    
+
 	    if [[ $REGEN == ${regens[i_conf]} ]] ; then
 		if [[ "$dof" == "smr" ]] ; then iso0=-0.3; else iso0=-0.4; fi
 		if [[ "$tau" == "0" ]] ; then iso=`awk -v a=$iso0 'BEGIN{print a+0.1}'`; else iso=`awk -v a=$iso0 'BEGIN{print a+0.2}'`; fi
@@ -549,18 +623,18 @@ for((i_conf=0; i_conf<${#CONFS[@]}; i_conf++)); do
 			iso=-0.04;
 		    fi
 		fi
-		
+
 		F=""
 		for f in `ls $DATA_DIR/${conf}/${fname}.*|sort -t"." -nk2 | awk -v skip=$skip '{if((NR-1)%skip==0)print $0}' | tail -$N_frames`; do F+=$f,;done #tail -375 | head -100
 		Fs=${F%?}
-		
+
 		if [[ "${ext}" == *"summed"* ]] ; then
 		    sep="${dof}."
-		    ${CDIR}/FieldDensityAnimateMultiFiles --files $Fs --grid $vol --dynm_dir 4 --omit_dirs 3 --sum_omit_dir --use_fname_as_frame_counter $sep \
+		    ${CDIR}/FieldDensityAnimateMultiFiles --files $Fs --grid $vol --animate configs --sum T --use_fname_as_frame_counter $sep \
 			   --isosurface $iso --mpeg $mpeg --save_data_to $dpath #$(( (tau+1)*5 ))
 		else
 		    sep="${dof}."
-		    ${CDIR}/FieldDensityAnimateMultiFiles --files $Fs --grid $vol --dynm_dir 4 --omit_dirs 3 --xlate_omit_dirs 0 --isosurface $iso \
+		    ${CDIR}/FieldDensityAnimateMultiFiles --files $Fs --grid $vol --animate configs --cycle T=0 --isosurface $iso \
 			   --mpeg $mpeg --use_fname_as_frame_counter $sep
 		fi
 	    fi
@@ -569,9 +643,11 @@ for((i_conf=0; i_conf<${#CONFS[@]}; i_conf++)); do
 done
 
 
-#####  Force densities over a trajectory (702 -> 703: tau_T = 4)  ############
+########################################################################################################################
+####################  §6  Fermion force density along trajectory (multi-config loop)  ################################
+########################################################################################################################
 
-#########   INNPUT   #################
+#########   INPUT   #################
 CONFS=( 702 7026 70201 70202 70203 70204 70205 703 70301 718 719 )
 regens=( 1   0     0     0     0     0     0    0    0    0   0  )
 ######################################
@@ -580,27 +656,27 @@ DATA_DIR=${HMC_DIR}/snapshots
 
 for((i_conf=0; i_conf<${#CONFS[@]}; i_conf++)); do
     conf=${CONFS[i_conf]}
-    
+
     for force in ExactOneFlavourRatioPseudoFermionAction TwoFlavourEvenOddRatioPseudoFermionActiondet_0.5_det_1 TwoFlavourEvenOddRatioPseudoFermionActiondet_0.25_det_0.5 TwoFlavourEvenOddRatioPseudoFermionActiondet_0.1_det_0.25 TwoFlavourEvenOddRatioPseudoFermionActiondet_0.05_det_0.1 TwoFlavourEvenOddRatioPseudoFermionActiondet_0.0047_det_0.05; do
 
 	for dof in smr lat; do
 
 	    ext=${conf}_T_update #summed
 	    fname=F_${force}_${dof}
-	
+
 
 	    mpeg=${HMC_DIR}/${fname}_${ext}.avi
 	    dpath=${HMC_DIR}/${fname}_${ext}.dat
 	    dfile=${HMC}/${fname}_${ext}.dat
 	    mfile=${HMC}/${fname}_${ext}.avi
 	    dfiles+=( $dfile ) #$mfile )
-	
+
 	    if [[ $REGEN == ${regens[i_conf]} ]] ; then
 
 		if [[ "$dof" == "smr" ]] ; then iso=-0.4; else iso=-0.45; fi
 		if [[ $force != *"Two"* ]] ; then iso=-0.2; else iso=-0.3; fi
 		if [ "$force" == "TwoFlavourEvenOddRatioPseudoFermionActiondet_0.0047_det_0.05" ] ; then iso=-0.03; fi
-	    
+
 		if [ $conf == 70201 -o $conf == 70202 ]; then
                     N_frames=1000
 		elif [ $conf == 719 -o $conf == 703 ] ; then
@@ -609,18 +685,23 @@ for((i_conf=0; i_conf<${#CONFS[@]}; i_conf++)); do
                     N_frames=70
 		fi
 
-	    
+
 		F=""
 		for f in `ls $DATA_DIR/${conf}/${fname}.*|awk -F . '{print $NF, $0}' | sort  -nk1| cut -f2- -d' ' | tail -$N_frames`; do F+=$f,;done
 		Fs=${F%?}
 		tail -$N_frames traj_times_top_${conf} > foo_ind
-	    
-		${CDIR}/FieldDensityAnimateMultiFiles --files $Fs --grid $vol --dynm_dir 4 --omit_dirs 3 --xlate_omit_dirs 0 --isosurface $iso \
+
+		${CDIR}/FieldDensityAnimateMultiFiles --files $Fs --grid $vol --animate configs --cycle T=0 --isosurface $iso \
 		       --mpeg $mpeg --save_data_to $dpath --index_file foo_ind
 	    fi
 	done
     done
 done
+
+
+########################################################################################################################
+####################  §7  Gauge action force density (Iwasaki, Jacobian)  ############################################
+########################################################################################################################
 
 for force in IwasakiGaugeAction JacobianAction; do
 
@@ -629,7 +710,7 @@ for force in IwasakiGaugeAction JacobianAction; do
 
 	fname=F_${force}_${dof}
 	ext=T_update #summed
-		
+
 	mpeg=${HMC_DIR}/${fname}_${ext}.avi
 	dpath=${HMC_DIR}/${fname}_${ext}.dat
 	dfile=${HMC}/${fname}_${ext}.dat
@@ -642,20 +723,25 @@ for force in IwasakiGaugeAction JacobianAction; do
 
 	if [[ "$dof" == "smr" ]] ; then iso=-0.45; else iso=-0.58; fi
 	if [[ "$force" == "JacobianAction" ]] ; then iso=-0.61; fi
-	
+
 	if [[ $REGEN == 0 ]] ; then
             F=""
             for f in `ls $DATA_DIR/${conf}/${fname}.*|awk -F . '{print $NF, $0}' | sort  -nk1| cut -f2- -d' ' | tail -375 |head -100`; do F+=$f,;done
             Fs=${F%?}
-	    tail -376 traj_times|head -100 > foo_ind #traj_times includes 4.00, at whcich force is not computed
-	    ${CDIR}/FieldDensityAnimateMultiFiles --files $Fs --grid $vol --dynm_dir 4 --omit_dirs 3 --xlate_omit_dirs 0 --isosurface $iso \
+	    tail -376 traj_times|head -100 > foo_ind #traj_times includes 4.00, at which force is not computed
+	    ${CDIR}/FieldDensityAnimateMultiFiles --files $Fs --grid $vol --animate configs --cycle T=0 --isosurface $iso \
 		   --mpeg $mpeg --save_data_to $dpath --index_file foo_ind
 	fi
     done
 done
 
 
-###  Compute zero-modes filtering of gluonic TCD   ##############  moved to somehere else
+########################################################################################################################
+####################  §8  Gluonic TCD filtering via fermion zero modes  ###############################################
+########################################################################################################################
+# Compares gluonic topo charge density with the lowest H_DWF eigenvector densities
+# using FieldDensityEigen --compareTCD_defs.  Output: filter_TCD.dat.
+########################################################################################################################
 
 DATA_DIR1=${HMC_DIR}/dnsty
 DATA_DIR2=${HMC_DIR}/eigen
@@ -674,12 +760,146 @@ if [[ $REGEN == 0 ]] ; then
 	F2s=""
 	for conf in `seq -f "%03g" $((CONF_S)) 1 $CONF_F`; do  F2s+=$DATA_DIR2/$conf/$fname2.${conf},;done
 	F2s=${F2s%?}
-	
+
 	${CDIR}/FieldDensityEigen --files1 $F1s --files2 $F2s --grid $vol --Ls 48 --compareTCD_defs --cut 0.00001 | tee -a foo2 | cat
 	grep "Filtered Sum" foo2 | awk -v tau=$TD_tau '{print tau, $3, $4, $8}' >> $dpath
     done
 fi
 wait
+
+
+########################################################################################################################
+####################  §9  Fermion topo charge density movies & IP/corr vs gluonic TCD  [NEW]  ########################
+########################################################################################################################
+# Uses H_DWF eigenvectors to compute four fermion topological charge density estimators:
+#   q_A (midpoint),  q_B (bulk/eps_code),  q_B' (mgap-weighted bulk),  q_C (boundary)
+# For config 702 only (loop over FERM_CONFS for future generalization).
+# tau_MD trajectory steps are the animation (dynamic) index; T is summed.
+# Also computes inner product and correlation coefficient vs the gluonic TCD.
+########################################################################################################################
+
+##########   INPUT   ##################################
+FERM_CONFS=( 702 )          # configs to process (extend for future generalization)
+ferm_tau=0                  # H_DWF tau_W (only tau=0 data available)
+ferm_dof=smr                # degree of freedom: smr or lat
+FERM_NCUT=$NCUT             # number of modes to include (must match §3)
+FERM_TD_tau=0               # gluonic TCD Wilson flow time (tau_T)
+FERM_TD_dof=smr             # gluonic TCD dof
+FERM_EVALS_FILE=""          # path to eigenvalues file; leave empty to omit --evals
+                            # (q_B' then falls back to sign(mu_n) weighting)
+#######################################################
+
+for ferm_conf in "${FERM_CONFS[@]}"; do
+
+    DATA_DIR_eigen=${HMC_DIR}/eigen/${ferm_conf}
+    DATA_DIR_dnsty=${HMC_DIR}/dnsty/${ferm_conf}
+    DATA_DIR_topo=${HMC_DIR}/eigen/${ferm_conf}/topo_fermion   # output dir for q_*/def files
+
+    mkdir -p ${DATA_DIR_topo}
+
+    ### Collect tau_MD values present in the eigenvector density files
+    ### (use mode n=0 as reference; all modes share the same tau_MD set)
+    t_MD_list=( $(ls ${DATA_DIR_eigen}/evec_density_sorted_0_tau_${ferm_tau}_${ferm_dof}_${ferm_conf}_* 2>/dev/null \
+                  | awk -F "${ferm_conf}_" '{print $NF}' | sort -n) )
+
+    ####################################################################
+    ### §9.1  Compute q_A/B/B'/C density fields at each tau_MD snapshot
+    # For each tau_MD: collect all mode files (n=0..FERM_NCUT) and run
+    # FieldDensityEigen to produce one spatial density file per definition.
+    # Output filenames: ${DATA_DIR_topo}/q_tau_*_${q_def}.dat
+    ####################################################################
+
+    if [[ $REGEN == 1 ]] ; then
+        for t_MD in "${t_MD_list[@]}"; do
+            # Gather all mode density files available at this tau_MD snapshot
+            F=""
+            for n in $(seq 0 1 $FERM_NCUT); do
+                f=${DATA_DIR_eigen}/evec_density_sorted_${n}_tau_${ferm_tau}_${ferm_dof}_${ferm_conf}_${t_MD}
+                [[ -f $f ]] && F+=$f,
+            done
+            Fs=${F%?}
+            [[ -z "$Fs" ]] && continue
+
+            topo_prefix=${DATA_DIR_topo}/q_tau_${ferm_tau}_${ferm_dof}_${ferm_conf}_${t_MD}
+
+            eval_opt=""
+            [[ -n "$FERM_EVALS_FILE" ]] && eval_opt="--evals $FERM_EVALS_FILE"
+
+            # Writes: ${topo_prefix}_q_A_mid.dat  _q_B_eps.dat  _q_Bp_mgap.dat  _q_C_bdy.dat
+            ${CDIR}/FieldDensityEigen --files2 $Fs --grid $vol --Ls 48 $eval_opt \
+                   --topo_out $topo_prefix
+        done
+    fi
+
+    ####################################################################
+    ### §9.2  Density movies: T-summed, tau_MD as dynamic (animation) index
+    # For each charge density definition, collect all tau_MD snapshot files
+    # and animate with configs axis; T is summed to give a 3D (X,Y,Z) volume.
+    ####################################################################
+
+    for q_def in q_A_mid q_B_eps q_Bp_mgap q_C_bdy; do
+
+        ext=${ferm_conf}_traj_T_summed
+        fname=topo_fermion_${q_def}_tau_${ferm_tau}_${ferm_dof}
+        mpeg=${HMC_DIR}/${fname}_${ext}.avi
+        dpath=${HMC_DIR}/${fname}_${ext}.dat
+        dfile=${HMC}/${fname}_${ext}.dat
+        dfiles+=( $dfile )
+
+        if [[ $REGEN == 1 ]] ; then
+            F=""
+            for t_MD in "${t_MD_list[@]}"; do
+                f=${DATA_DIR_topo}/q_tau_${ferm_tau}_${ferm_dof}_${ferm_conf}_${t_MD}_${q_def}.dat
+                [[ -f $f ]] && F+=$f,
+            done
+            Fs=${F%?}
+            [[ -z "$Fs" ]] && continue
+
+            printf '%s\n' "${t_MD_list[@]}" > foo_ind_ferm
+
+            iso=-0.01
+            ${CDIR}/FieldDensityAnimateMultiFiles --files $Fs --grid $vol --animate configs --sum T \
+                   --mpeg $mpeg --isosurface $iso --save_data_to $dpath --index_file foo_ind_ferm
+        fi
+
+    done
+
+    ####################################################################
+    ### §9.3  IP and correlation: each fermion def vs gluonic TCD
+    # For each tau_MD snapshot, pairs the gluonic TCD file with each
+    # fermion density definition and computes inner product (IP) and
+    # Pearson correlation coefficient via FieldDensityFindRegion --compute_PCF.
+    # Gluonic TCD files: ${DATA_DIR_dnsty}/Top_dnsty_${FERM_TD_tau}_ckpoint_EODWF_${FERM_TD_dof}.${t_MD}
+    ####################################################################
+
+    dfile=${HMC}/data/corr_ip_fermion_${ferm_conf}.dat
+    dpath=${HMC_DIR}/data/corr_ip_fermion_${ferm_conf}.dat
+    dfiles+=( $dfile )
+
+    if [[ $REGEN == 1 ]] ; then
+        >$dpath
+        for q_def in q_A_mid q_B_eps q_Bp_mgap q_C_bdy; do
+            >foo_ferm
+            for t_MD in "${t_MD_list[@]}"; do
+                f_ferm=${DATA_DIR_topo}/q_tau_${ferm_tau}_${ferm_dof}_${ferm_conf}_${t_MD}_${q_def}.dat
+                f_glue=${DATA_DIR_dnsty}/Top_dnsty_${FERM_TD_tau}_ckpoint_EODWF_${FERM_TD_dof}.${t_MD}
+                [[ -f $f_ferm && -f $f_glue ]] || continue
+                Fs=${f_glue},${f_ferm}
+                ${CDIR}/FieldDensityFindRegion --files ${Fs} --grid $vol --compute_PCF | tee -a foo_ferm | cat
+            done
+            paste <(printf '%s\n' "${t_MD_list[@]}") <(grep "Corr Coeff"  foo_ferm) \
+                  | awk -v q=$q_def -v conf=$ferm_conf '{print conf, q, $1, $NF}' >> $dpath
+            paste <(printf '%s\n' "${t_MD_list[@]}") <(grep "Inner Produc" foo_ferm) \
+                  | awk -v q=$q_def -v conf=$ferm_conf '{print conf, q, $1, $NF}' >> $dpath
+        done
+    fi
+
+done
+
+
+########################################################################################################################
+####################  §10  Archive to Lustre  #########################################################################
+########################################################################################################################
 
 tar -cvf ${LDIR}/eigen_data.tar -C ${PDIR} ${dfiles[@]}
 
