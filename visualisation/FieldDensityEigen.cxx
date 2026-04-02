@@ -322,10 +322,16 @@ int main(int argc, char* argv[])
     std::cout << "Reading file2: "<<file_list2[c]<<std::endl;
     LatticeComplexD tmp(gridF);
     readFile(tmp,file_list2[c]);
-    LatticeComplexD tmp4D(grid); tmp4D = Zero(); data2[c] = Zero();
-    for(int i=0; i<Ls;i++){
-      ExtractSlice(tmp4D,tmp,i,0);
-      data2[c] = data2[c] + tmp4D;
+    if(Ls > 0){
+      // 5D input: sum over the Ls dimension to produce a 4D density
+      LatticeComplexD tmp4D(grid); tmp4D = Zero(); data2[c] = Zero();
+      for(int i=0; i<Ls;i++){
+        ExtractSlice(tmp4D,tmp,i,0);
+        data2[c] = data2[c] + tmp4D;
+      }
+    } else {
+      // 4D input: use directly (e.g. pre-computed fermion TCD definition files)
+      data2[c] = tmp;
     }
     std::cout<<"Sum "<<c<<" "<<real(TensorRemove(sum(data2[c])))<<std::endl;
 
