@@ -15,13 +15,13 @@
 #       §2.2  Gluonic E density & topo charge (T-summed, configs as animation axis)
 #       §2.3  H_DWF eigenvector density (TLs-summed, configs as animation axis)
 #       §2.4  Chiral density (ZT-summed, configs as animation axis)
-#       §2.5  Spectral sum topo charge (T-summed, configs as animation axis)
-#       §2.6  Similarity: spectral sum vs gluonic TCD (IP & corr coeff)
+#       §2.5  Fermion topo charge density: compute q_A/B/Bp/C, IP & corr vs gluonic TCD,
+#             and 4-panel T-animated movie of all 4 definitions
 #  §3   Trajectory analysis — H_DWF evecs, config 702
 #       §3.1  Per-evec density movies: ZT-summed, ZT-updated, T-updated (5D & 4D)
 #       §3.2  Sum over all modes at each tau_MD snapshot (FieldDensityEigen)
 #       §3.3  Summed-evec density movie (T-updated, 4D)
-#  §4   Trajectory analysis — H_W (Wilson) evecs via specflow
+#  §4   Trajectory analysis — H_W (Wilson) evecs via specflow for config 702
 #       §4.1  Sum evec density at each M_5 step (initial config t_MD=0)
 #       §4.2  Summed evec density movies (T-updated) for t_MD=0 and m=-1.8
 #       §4.3  0th evec density over trajectory at m=-1.8 (multi-config loop)
@@ -29,11 +29,7 @@
 #  §6   Fermion force density along trajectory (multi-config loop)
 #  §7   Gauge action force density (Iwasaki, Jacobian)
 #  §8   Gluonic TCD filtering via fermion zero modes (FieldDensityEigen --compareTCD_defs)
-#  §9   Fermion topo charge density: per-config ensemble
-#       §9.1  Compute q_A/B/B'/C density fields (FieldDensityEigen --topo_out)
-#       §9.2  IP & corr vs gluonic TCD at flow times 0,4,16 (--compute_PCF, no --Ls)
-#       §9.3  4-panel T-animated movie of all 4 definitions simultaneously
-#  §10  Archive to Lustre
+#  §9   Archive to Lustre
 ########################################################################################################################
 
 
@@ -178,57 +174,113 @@ done
 
 
 ########################################################################################################################
-### §2.5  Spectral sum topo charge (T-summed, configs animated)
-# Spectral reconstruction of topo charge density; sums T; saves data and movie.
+### §2.5  Fermion topo charge density: q_A/B/Bp/C per config, IP & corr vs gluonic TCD,
+###       and 4-panel T-animated movie of all 4 definitions
+#
+# For each (conf, tau_W):
+#   Step 1 + 2 (single FieldDensityEigen call):
+#     --files2 evec density files (5D, Ncut modes)  --Ls 48  --evals eigenvalue file
+#     --topo_out  writes topo_q_{A,B,Bp,C}_<tau>_<dof>.<conf>  (no extension)
+#     --files1 gluonic TCD at TD_tau=0,4,16  --topo_compare  --conf_id <conf>
+#       => prints "# q_X" label lines + "Topo PCF Corr/IP: TD_tau conf value" to stdout
+#       => shell splits by label into 4 per-def output files (pure numeric, notebook-ready)
+#   Step 3 (FieldDensityAnimateMultiFiles):
+#     --animate T  with 4 input files => 4-panel side-by-side T-animated movie
+#
+# Output data files (one per def, format: TD_tau  conf  corr  — matching notebook schema):
+#   data/corr_ip_q_A.dat   data/corr_ip_q_B.dat
+#   data/corr_ip_q_Bp.dat  data/corr_ip_q_C.dat
+#   Rows: (TD_tau=0,4,16) x (tau=0,4) x (Corr, IP) per conf  => 12*nconf rows total
+#
+# NOTE: EVALS_FILE is required for proper q_Bp (m_gap/mu_n weight).
+#       Without it q_Bp silently falls back to sign(mu_n) = same as q_B.
 ########################################################################################################################
 
-for tau in 0 4; do
+##########   INPUT   ######################################
+CONFS_FERM=( $(seq -f "%03g" $((CONF_S)) 1 $CONF_F) )  # default: full ensemble
+dof_ferm=smr
+###########################################################
 
-    ext=T_summed
+DATA_DIR_dnsty=${HMC_DIR}/dnsty
 
-    fname=sp_sum_tau_${tau}
-    dfile=${HMC}/${fname}_${ext}.dat
-    dpath=${HMC_DIR}/${fname}_${ext}.dat
-    mpeg=${HMC_DIR}/${fname}_${ext}.avi
-    dfiles+=( $dfile )
-
-    if [[ $REGEN == 0 ]] ; then
-	F=""
-	for conf in `seq -f "%03g" $((CONF_S)) 1 $CONF_F`; do F+=$DATA_DIR/${conf}/${fname}.${conf},;done
-	Fs=${F%?}
-	${CDIR}/FieldDensityAnimateMultiFiles --files $Fs --grid $vol --animate configs --sum T \
-	       --mpeg $mpeg --isosurface -0.5 --save_data_to $dpath
-    fi
-
-    dfile=${HMC}/eigen/evec_tensor_tau_$tau
-    dfiles+=( $dfile )
-
+# Output IP/corr files — pure numeric, no string columns
+for q_def in q_A q_B q_Bp q_C; do
+    >${HMC_DIR}/data/corr_ip_${q_def}.dat
+    dfiles+=( ${HMC}/data/corr_ip_${q_def}.dat )
 done
 
+if [[ $REGEN == 1 ]] ; then
+    for conf in "${CONFS_FERM[@]}"; do
 
-########################################################################################################################
-### §2.6  Similarity: spectral sum vs gluonic TCD (IP & corr coeff)
-# Compares spectral sum topo charge density with gluonic TCD via FieldDensityFindRegion.
-# Loops over flow times (TD_tau) and Wilson flow times (tau); outputs corr_ip.dat.
-########################################################################################################################
+        DATA_DIR_eigen=${HMC_DIR}/eigen/${conf}
+        DATA_DIR_topo=${HMC_DIR}/eigen/${conf}   # topo_q_X_<tau>_<dof>.<conf> lives here
 
-dfile=${HMC}/data/corr_ip.dat
-dpath=${HMC_DIR}/data/corr_ip.dat
-dfiles+=( $dfile )
+        for tau in 0 4; do
 
-if [[ $REGEN == 0 ]] ; then
+            ### Gather eigenvector density files (n = 0 .. NCUT)
+            F2=""
+            for n in $(seq 0 1 $NCUT); do
+                f=${DATA_DIR_eigen}/evec_density_sorted_${n}_tau_${tau}_${dof_ferm}.${conf}
+                [[ -f $f ]] && F2+=$f,
+            done
+            F2s=${F2%?}
+            [[ -z "$F2s" ]] && { echo "No evec files for conf=$conf tau=$tau, skipping"; continue; }
 
-    >$dpath
-    for TD_tau in 0 4 16; do
-	for tau in 0 4; do
-	    >foo
-	    for conf in `seq -f "%03g" $((CONF_S)) 1 $CONF_F`; do
-		Fs=${HMC_DIR}/dnsty/Top_dnsty_${TD_tau}_ckpoint_EODWF_lat_smr.${conf},${HMC_DIR}/eigen/${conf}/sp_sum_tau_${tau}.${conf}
-		${CDIR}/FieldDensityFindRegion --files ${Fs} --grid $vol --compute_PCF | tee -a foo | cat
-	    done
-	    paste <(seq -f "%03g" $CONF_S 1 $CONF_F) <(grep "Corr Coeff" foo) | awk -v tauTC=$TD_tau -v tauQ=$tau '{print tauTC, tauQ, $1,$NF}' >> $dpath
-	    paste <(seq -f "%03g" $CONF_S 1 $CONF_F) <(grep "Inner Produc" foo) | awk -v tauTC=$TD_tau -v tauQ=$tau '{print tauTC, tauQ, $1,$NF}' >> $dpath
-	done
+            ### Gluonic TCD files at TD_tau = 0, 4, 16
+            F1=""
+            for TD_tau in 0 4 16; do
+                f=${DATA_DIR_dnsty}/Top_dnsty_${TD_tau}_ckpoint_EODWF_lat_${dof_ferm}.${conf}
+                [[ -f $f ]] && F1+=$f, || echo "Warning: gluonic TCD not found: $f"
+            done
+            F1s=${F1%?}
+
+            ### Eigenvalue file (enables proper q_Bp weighting)
+            EVALS_FILE=${DATA_DIR_eigen}/eigenvalues_tau_${tau}.${conf}
+            eval_opt=""
+            [[ -f "$EVALS_FILE" ]] && eval_opt="--evals $EVALS_FILE"
+
+            topo_prefix=${DATA_DIR_topo}/topo
+
+            ### Steps 1+2: compute topo fields + IP/corr vs gluonic TCD in one call
+            ### Output lines starting with "Topo PCF" go to per-def files via label split
+            scratch=${HMC_DIR}/tmp_topo_pcf_${conf}_${tau}
+            # --topo_out prefix: C++ appends _q_A / _q_B / _q_Bp / _q_C automatically
+            ${CDIR}/FieldDensityEigen \
+                --files2 $F2s --Ls 48 $eval_opt \
+                --topo_out ${topo_prefix}_${tau}_${dof_ferm}.${conf} \
+                --files1 $F1s --topo_compare --conf_id $conf \
+                > $scratch
+
+            # Split PCF output into 4 per-def files
+            # Each block is preceded by "# q_X"; lines are "Topo PCF Corr: TD_i conf val"
+            # Reformat to: TD_tau  tau  conf  value  (matching old corr_ip.dat schema)
+            TD_tau_vals=(0 4 16)
+            for q_def in q_A q_B q_Bp q_C; do
+                awk -v q=$q_def -v tau=$tau -v tds="0 4 16" '
+                    /^# / { active=($2==q) }
+                    active && /^Topo PCF Corr:/ { split(tds,td," "); print td[$3+1], tau, $4, $5 >> "/dev/stdout" }
+                    active && /^Topo PCF IP:/   { split(tds,td," "); print td[$3+1], tau, $4, $5 >> "/dev/stdout" }
+                ' $scratch >> ${HMC_DIR}/data/corr_ip_${q_def}.dat
+            done
+            rm -f $scratch
+
+            # Register topo density files for archiving
+            # Filenames: ${topo_prefix}_${tau}_${dof_ferm}.${conf}_q_{A,B,Bp,C}
+            pfx=${topo_prefix}_${tau}_${dof_ferm}.${conf}
+            for q_def in q_A q_B q_Bp q_C; do
+                dfiles+=( ${HMC}/eigen/${conf}/topo_${tau}_${dof_ferm}.${conf}_${q_def} )
+            done
+
+            ### Step 3: 4-panel T-animated movie (FieldDensityAnimateMultiFiles --animate T)
+            ### fc = data.size() = 4 => viewports tile horizontally, window 4096x1024
+            Fs_all=${pfx}_q_A,${pfx}_q_B,${pfx}_q_Bp,${pfx}_q_C
+            mpeg_all=${HMC_DIR}/topo_all_defs_${conf}_tau${tau}.avi
+            if [[ -f ${pfx}_q_A ]]; then
+                ${CDIR}/FieldDensityAnimateMultiFiles --files $Fs_all --grid $vol --animate T \
+                       --mpeg $mpeg_all --isosurface -0.01
+            fi
+
+        done
     done
 fi
 
@@ -743,8 +795,8 @@ done
 # using FieldDensityEigen --compareTCD_defs.  Output: filter_TCD.dat.
 ########################################################################################################################
 
-DATA_DIR1=${HMC_DIR}/dnsty
-DATA_DIR2=${HMC_DIR}/eigen
+DATA_DIR_dnsty=${HMC_DIR}/dnsty
+DATA_DIR_eigen=${HMC_DIR}/eigen
 
 dfile=${HMC}/data/filter_TCD.dat
 dpath=${HMC_DIR}/data/filter_TCD.dat
@@ -755,10 +807,10 @@ if [[ $REGEN == 0 ]] ; then
     for TD_tau in 0 4; do
 	fname2=evec_density_0_tau_${TD_tau}
 	F1s=""
-	for conf in `seq -f "%03g" $((CONF_S)) 1 $CONF_F`; do  F1s+=$DATA_DIR1/Top_dnsty_${TD_tau}_ckpoint_EODWF_lat_smr.${conf},;done
+	for conf in `seq -f "%03g" $((CONF_S)) 1 $CONF_F`; do  F1s+=$DATA_DIR_dnsty/Top_dnsty_${TD_tau}_ckpoint_EODWF_lat_smr.${conf},;done
 	F1s=${F1s%?}
 	F2s=""
-	for conf in `seq -f "%03g" $((CONF_S)) 1 $CONF_F`; do  F2s+=$DATA_DIR2/$conf/$fname2.${conf},;done
+	for conf in `seq -f "%03g" $((CONF_S)) 1 $CONF_F`; do  F2s+=$DATA_DIR_eigen/$conf/$fname2.${conf},;done
 	F2s=${F2s%?}
 
 	${CDIR}/FieldDensityEigen --files1 $F1s --files2 $F2s --grid $vol --Ls 48 --compareTCD_defs --cut 0.00001 | tee -a foo2 | cat
@@ -769,126 +821,7 @@ wait
 
 
 ########################################################################################################################
-####################  §9  Fermion topo charge density: per-config ensemble  ###################################
-########################################################################################################################
-# For each config, reads H_DWF eigenvector density files and computes the four fermion
-# topological charge density estimators using FieldDensityEigen:
-#   q_A (midpoint),  q_B (bulk/eps_code),  q_B' (mgap-weighted bulk),  q_C (boundary)
-#
-# §9.1  Compute and write fermion TCD definitions (FieldDensityEigen --topo_out).
-# §9.2  IP & corr of each def vs gluonic TCD at Wilson flow times 0, 4, 16
-#       (FieldDensityEigen --compute_PCF, 4D files1/files2 — no --Ls needed).
-# §9.3  4-panel T-animated movie of all 4 definitions simultaneously.
-#       Uses existing multi-panel support: --animate T with 4 input files
-#       produces fc=4 side-by-side panels, each showing one definition.
-#
-# NOTE: eigenvalue files are required for proper q_B' (mgap-weighted) computation.
-#       Set EVALS_FILE pattern below; without it q_B' falls back to sign(mu_n).
-########################################################################################################################
-
-##########   INPUT   ##################################
-CONFS=( 702 )               # configs to process (extend for generalization)
-dof=smr                     # degree of freedom for both evec and gluonic TCD files
-# Eigenvalue file for H_DWF at a given (conf, tau).
-# Format: one eigenvalue (float) per line, ordered by mode index.
-# Typical output from Compute_DWF_G5R5.cc; update path to match actual location.
-# EVALS_FILE is set per (conf, tau) inside the loop.
-#######################################################
-
-dfile_ip=${HMC}/data/corr_ip_fermion_tcd.dat
-dpath_ip=${HMC_DIR}/data/corr_ip_fermion_tcd.dat
-dfiles+=( $dfile_ip )
-
-if [[ $REGEN == 1 ]] ; then
-
-    >$dpath_ip
-
-    for conf in "${CONFS[@]}"; do
-
-        DATA_DIR_eigen=${HMC_DIR}/eigen/${conf}
-        DATA_DIR_dnsty=${HMC_DIR}/dnsty
-        DATA_DIR_topo=${HMC_DIR}/eigen/${conf}/topo_fermion
-        mkdir -p ${DATA_DIR_topo}
-
-        for tau in 0 4; do
-
-            ####################################################################
-            ### §9.1  Compute fermion TCD definitions
-            # Reads all NCUT evec density files for this (conf, tau),
-            # writes q_A_mid, q_B_eps, q_Bp_mgap, q_C_bdy to DATA_DIR_topo.
-            ####################################################################
-
-            # Gather eigenvector density files (n = 0 .. NCUT)
-            F2=""
-            for n in $(seq 0 1 $NCUT); do
-                f=${DATA_DIR_eigen}/evec_density_sorted_${n}_tau_${tau}_${dof}.${conf}
-                [[ -f $f ]] && F2+=$f,
-            done
-            F2s=${F2%?}
-            [[ -z "$F2s" ]] && { echo "No evec files for conf=$conf tau=$tau, skipping"; continue; }
-
-            topo_prefix=${DATA_DIR_topo}/q_tau_${tau}_${dof}_${conf}
-
-            # Eigenvalue file — update pattern to match actual output of Compute_DWF_G5R5.cc
-            EVALS_FILE=${DATA_DIR_eigen}/eigenvalues_tau_${tau}_${conf}
-            eval_opt=""
-            [[ -f "$EVALS_FILE" ]] && eval_opt="--evals $EVALS_FILE"
-
-            # Writes: ${topo_prefix}_q_A_mid.dat  _q_B_eps.dat  _q_Bp_mgap.dat  _q_C_bdy.dat
-            ${CDIR}/FieldDensityEigen --files2 $F2s --grid $vol --Ls 48 $eval_opt \
-                   --topo_out $topo_prefix
-
-            for q_def in q_A_mid q_B_eps q_Bp_mgap q_C_bdy; do
-                dfiles+=( ${HMC}/eigen/${conf}/topo_fermion/q_tau_${tau}_${dof}_${conf}_${q_def}.dat )
-            done
-
-            ####################################################################
-            ### §9.2  IP & corr: each fermion TCD def vs gluonic TCD
-            # Uses FieldDensityEigen --compute_PCF with 4D files1/files2.
-            # (No --Ls: data2 is read directly as a 4D field.)
-            # Loops over gluonic Wilson flow times TD_tau = 0, 4, 16.
-            ####################################################################
-
-            for TD_tau in 0 4 16; do
-                f_glue=${DATA_DIR_dnsty}/Top_dnsty_${TD_tau}_ckpoint_EODWF_lat_${dof}.${conf}
-                [[ -f $f_glue ]] || { echo "Gluonic TCD not found: $f_glue, skipping"; continue; }
-
-                for q_def in q_A_mid q_B_eps q_Bp_mgap q_C_bdy; do
-                    f_ferm=${topo_prefix}_${q_def}.dat
-                    [[ -f $f_ferm ]] || continue
-
-                    result=$(${CDIR}/FieldDensityEigen --files1 $f_glue --files2 $f_ferm \
-                                     --grid $vol --compute_PCF 2>/dev/null)
-                    corr=$(echo "$result" | grep "Corr Coeff"   | awk '{print $NF}')
-                    ip=$(  echo "$result" | grep "Inner Product" | awk '{print $NF}')
-                    echo $conf $tau $TD_tau $q_def $corr $ip >> $dpath_ip
-                done
-            done
-
-            ####################################################################
-            ### §9.3  4-panel T-animated movie of all 4 fermion TCD definitions
-            # Passes 4 files to FieldDensityAnimateMultiFiles with --animate T.
-            # Existing multi-panel logic: fc = data.size() = 4 when animate != configs,
-            # viewports tile horizontally, window is 4096x1024.
-            ####################################################################
-
-            Fs_all=${topo_prefix}_q_A_mid.dat,${topo_prefix}_q_B_eps.dat,${topo_prefix}_q_Bp_mgap.dat,${topo_prefix}_q_C_bdy.dat
-            mpeg_all=${HMC_DIR}/topo_fermion_all_defs_${conf}_tau${tau}_T_anim.avi
-
-            if ls ${topo_prefix}_q_A_mid.dat 2>/dev/null; then
-                iso=-0.01
-                ${CDIR}/FieldDensityAnimateMultiFiles --files $Fs_all --grid $vol --animate T \
-                       --mpeg $mpeg_all --isosurface $iso
-            fi
-
-        done
-    done
-
-fi
-
-
-########################################################################################################################
-####################  §10  Archive to Lustre  #########################################################################
+####################  §9  Archive to Lustre  ##########################################################################
 ########################################################################################################################
 
 tar -cvf ${LDIR}/eigen_data.tar -C ${PDIR} ${dfiles[@]}

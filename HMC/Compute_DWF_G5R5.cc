@@ -358,21 +358,6 @@ int main(int argc, char** argv) {
 	axpby_ssp(G5evec[i], 1., finalevec[i], 0., G5evec[i], j, j);
       }
     }
-    // Compute spectral reconstruction of topological charge density
-    LatticeComplexD sp_sum(FGrid); sp_sum = Zero();
-    for(int i = 0; i < Nconv; i++) {
-      RealD sign = (eMe[i]>=0)? 1.0 : -1.0;
-      RealD abs_lambda = sqrt(eMe[i]*eMe[i] - mass*mass);
-      sp_sum = sp_sum - localInnerProduct(finalevec[i],G5evec[i]) + 0.5*sign*abs_lambda*localInnerProduct(finalevec[i],finalevec[i]);
-    }
-    LatticeComplexD sp_sum4D(UGrid), tmp_F(UGrid); sp_sum4D = Zero();
-    for(int i=0; i<Ls;i++){
-      ExtractSlice(tmp_F,sp_sum,i,0);
-      sp_sum4D = sp_sum4D + tmp_F;
-    }
-    writeFile(sp_sum4D,
-	      LanParams.outpath + "/" + std::to_string(i_conf) + "/sp_sum_tau_"+tau+"."+std::to_string(i_conf));
-
     /***********************************************************************/
     /*   Four topological charge density estimators (q_A, q_B, q_B', q_C) */
     /*                                                                      */

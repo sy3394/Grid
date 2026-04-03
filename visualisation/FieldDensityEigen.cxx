@@ -489,36 +489,76 @@ int main(int argc, char* argv[])
   }
   
   /****** Write topo charge density reconstructed from eigenvectors (4 formulas) *****/
+  // Output file naming convention: <topo_out>_q_B / _q_Bp / _q_C / _q_A  (no extension).
+  // Set --topo_out to a prefix of the form  topo_q_B_<tau>_<dof>.<conf>
+  // so that e.g. topo_q_B_0_smr.702 is produced for q_B.
   // q_A, q_B, q_C use sign(mu_n) (Approximation 1).
   // q_B' uses m_gap/mu_n weight — proper bulk suppression, valid at m_f=0.
-  // Output files: _q_B_eps, _q_Bp_mgap, _q_C_bdy, _q_A_mid.
   if(compute_topo && !evals.empty()){
     // Formula B: eps_code(s)-chirality density  [sign(mu_n) weight, bulk form]
     //   q_B(x) = sum_n sign(mu_n) * sum_s eps_code(s) * rho_n(x,s)
-    writeFile(q_eps, topo_out + "_q_B_eps.dat");
-    std::cout << "Wrote q_B   -> " << topo_out << "_q_B_eps.dat"
+    writeFile(q_eps, topo_out + "_q_B");
+    std::cout << "Wrote q_B   -> " << topo_out << "_q_B"
               << "  Q_B=" << real(TensorRemove(sum(q_eps))) << std::endl;
 
     // Formula B': m_gap-weighted chirality density  [m_gap/mu_n weight, bulk improved]
     //   q_B'(x) = sum_n (m_gap/mu_n) * sum_s eps_code(s) * rho_n(x,s)
     //   Bulk modes suppressed by m_gap/Lambda_bulk << 1.
     //   Recommended for pointwise comparison with gradient-flowed q^gf(x).
-    writeFile(q_prime, topo_out + "_q_Bp_mgap.dat");
-    std::cout << "Wrote q_B'  -> " << topo_out << "_q_Bp_mgap.dat"
+    writeFile(q_prime, topo_out + "_q_Bp");
+    std::cout << "Wrote q_B'  -> " << topo_out << "_q_Bp"
               << "  Q_B'=" << real(TensorRemove(sum(q_prime)))
               << "  (m_gap=" << m_gap << ")" << std::endl;
 
     // Formula C: boundary projection density  [Blum Eq. 8 scalar proxy]
     //   q_C(x) = -sum_n sign(mu_n) * [rho_n(x,Ls-1) - rho_n(x,0)]
-    writeFile(q_bdy, topo_out + "_q_C_bdy.dat");
-    std::cout << "Wrote q_C   -> " << topo_out << "_q_C_bdy.dat"
+    writeFile(q_bdy, topo_out + "_q_C");
+    std::cout << "Wrote q_C   -> " << topo_out << "_q_C"
               << "  Q_C=" << real(TensorRemove(sum(q_bdy))) << std::endl;
 
     // Formula A: midpoint density  [Blum Eq. 9 analog]
     //   q_A(x) = -sum_n sign(mu_n) * 0.5 * [rho_n(x,Ls/2) - rho_n(x,Ls/2-1)]
-    writeFile(q_mid, topo_out + "_q_A_mid.dat");
-    std::cout << "Wrote q_A   -> " << topo_out << "_q_A_mid.dat"
+    writeFile(q_mid, topo_out + "_q_A");
+    std::cout << "Wrote q_A   -> " << topo_out << "_q_A"
               << "  Q_A=" << real(TensorRemove(sum(q_mid))) << std::endl;
+  }
+  /****** IP & Corr of each fermion TCD definition vs gluonic TCD (--topo_compare) *****/
+  // Requires: --topo_out (so q_eps/q_prime/q_bdy/q_mid are available),
+  //           --files1   (one file per gluonic flow time, e.g. TD_tau=0,4,16),
+  //           --conf_id  (integer config number, written to output for notebook parsing).
+  // Output per line (pure numeric): TD_tau  tau  conf  Corr  IP
+  //   where TD_tau is the index i of files1[i], tau comes from --conf_id context,
+  //   and the label "Topo_PCF: q_X" is printed to stderr for diagnostics only.
+  // q_A, q_B, q_C use sign(mu_n) (Approximation 1).
+  // The 4 output blocks (one per q_def) are labelled by a comment line "# q_X"
+  // so the shell can split them into 4 per-def files via grep.
+  int conf_id = -1;
+  if( GridCmdOptionExists(argv,argv+argc,"--conf_id") ){
+    arg = GridCmdOptionPayload(argv,argv+argc,"--conf_id");
+    GridCmdOptionInt(arg, conf_id);
+  }
+  int topo_compare = GridCmdOptionExists(argv,argv+argc,"--topo_compare");
+  if(compute_topo && !evals.empty() && topo_compare && !data1.empty()){
+    typedef typename PeriodicGimplR::ComplexField ComplexField;
+    // data1[i] = gluonic TCD at flow time index i  (one file per TD_tau)
+    struct QDef { std::string name; LatticeComplexD* field; };
+    std::vector<QDef> qdefs = {{"q_A",&q_mid},{"q_B",&q_eps},{"q_Bp",&q_prime},{"q_C",&q_bdy}};
+    for(auto& qd : qdefs){
+      std::cout << "# " << qd.name << std::endl;  // shell uses this to split output
+      for(int i=0; i<(int)data1.size(); i++){
+        LatticeComplex X(grid), Y(grid), one(grid); one = ComplexField::scalar_type(1.0,0.0);
+        ComplexD avg1 = TensorRemove(sum(data1[i]))/RealD(grid->gSites());
+        ComplexD avg2 = TensorRemove(sum(*qd.field))/RealD(grid->gSites());
+        X = data1[i] - avg1*one;
+        Y = *qd.field  - avg2*one;
+        double corr = TensorRemove(sum(X*Y)).real()/sqrt(norm2(X)*norm2(Y));
+        X = data1[i]; Y = *qd.field;
+        double ip   = TensorRemove(innerProduct(X,Y)).real()/sqrt(norm2(X))/sqrt(norm2(Y));
+        // format: TD_tau_index  conf  corr   (one Corr line + one IP line, matching old format)
+        std::cout << "Topo PCF Corr: " << i << " " << conf_id << " " << corr << std::endl;
+        std::cout << "Topo PCF IP:   " << i << " " << conf_id << " " << ip   << std::endl;
+      }
+    }
   }
   /******************************************************************************/
 
