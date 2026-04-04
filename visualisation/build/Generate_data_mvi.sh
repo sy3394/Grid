@@ -197,8 +197,7 @@ done
 ########################################################################################################################
 
 ##########   INPUT   ######################################
-CONFS_FERM=( $(seq -f "%03g" $((CONF_S)) 1 $CONF_F) )  # default: full ensemble
-dof_ferm=smr
+CONFS=( $(seq -f "%03g" $((CONF_S)) 1 $CONF_F) )  # default: full ensemble
 ###########################################################
 
 DATA_DIR_dnsty=${HMC_DIR}/dnsty
@@ -210,72 +209,68 @@ for q_def in q_A q_B q_Bp q_C; do
 done
 
 if [[ $REGEN == 1 ]] ; then
-    for conf in "${CONFS_FERM[@]}"; do
+    for conf in "${CONFS[@]}"; do
 
         DATA_DIR_eigen=${HMC_DIR}/eigen/${conf}
-        DATA_DIR_topo=${HMC_DIR}/eigen/${conf}   # topo_q_X_<tau>_<dof>.<conf> lives here
+        DATA_DIR_topo=${HMC_DIR}/eigen/${conf}   # Top_dnsty_q_X_<tau>_smr.<conf> lives here
 
         for tau in 0 4; do
 
-            ### Gather eigenvector density files (n = 0 .. NCUT)
+            ### Gather eigenvector density files (n = 0 .. nconv-1)
             F2=""
-            for n in $(seq 0 1 $NCUT); do
-                f=${DATA_DIR_eigen}/evec_density_sorted_${n}_tau_${tau}_${dof_ferm}.${conf}
+            for n in $(seq 0 1 $nconv); do
+                f=${DATA_DIR_eigen}/evec_density_${n}_tau_${tau}.${conf}
                 [[ -f $f ]] && F2+=$f,
             done
             F2s=${F2%?}
             [[ -z "$F2s" ]] && { echo "No evec files for conf=$conf tau=$tau, skipping"; continue; }
 
-            ### Gluonic TCD files at TD_tau = 0, 4, 16
+            ### Gluonic TCD files at TD_tau = 0, 4, 16  (smr hardcoded: actual Frontier naming)
             F1=""
             for TD_tau in 0 4 16; do
-                f=${DATA_DIR_dnsty}/Top_dnsty_${TD_tau}_ckpoint_EODWF_lat_${dof_ferm}.${conf}
+                f=${DATA_DIR_dnsty}/Top_dnsty_${TD_tau}_ckpoint_EODWF_lat_smr.${conf}
                 [[ -f $f ]] && F1+=$f, || echo "Warning: gluonic TCD not found: $f"
             done
             F1s=${F1%?}
 
-            ### Eigenvalue file (enables proper q_Bp weighting)
+            ### Eigenvalue file (enables proper q_Bp weighting; written by Compute_DWF_G5R5)
             EVALS_FILE=${DATA_DIR_eigen}/eigenvalues_tau_${tau}.${conf}
             eval_opt=""
             [[ -f "$EVALS_FILE" ]] && eval_opt="--evals $EVALS_FILE"
 
-            topo_prefix=${DATA_DIR_topo}/topo
-
             ### Steps 1+2: compute topo fields + IP/corr vs gluonic TCD in one call
+            ### --topo_out template: C++ substitutes {def} with A, B, Bp, C
             ### Output lines starting with "Topo PCF" go to per-def files via label split
             scratch=${HMC_DIR}/tmp_topo_pcf_${conf}_${tau}
-            # --topo_out prefix: C++ appends _q_A / _q_B / _q_Bp / _q_C automatically
             ${CDIR}/FieldDensityEigen \
                 --files2 $F2s --Ls 48 $eval_opt \
-                --topo_out ${topo_prefix}_${tau}_${dof_ferm}.${conf} \
+                --topo_out ${DATA_DIR_topo}/Top_dnsty_q_{def}_${tau}_smr.${conf} \
                 --files1 $F1s --topo_compare --conf_id $conf \
                 > $scratch
 
             # Split PCF output into 4 per-def files
             # Each block is preceded by "# q_X"; lines are "Topo PCF Corr: TD_i conf val"
-            # Reformat to: TD_tau  tau  conf  value  (matching old corr_ip.dat schema)
-            TD_tau_vals=(0 4 16)
+            # Reformat to: TD_tau  tau  conf  value  (matching notebook MultiIndex schema)
             for q_def in q_A q_B q_Bp q_C; do
                 awk -v q=$q_def -v tau=$tau -v tds="0 4 16" '
                     /^# / { active=($2==q) }
-                    active && /^Topo PCF Corr:/ { split(tds,td," "); print td[$3+1], tau, $4, $5 >> "/dev/stdout" }
-                    active && /^Topo PCF IP:/   { split(tds,td," "); print td[$3+1], tau, $4, $5 >> "/dev/stdout" }
+                    active && /^Topo PCF Corr:/ { split(tds,td," "); print td[$3+1], tau, $4, $5 }
+                    active && /^Topo PCF IP:/   { split(tds,td," "); print td[$3+1], tau, $4, $5 }
                 ' $scratch >> ${HMC_DIR}/data/corr_ip_${q_def}.dat
             done
             rm -f $scratch
 
             # Register topo density files for archiving
-            # Filenames: ${topo_prefix}_${tau}_${dof_ferm}.${conf}_q_{A,B,Bp,C}
-            pfx=${topo_prefix}_${tau}_${dof_ferm}.${conf}
-            for q_def in q_A q_B q_Bp q_C; do
-                dfiles+=( ${HMC}/eigen/${conf}/topo_${tau}_${dof_ferm}.${conf}_${q_def} )
+            pfx=${DATA_DIR_topo}/Top_dnsty_q
+            for q_def in A B Bp C; do
+                dfiles+=( ${HMC}/eigen/${conf}/Top_dnsty_q_${q_def}_${tau}_smr.${conf} )
             done
 
             ### Step 3: 4-panel T-animated movie (FieldDensityAnimateMultiFiles --animate T)
             ### fc = data.size() = 4 => viewports tile horizontally, window 4096x1024
-            Fs_all=${pfx}_q_A,${pfx}_q_B,${pfx}_q_Bp,${pfx}_q_C
-            mpeg_all=${HMC_DIR}/topo_all_defs_${conf}_tau${tau}.avi
-            if [[ -f ${pfx}_q_A ]]; then
+            Fs_all=${pfx}_A_${tau}_smr.${conf},${pfx}_B_${tau}_smr.${conf},${pfx}_Bp_${tau}_smr.${conf},${pfx}_C_${tau}_smr.${conf}
+            mpeg_all=${HMC_DIR}/Top_dnsty_all_defs_${conf}_tau${tau}.avi
+            if [[ -f ${pfx}_A_${tau}_smr.${conf} ]]; then
                 ${CDIR}/FieldDensityAnimateMultiFiles --files $Fs_all --grid $vol --animate T \
                        --mpeg $mpeg_all --isosurface -0.01
             fi

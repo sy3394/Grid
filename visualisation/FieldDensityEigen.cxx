@@ -489,37 +489,43 @@ int main(int argc, char* argv[])
   }
   
   /****** Write topo charge density reconstructed from eigenvectors (4 formulas) *****/
-  // Output file naming convention: <topo_out>_q_B / _q_Bp / _q_C / _q_A  (no extension).
-  // Set --topo_out to a prefix of the form  topo_q_B_<tau>_<dof>.<conf>
-  // so that e.g. topo_q_B_0_smr.702 is produced for q_B.
-  // q_A, q_B, q_C use sign(mu_n) (Approximation 1).
-  // q_B' uses m_gap/mu_n weight — proper bulk suppression, valid at m_f=0.
+  // Output file naming: pass --topo_out with a {def} placeholder, e.g.
+  //   --topo_out /path/Top_dnsty_q_{def}_0_smr.702
+  // C++ replaces {def} with A, B, Bp, C to produce the four output files.
+  // q_A, q_B, q_C use sign(mu_n); q_Bp uses m_gap/mu_n (requires --evals).
   if(compute_topo && !evals.empty()){
+    // Lambda: substitute {def} placeholder in topo_out template string.
+    auto fill_def = [](std::string tmpl, const std::string& d) -> std::string {
+      auto pos = tmpl.find("{def}");
+      if(pos != std::string::npos) tmpl.replace(pos, 5, d);
+      return tmpl;
+    };
+
     // Formula B: eps_code(s)-chirality density  [sign(mu_n) weight, bulk form]
     //   q_B(x) = sum_n sign(mu_n) * sum_s eps_code(s) * rho_n(x,s)
-    writeFile(q_eps, topo_out + "_q_B");
-    std::cout << "Wrote q_B   -> " << topo_out << "_q_B"
+    writeFile(q_eps, fill_def(topo_out,"B"));
+    std::cout << "Wrote q_B   -> " << fill_def(topo_out,"B")
               << "  Q_B=" << real(TensorRemove(sum(q_eps))) << std::endl;
 
     // Formula B': m_gap-weighted chirality density  [m_gap/mu_n weight, bulk improved]
     //   q_B'(x) = sum_n (m_gap/mu_n) * sum_s eps_code(s) * rho_n(x,s)
     //   Bulk modes suppressed by m_gap/Lambda_bulk << 1.
     //   Recommended for pointwise comparison with gradient-flowed q^gf(x).
-    writeFile(q_prime, topo_out + "_q_Bp");
-    std::cout << "Wrote q_B'  -> " << topo_out << "_q_Bp"
+    writeFile(q_prime, fill_def(topo_out,"Bp"));
+    std::cout << "Wrote q_B'  -> " << fill_def(topo_out,"Bp")
               << "  Q_B'=" << real(TensorRemove(sum(q_prime)))
               << "  (m_gap=" << m_gap << ")" << std::endl;
 
     // Formula C: boundary projection density  [Blum Eq. 8 scalar proxy]
     //   q_C(x) = -sum_n sign(mu_n) * [rho_n(x,Ls-1) - rho_n(x,0)]
-    writeFile(q_bdy, topo_out + "_q_C");
-    std::cout << "Wrote q_C   -> " << topo_out << "_q_C"
+    writeFile(q_bdy, fill_def(topo_out,"C"));
+    std::cout << "Wrote q_C   -> " << fill_def(topo_out,"C")
               << "  Q_C=" << real(TensorRemove(sum(q_bdy))) << std::endl;
 
     // Formula A: midpoint density  [Blum Eq. 9 analog]
     //   q_A(x) = -sum_n sign(mu_n) * 0.5 * [rho_n(x,Ls/2) - rho_n(x,Ls/2-1)]
-    writeFile(q_mid, topo_out + "_q_A");
-    std::cout << "Wrote q_A   -> " << topo_out << "_q_A"
+    writeFile(q_mid, fill_def(topo_out,"A"));
+    std::cout << "Wrote q_A   -> " << fill_def(topo_out,"A")
               << "  Q_A=" << real(TensorRemove(sum(q_mid))) << std::endl;
   }
   /****** IP & Corr of each fermion TCD definition vs gluonic TCD (--topo_compare) *****/

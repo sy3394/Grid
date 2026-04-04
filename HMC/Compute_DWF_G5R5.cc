@@ -35,17 +35,34 @@ using namespace Grid;
 typedef DomainWallFermionD FermionOp;
 typedef typename DomainWallFermionD::FermionField FermionField;
 
-template <class T> void writeFile(T& in, std::string const fname){
+// User record embedded in each evec_density Scidac file.
+// Stores the H_DWF eigenvalue and mode index for self-documentation.
+// tau (Wilson-flow time) is already encoded in the file name; not repeated here.
+namespace Grid {
+  struct H_DWF_EvalRecord : Serializable {
+    GRID_SERIALIZABLE_CLASS_MEMBERS(H_DWF_EvalRecord,
+      double, eval,   // eigenvalue of H_DWF = gamma5*R5*D_DWF(mass), i.e. eMe[i]
+      int,    n       // mode index sorted by |mu_n| ascending (0 = lowest)
+    );
+  };
+}
+
+template <class T, class RecordT>
+void writeFile(T& in, std::string const fname, RecordT& record){
 #ifdef HAVE_LIME
   // Ref: https://github.com/paboyle/Grid/blob/feature/scidac-wp1/tests/debug/Test_general_coarse_hdcg_phys48.cc#L111
   std::cout << Grid::GridLogMessage << "Writes to: " << fname << std::endl;
-  Grid::emptyUserRecord record;
   Grid::ScidacWriter WR(in.Grid()->IsBoss());
   WR.open(fname);
   WR.writeScidacFieldRecord(in,record,0);
   WR.close();
 #endif
   // What is the appropriate way to throw error?
+}
+
+template <class T> void writeFile(T& in, std::string const fname){
+  Grid::emptyUserRecord record;
+  writeFile(in, fname, record);
 }
 
 namespace Grid {
@@ -340,6 +357,20 @@ int main(int argc, char** argv) {
     std::cout << GridLogMessage << "Sorted G5R5M Evals: " << eMe       << std::endl;
     std::cout << GridLogMessage << "Sorted <G5R5M(evec), G5R5M(evec)>" << std::endl;
     std::cout << GridLogMessage << eMMe                                << std::endl;
+
+    // Write eigenvalue text file: one value per line, sorted by |mu_n| ascending.
+    // Read back in FieldDensityEigen via --evals for q_Bp (m_gap/mu_n) weighting.
+    if( UGrid->IsBoss() ){
+      std::string eval_file = LanParams.outpath + "/" + std::to_string(i_conf) +
+                              "/eigenvalues_tau_" + tau + "." + std::to_string(i_conf);
+      FILE *fp_eval = fopen(eval_file.c_str(), "w");
+      assert(fp_eval != NULL);
+      for(int i = 0; i < Nconv; i++)
+        fprintf(fp_eval, "%.17g\n", eMe[i]);
+      fclose(fp_eval);
+      std::cout << GridLogMessage << "Wrote eigenvalues to: " << eval_file << std::endl;
+    }
+
     conv_evecs_all.push_back(finalevec);    
 
     
@@ -451,9 +482,13 @@ int main(int argc, char** argv) {
       chiral_matrix[i].resize(Nconv);
 
       auto evdensity = localInnerProduct(finalevec[i],finalevec[i] );
+      Grid::H_DWF_EvalRecord eval_rec;
+      eval_rec.eval = eMe[i];
+      eval_rec.n    = i;
       writeFile(evdensity,
 		LanParams.outpath + "/" + std::to_string(i_conf) + "/evec_density" +
-		"_"+std::to_string(i)+"_tau_"+tau+"."+std::to_string(i_conf));
+		"_"+std::to_string(i)+"_tau_"+tau+"."+std::to_string(i_conf),
+		eval_rec);
 
       auto diag_g5density = localInnerProduct(finalevec[i],G5evec[i] );
       writeFile(diag_g5density,
