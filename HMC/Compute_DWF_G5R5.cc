@@ -42,7 +42,7 @@ namespace Grid {
   struct H_DWF_EvalRecord : Serializable {
     GRID_SERIALIZABLE_CLASS_MEMBERS(H_DWF_EvalRecord,
       double, eval,   // eigenvalue of H_DWF = gamma5*R5*D_DWF(mass), i.e. eMe[i]
-      int,    n       // mode index sorted by |mu_n| ascending with pm taken into account (0 = lowest)
+      int,    n       // mode index: pairs (+mu_0,-mu_0, +mu_1,-mu_1,...) ordered by |mu_n|
     );
   };
 }
@@ -336,20 +336,40 @@ int main(int argc, char** argv) {
     for(int i = 0; i < Nconv; i++){
       finalevec_copy[i] = finalevec[i];
     }
-    std::vector<RealD> eMe_copy(eMe);
-    for(int i = 0; i < Nconv; i++){
-      eMe[i] = fabs(eMe[i]);
-      eMe_copy[i] = eMe[i];
-    }
-    int pair_flag = 1;
-    sort(eMe_copy.begin(), eMe_copy.end());
-    for(int i = 0; i < Nconv; i++){
-      for(int j = 0; j < Nconv; j++){
-	if(eMe[j] == eMe_copy[i]){
-	  finalevec[i] = finalevec_copy[j];
-	}
+    std::vector<RealD> eMe_sort(eMe);   // signed working copy
+    std::vector<RealD> eMe_sort2;       // output: (+mu_0,-mu_0, +mu_1,-mu_1, ...) by |mu|
+
+    // Step 1: sort signed values ascending (most negative first)
+    sort(eMe_sort.begin(), eMe_sort.end());
+
+    // Step 2: seed with positive eigenvalues in ascending order
+    for(int i = 0; i < Nconv; i++)
+      if(eMe_sort[i] >= 0) eMe_sort2.push_back(eMe_sort[i]);
+
+    // Step 3: insert each negative eval after its +partner (closest magnitude)
+    for(int i = 0; i < (int)eMe_sort.size(); i++){
+      if(eMe_sort[i] < 0){
+        int miss = 1;
+        for(int j = 0; j < (int)eMe_sort2.size(); j++){
+          if(eMe_sort2[j] > 0 && eMe_sort2[j] > std::fabs(eMe_sort[i])){
+            int pos = j;
+            if(j == 0 || std::fabs(eMe_sort2[j]   + eMe_sort[i]) <
+                         std::fabs(eMe_sort2[j-1]  + eMe_sort[i]))
+              pos += 1;
+            eMe_sort2.insert(eMe_sort2.begin() + pos, eMe_sort[i]);
+            miss = 0; break;
+          }
+        }
+        if(miss) eMe_sort2.push_back(eMe_sort[i]);
       }
     }
+
+    // Step 4: reorder finalevec to match eMe_sort2
+    for(int i = 0; i < Nconv; i++)
+      for(int j = 0; j < Nconv; j++)
+        if(eMe[j] == eMe_sort2[i])
+          finalevec[i] = finalevec_copy[j];
+
     for(int i = 0; i < Nconv; i++){
       G5R5Herm.HermOpAndNorm(finalevec[i], G5R5Mevec[i], eMe[i], eMMe[i]);
     }
