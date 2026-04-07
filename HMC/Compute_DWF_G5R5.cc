@@ -42,7 +42,7 @@ namespace Grid {
   struct H_DWF_EvalRecord : Serializable {
     GRID_SERIALIZABLE_CLASS_MEMBERS(H_DWF_EvalRecord,
       double, eval,   // eigenvalue of H_DWF = gamma5*R5*D_DWF(mass), i.e. eMe[i]
-      int,    n       // mode index sorted by |mu_n| ascending (0 = lowest)
+      int,    n       // mode index sorted by |mu_n| ascending with pm taken into account (0 = lowest)
     );
   };
 }
