@@ -111,7 +111,8 @@ int main(int argc, char* argv[])
   std::vector<int> b_size(4,0);
   std::vector<int> shift(4,0);
   std::vector<int> n_0modes;
-  std::string arg, save_fname;
+  std::string arg;
+  std::vector<std::string> save_fnames;
 #ifdef MPEG
   std::string mpeg_fname = "movie.avi";
   if( GridCmdOptionExists(argv,argv+argc,"--mpeg") ){
@@ -157,7 +158,7 @@ int main(int argc, char* argv[])
   if( GridCmdOptionExists(argv,argv+argc,"--sum_all_files") ){
     sum_all = 1;
     arg = GridCmdOptionPayload(argv,argv+argc,"--sum_all_files");
-    save_fname = arg;
+    GridCmdOptionCSL(arg, save_fnames);  // comma-separated: fname1[,fname2]
   }
 
   if( GridCmdOptionExists(argv,argv+argc,"--shift") ){
@@ -475,16 +476,18 @@ int main(int argc, char* argv[])
     std::cout<<"Sum last "<<real(TensorRemove(sum(tmp)))<<std::endl;
     data2.back() = tmp - data2.back();
   }
-  if(sum_all){ // TODO: turn save_fname into a vector!!!!!!!!!!!!!
+  if(sum_all && !save_fnames.empty()){
     if(!data1.empty()){
       LatticeComplexD tmp(data1[0].Grid()); tmp = Zero();
       for(int c=0;c<data1.size();c++) tmp = tmp + data1[c];
-      writeFile(tmp,save_fname);
+      writeFile(tmp, save_fnames[0]);
     }
     if(!data2.empty()){
+      // Use save_fnames[1] when provided (both datasets); else save_fnames[0] (single-dataset usage)
+      std::string fname2 = (save_fnames.size() >= 2) ? save_fnames[1] : save_fnames[0];
       LatticeComplexD tmp(data2[0].Grid()); tmp = Zero();
       for(int c=0;c<data2.size();c++) tmp = tmp + data2[c];
-      writeFile(tmp,save_fname);
+      writeFile(tmp, fname2);
     }
   }
   
@@ -588,7 +591,6 @@ int main(int argc, char* argv[])
 		filter = Cshift(filter,mu,shift_c[mu]);
 	      //LatticeComplexD tmp2(grid); tmp2 = toComplex(filter);
 	      //std::cout<<"Filtered Sum: " << i <<" "<< real(TensorRemove(sum(data1[i]*filter))) << std::endl;
-	      //0.00010128755 0 0 1048576 0
 	      std::cout<<"Filtered Sum: " << shift_c <<" "<< i <<" "<<real(innerProduct(data1[i],filter))
 		       << " max norm " << std::sqrt(maxLocalNorm2(data2[i]))
 		       <<" avg filter "<<real(sum(filter))/RealD(grid->gSites())
@@ -622,18 +624,6 @@ int main(int argc, char* argv[])
     }
   }
 
-  /****************  Compute Inner Product of 5D Eigen and Gluonic TCD   ************************************/
-
-
-  /*
-    // not for laptop
-  for(auto F: data){
-    for(int xi=0; xi<F.Grid()->gSites()*data.size(); xi++){
-      Coordinate site({xi/(latt_size[1]*latt_size[2]*latt_size[3]),xi/(latt_size[2]*latt_size[3]),xi/latt_size[3],xi%latt_size[3]});
-      data_f << real(TensorRemove(peekSite(F,site))) << std::endl;
-    }
-  }
-  */
   data_f.close();
   Grid_finalize();
 
