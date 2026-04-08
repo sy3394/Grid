@@ -285,9 +285,14 @@ fi
 
 
 ###########   INPUT   ###########################
-conf=702
+CONFS=(  702  719  71902 )
+REGENS=(   1    1      1 )   # set 0 to skip a config
 NCUT=4
 #################################################
+
+for i_conf in "${!CONFS[@]}"; do
+    conf=${CONFS[$i_conf]}
+    REGEN=${REGENS[$i_conf]}
 
 DATA_DIR=${HMC_DIR}/eigen/${conf}
 
@@ -440,6 +445,8 @@ for dof in smr lat; do
 	fi
     done
 done
+
+done  # end CONFS loop
 
 
 ########################################################################################################################
