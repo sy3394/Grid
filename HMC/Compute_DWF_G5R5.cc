@@ -35,17 +35,34 @@ using namespace Grid;
 typedef DomainWallFermionD FermionOp;
 typedef typename DomainWallFermionD::FermionField FermionField;
 
-template <class T> void writeFile(T& in, std::string const fname){
+// User record embedded in each evec_density Scidac file.
+// Stores the H_DWF eigenvalue and mode index for self-documentation.
+// tau (Wilson-flow time) is already encoded in the file name; not repeated here.
+namespace Grid {
+  struct H_DWF_EvalRecord : Serializable {
+    GRID_SERIALIZABLE_CLASS_MEMBERS(H_DWF_EvalRecord,
+      double, eval,   // eigenvalue of H_DWF = gamma5*R5*D_DWF(mass), i.e. eMe[i]
+      int,    n       // mode index: pairs (+mu_0,-mu_0, +mu_1,-mu_1,...) ordered by |mu_n|
+    );
+  };
+}
+
+template <class T, class RecordT>
+void writeFile(T& in, std::string const fname, RecordT& record){
 #ifdef HAVE_LIME
   // Ref: https://github.com/paboyle/Grid/blob/feature/scidac-wp1/tests/debug/Test_general_coarse_hdcg_phys48.cc#L111
   std::cout << Grid::GridLogMessage << "Writes to: " << fname << std::endl;
-  Grid::emptyUserRecord record;
   Grid::ScidacWriter WR(in.Grid()->IsBoss());
   WR.open(fname);
   WR.writeScidacFieldRecord(in,record,0);
   WR.close();
 #endif
   // What is the appropriate way to throw error?
+}
+
+template <class T> void writeFile(T& in, std::string const fname){
+  Grid::emptyUserRecord record;
+  writeFile(in, fname, record);
 }
 
 namespace Grid {
@@ -319,20 +336,40 @@ int main(int argc, char** argv) {
     for(int i = 0; i < Nconv; i++){
       finalevec_copy[i] = finalevec[i];
     }
-    std::vector<RealD> eMe_copy(eMe);
-    for(int i = 0; i < Nconv; i++){
-      eMe[i] = fabs(eMe[i]);
-      eMe_copy[i] = eMe[i];
-    }
-    int pair_flag = 1;
-    sort(eMe_copy.begin(), eMe_copy.end());
-    for(int i = 0; i < Nconv; i++){
-      for(int j = 0; j < Nconv; j++){
-	if(eMe[j] == eMe_copy[i]){
-	  finalevec[i] = finalevec_copy[j];
-	}
+    std::vector<RealD> eMe_sort(eMe);   // signed working copy
+    std::vector<RealD> eMe_sort2;       // output: (+mu_0,-mu_0, +mu_1,-mu_1, ...) by |mu|
+
+    // Step 1: sort signed values ascending (most negative first)
+    sort(eMe_sort.begin(), eMe_sort.end());
+
+    // Step 2: seed with positive eigenvalues in ascending order
+    for(int i = 0; i < Nconv; i++)
+      if(eMe_sort[i] >= 0) eMe_sort2.push_back(eMe_sort[i]);
+
+    // Step 3: insert each negative eval after its +partner (closest magnitude)
+    for(int i = 0; i < (int)eMe_sort.size(); i++){
+      if(eMe_sort[i] < 0){
+        int miss = 1;
+        for(int j = 0; j < (int)eMe_sort2.size(); j++){
+          if(eMe_sort2[j] > 0 && eMe_sort2[j] > std::fabs(eMe_sort[i])){
+            int pos = j;
+            if(j == 0 || std::fabs(eMe_sort2[j]   + eMe_sort[i]) <
+                         std::fabs(eMe_sort2[j-1]  + eMe_sort[i]))
+              pos += 1;
+            eMe_sort2.insert(eMe_sort2.begin() + pos, eMe_sort[i]);
+            miss = 0; break;
+          }
+        }
+        if(miss) eMe_sort2.push_back(eMe_sort[i]);
       }
     }
+
+    // Step 4: reorder finalevec to match eMe_sort2
+    for(int i = 0; i < Nconv; i++)
+      for(int j = 0; j < Nconv; j++)
+        if(eMe[j] == eMe_sort2[i])
+          finalevec[i] = finalevec_copy[j];
+
     for(int i = 0; i < Nconv; i++){
       G5R5Herm.HermOpAndNorm(finalevec[i], G5R5Mevec[i], eMe[i], eMMe[i]);
     }
@@ -340,6 +377,20 @@ int main(int argc, char** argv) {
     std::cout << GridLogMessage << "Sorted G5R5M Evals: " << eMe       << std::endl;
     std::cout << GridLogMessage << "Sorted <G5R5M(evec), G5R5M(evec)>" << std::endl;
     std::cout << GridLogMessage << eMMe                                << std::endl;
+
+    // Write eigenvalue text file: one value per line, sorted by |mu_n| ascending.
+    // Read back in FieldDensityEigen via --evals for q_Bp (m_gap/mu_n) weighting.
+    if( UGrid->IsBoss() ){
+      std::string eval_file = LanParams.outpath + "/" + std::to_string(i_conf) +
+                              "/eigenvalues_tau_" + tau + "." + std::to_string(i_conf);
+      FILE *fp_eval = fopen(eval_file.c_str(), "w");
+      assert(fp_eval != NULL);
+      for(int i = 0; i < Nconv; i++)
+        fprintf(fp_eval, "%.17g\n", eMe[i]);
+      fclose(fp_eval);
+      std::cout << GridLogMessage << "Wrote eigenvalues to: " << eval_file << std::endl;
+    }
+
     conv_evecs_all.push_back(finalevec);    
 
     
@@ -358,21 +409,6 @@ int main(int argc, char** argv) {
 	axpby_ssp(G5evec[i], 1., finalevec[i], 0., G5evec[i], j, j);
       }
     }
-    // Compute spectral reconstruction of topological charge density
-    LatticeComplexD sp_sum(FGrid); sp_sum = Zero();
-    for(int i = 0; i < Nconv; i++) {
-      RealD sign = (eMe[i]>=0)? 1.0 : -1.0;
-      RealD abs_lambda = sqrt(eMe[i]*eMe[i] - mass*mass);
-      sp_sum = sp_sum - localInnerProduct(finalevec[i],G5evec[i]) + 0.5*sign*abs_lambda*localInnerProduct(finalevec[i],finalevec[i]);
-    }
-    LatticeComplexD sp_sum4D(UGrid), tmp_F(UGrid); sp_sum4D = Zero();
-    for(int i=0; i<Ls;i++){
-      ExtractSlice(tmp_F,sp_sum,i,0);
-      sp_sum4D = sp_sum4D + tmp_F;
-    }
-    writeFile(sp_sum4D,
-	      LanParams.outpath + "/" + std::to_string(i_conf) + "/sp_sum_tau_"+tau+"."+std::to_string(i_conf));
-
     /***********************************************************************/
     /*   Four topological charge density estimators (q_A, q_B, q_B', q_C) */
     /*                                                                      */
@@ -466,9 +502,13 @@ int main(int argc, char** argv) {
       chiral_matrix[i].resize(Nconv);
 
       auto evdensity = localInnerProduct(finalevec[i],finalevec[i] );
+      Grid::H_DWF_EvalRecord eval_rec;
+      eval_rec.eval = eMe[i];
+      eval_rec.n    = i;
       writeFile(evdensity,
 		LanParams.outpath + "/" + std::to_string(i_conf) + "/evec_density" +
-		"_"+std::to_string(i)+"_tau_"+tau+"."+std::to_string(i_conf));
+		"_"+std::to_string(i)+"_tau_"+tau+"."+std::to_string(i_conf),
+		eval_rec);
 
       auto diag_g5density = localInnerProduct(finalevec[i],G5evec[i] );
       writeFile(diag_g5density,

@@ -111,7 +111,8 @@ int main(int argc, char* argv[])
   std::vector<int> b_size(4,0);
   std::vector<int> shift(4,0);
   std::vector<int> n_0modes;
-  std::string arg, save_fname;
+  std::string arg;
+  std::vector<std::string> save_fnames;
 #ifdef MPEG
   std::string mpeg_fname = "movie.avi";
   if( GridCmdOptionExists(argv,argv+argc,"--mpeg") ){
@@ -157,7 +158,7 @@ int main(int argc, char* argv[])
   if( GridCmdOptionExists(argv,argv+argc,"--sum_all_files") ){
     sum_all = 1;
     arg = GridCmdOptionPayload(argv,argv+argc,"--sum_all_files");
-    save_fname = arg;
+    GridCmdOptionCSL(arg, save_fnames);  // comma-separated: fname1[,fname2]
   }
 
   if( GridCmdOptionExists(argv,argv+argc,"--shift") ){
@@ -322,10 +323,16 @@ int main(int argc, char* argv[])
     std::cout << "Reading file2: "<<file_list2[c]<<std::endl;
     LatticeComplexD tmp(gridF);
     readFile(tmp,file_list2[c]);
-    LatticeComplexD tmp4D(grid); tmp4D = Zero(); data2[c] = Zero();
-    for(int i=0; i<Ls;i++){
-      ExtractSlice(tmp4D,tmp,i,0);
-      data2[c] = data2[c] + tmp4D;
+    if(Ls > 0){
+      // 5D input: sum over the Ls dimension to produce a 4D density
+      LatticeComplexD tmp4D(grid); tmp4D = Zero(); data2[c] = Zero();
+      for(int i=0; i<Ls;i++){
+        ExtractSlice(tmp4D,tmp,i,0);
+        data2[c] = data2[c] + tmp4D;
+      }
+    } else {
+      // 4D input: use directly (e.g. pre-computed fermion TCD definition files)
+      data2[c] = tmp;
     }
     std::cout<<"Sum "<<c<<" "<<real(TensorRemove(sum(data2[c])))<<std::endl;
 
@@ -469,50 +476,98 @@ int main(int argc, char* argv[])
     std::cout<<"Sum last "<<real(TensorRemove(sum(tmp)))<<std::endl;
     data2.back() = tmp - data2.back();
   }
-  if(sum_all){ // TODO: turn save_fname into a vector!!!!!!!!!!!!!
+  if(sum_all && !save_fnames.empty()){
     if(!data1.empty()){
       LatticeComplexD tmp(data1[0].Grid()); tmp = Zero();
       for(int c=0;c<data1.size();c++) tmp = tmp + data1[c];
-      writeFile(tmp,save_fname);
+      writeFile(tmp, save_fnames[0]);
     }
     if(!data2.empty()){
+      // Use save_fnames[1] when provided (both datasets); else save_fnames[0] (single-dataset usage)
+      std::string fname2 = (save_fnames.size() >= 2) ? save_fnames[1] : save_fnames[0];
       LatticeComplexD tmp(data2[0].Grid()); tmp = Zero();
       for(int c=0;c<data2.size();c++) tmp = tmp + data2[c];
-      writeFile(tmp,save_fname);
+      writeFile(tmp, fname2);
     }
   }
   
   /****** Write topo charge density reconstructed from eigenvectors (4 formulas) *****/
-  // q_A, q_B, q_C use sign(mu_n) (Approximation 1).
-  // q_B' uses m_gap/mu_n weight — proper bulk suppression, valid at m_f=0.
-  // Output files: _q_B_eps, _q_Bp_mgap, _q_C_bdy, _q_A_mid.
+  // Output file naming: pass --topo_out with a {def} placeholder, e.g.
+  //   --topo_out /path/Top_dnsty_q_{def}_0_smr.702
+  // C++ replaces {def} with A, B, Bp, C to produce the four output files.
+  // q_A, q_B, q_C use sign(mu_n); q_Bp uses m_gap/mu_n (requires --evals).
   if(compute_topo && !evals.empty()){
+    // Lambda: substitute {def} placeholder in topo_out template string.
+    auto fill_def = [](std::string tmpl, const std::string& d) -> std::string {
+      auto pos = tmpl.find("{def}");
+      if(pos != std::string::npos) tmpl.replace(pos, 5, d);
+      return tmpl;
+    };
+
     // Formula B: eps_code(s)-chirality density  [sign(mu_n) weight, bulk form]
     //   q_B(x) = sum_n sign(mu_n) * sum_s eps_code(s) * rho_n(x,s)
-    writeFile(q_eps, topo_out + "_q_B_eps.dat");
-    std::cout << "Wrote q_B   -> " << topo_out << "_q_B_eps.dat"
+    writeFile(q_eps, fill_def(topo_out,"B"));
+    std::cout << "Wrote q_B   -> " << fill_def(topo_out,"B")
               << "  Q_B=" << real(TensorRemove(sum(q_eps))) << std::endl;
 
     // Formula B': m_gap-weighted chirality density  [m_gap/mu_n weight, bulk improved]
     //   q_B'(x) = sum_n (m_gap/mu_n) * sum_s eps_code(s) * rho_n(x,s)
     //   Bulk modes suppressed by m_gap/Lambda_bulk << 1.
     //   Recommended for pointwise comparison with gradient-flowed q^gf(x).
-    writeFile(q_prime, topo_out + "_q_Bp_mgap.dat");
-    std::cout << "Wrote q_B'  -> " << topo_out << "_q_Bp_mgap.dat"
+    writeFile(q_prime, fill_def(topo_out,"Bp"));
+    std::cout << "Wrote q_B'  -> " << fill_def(topo_out,"Bp")
               << "  Q_B'=" << real(TensorRemove(sum(q_prime)))
               << "  (m_gap=" << m_gap << ")" << std::endl;
 
     // Formula C: boundary projection density  [Blum Eq. 8 scalar proxy]
     //   q_C(x) = -sum_n sign(mu_n) * [rho_n(x,Ls-1) - rho_n(x,0)]
-    writeFile(q_bdy, topo_out + "_q_C_bdy.dat");
-    std::cout << "Wrote q_C   -> " << topo_out << "_q_C_bdy.dat"
+    writeFile(q_bdy, fill_def(topo_out,"C"));
+    std::cout << "Wrote q_C   -> " << fill_def(topo_out,"C")
               << "  Q_C=" << real(TensorRemove(sum(q_bdy))) << std::endl;
 
     // Formula A: midpoint density  [Blum Eq. 9 analog]
     //   q_A(x) = -sum_n sign(mu_n) * 0.5 * [rho_n(x,Ls/2) - rho_n(x,Ls/2-1)]
-    writeFile(q_mid, topo_out + "_q_A_mid.dat");
-    std::cout << "Wrote q_A   -> " << topo_out << "_q_A_mid.dat"
+    writeFile(q_mid, fill_def(topo_out,"A"));
+    std::cout << "Wrote q_A   -> " << fill_def(topo_out,"A")
               << "  Q_A=" << real(TensorRemove(sum(q_mid))) << std::endl;
+  }
+  /****** IP & Corr of each fermion TCD definition vs gluonic TCD (--topo_compare) *****/
+  // Requires: --topo_out (so q_eps/q_prime/q_bdy/q_mid are available),
+  //           --files1   (one file per gluonic flow time, e.g. TD_tau=0,4,16),
+  //           --conf_id  (integer config number, written to output for notebook parsing).
+  // Output per line (pure numeric): TD_tau  tau  conf  Corr  IP
+  //   where TD_tau is the index i of files1[i], tau comes from --conf_id context,
+  //   and the label "Topo_PCF: q_X" is printed to stderr for diagnostics only.
+  // q_A, q_B, q_C use sign(mu_n) (Approximation 1).
+  // The 4 output blocks (one per q_def) are labelled by a comment line "# q_X"
+  // so the shell can split them into 4 per-def files via grep.
+  int conf_id = -1;
+  if( GridCmdOptionExists(argv,argv+argc,"--conf_id") ){
+    arg = GridCmdOptionPayload(argv,argv+argc,"--conf_id");
+    GridCmdOptionInt(arg, conf_id);
+  }
+  int topo_compare = GridCmdOptionExists(argv,argv+argc,"--topo_compare");
+  if(compute_topo && !evals.empty() && topo_compare && !data1.empty()){
+    typedef typename PeriodicGimplR::ComplexField ComplexField;
+    // data1[i] = gluonic TCD at flow time index i  (one file per TD_tau)
+    struct QDef { std::string name; LatticeComplexD* field; };
+    std::vector<QDef> qdefs = {{"q_A",&q_mid},{"q_B",&q_eps},{"q_Bp",&q_prime},{"q_C",&q_bdy}};
+    for(auto& qd : qdefs){
+      std::cout << "# " << qd.name << std::endl;  // shell uses this to split output
+      for(int i=0; i<(int)data1.size(); i++){
+        LatticeComplex X(grid), Y(grid), one(grid); one = ComplexField::scalar_type(1.0,0.0);
+        ComplexD avg1 = TensorRemove(sum(data1[i]))/RealD(grid->gSites());
+        ComplexD avg2 = TensorRemove(sum(*qd.field))/RealD(grid->gSites());
+        X = data1[i] - avg1*one;
+        Y = *qd.field  - avg2*one;
+        double corr = TensorRemove(sum(X*Y)).real()/sqrt(norm2(X)*norm2(Y));
+        X = data1[i]; Y = *qd.field;
+        double ip   = TensorRemove(innerProduct(X,Y)).real()/sqrt(norm2(X))/sqrt(norm2(Y));
+        // format: TD_tau_index  conf  corr   (one Corr line + one IP line, matching old format)
+        std::cout << "Topo PCF Corr: " << i << " " << conf_id << " " << corr << std::endl;
+        std::cout << "Topo PCF IP:   " << i << " " << conf_id << " " << ip   << std::endl;
+      }
+    }
   }
   /******************************************************************************/
 
@@ -536,7 +591,6 @@ int main(int argc, char* argv[])
 		filter = Cshift(filter,mu,shift_c[mu]);
 	      //LatticeComplexD tmp2(grid); tmp2 = toComplex(filter);
 	      //std::cout<<"Filtered Sum: " << i <<" "<< real(TensorRemove(sum(data1[i]*filter))) << std::endl;
-	      //0.00010128755 0 0 1048576 0
 	      std::cout<<"Filtered Sum: " << shift_c <<" "<< i <<" "<<real(innerProduct(data1[i],filter))
 		       << " max norm " << std::sqrt(maxLocalNorm2(data2[i]))
 		       <<" avg filter "<<real(sum(filter))/RealD(grid->gSites())
@@ -570,18 +624,6 @@ int main(int argc, char* argv[])
     }
   }
 
-  /****************  Compute Inner Product of 5D Eigen and Gluonic TCD   ************************************/
-
-
-  /*
-    // not for laptop
-  for(auto F: data){
-    for(int xi=0; xi<F.Grid()->gSites()*data.size(); xi++){
-      Coordinate site({xi/(latt_size[1]*latt_size[2]*latt_size[3]),xi/(latt_size[2]*latt_size[3]),xi/latt_size[3],xi%latt_size[3]});
-      data_f << real(TensorRemove(peekSite(F,site))) << std::endl;
-    }
-  }
-  */
   data_f.close();
   Grid_finalize();
 
