@@ -178,29 +178,21 @@ int main(int argc, char **argv) {
     //Plq = coeff * Plq;
 
 
-    RealD WFlow_TC5Li   = WilsonLoops<PeriodicGimplR>::TopologicalCharge5Li(U);
-
     int tau = std::round(t);
 
-    std::string efile = file_pre + "E_dnsty_" + std::to_string(tau) + "_" + file_post;
-    //    writeFile(R,efile);
-
+    std::string efile = file_pre + "E_dnsty_"   + std::to_string(tau) + "_" + file_post;
     std::string tfile = file_pre + "Top_dnsty_" + std::to_string(tau) + "_" + file_post;
-    //    writeFile(qfield,tfile);
+    writeFile(R,      efile);
+    writeFile(qfield, tfile);
 
-    std::string ufile = file_pre + "U_" + std::to_string(tau) + "_" + file_post;
-    {
-      //      PeriodicGimplR::GaugeField Ucopy = U;
-      //      NerscIO::writeConfiguration(Ucopy,ufile);
-    }
-    
     RealD E = real(sum(R))/ RealD(U.Grid()->gSites());
     RealD T = real( sum(qfield) );
     Coordinate scoor; for (int mu=0; mu < Nd; mu++) scoor[mu] = 0;
     RealD E0 = real(peekSite(R,scoor));
     RealD T0 = real(peekSite(qfield,scoor));
+    RealD WFlow_TC5Li = WilsonLoops<PeriodicGimplR>::TopologicalCharge5Li(U);
     std::cout << GridLogMessage << "[WilsonFlow] Saved energy density (clover) & topo. charge density: "  << conf << " " << step << "  " << tau << "  "
-	      << "(E_avg,T_sum) " << E << " " << T << " (E, T at origin) " << E0 << " " << T0 << " Q5Li "<< WFlow_TC5Li << std::endl;
+	      << "(E_avg,T_sum) " << E << " " << T << " (E, T at origin) " << E0 << " " << T0 << " Q5Li " << WFlow_TC5Li << std::endl;
     
   });
   
@@ -209,16 +201,16 @@ int main(int argc, char **argv) {
   //  NerscIO::writeConfiguration(Uflow,filesmr);
   
   
-  RealD WFlow_plaq = WilsonLoops<PeriodicGimplR>::avgPlaquette(Uflow);
-  RealD WFlow_TC   = WilsonLoops<PeriodicGimplR>::TopologicalCharge(Uflow);
-  RealD WFlow_TC5Li   = WilsonLoops<PeriodicGimplR>::TopologicalCharge5Li(Uflow);
-  RealD WFlow_T0   = WF.energyDensityPlaquette(t,Uflow); // t
-  RealD WFlow_EC   = WF.energyDensityCloverleaf(t,Uflow);
-  std::cout << GridLogMessage << "Plaquette            "<< conf << "   " << WFlow_plaq << std::endl;
-  std::cout << GridLogMessage << "T0                   "<< conf << "   " << WFlow_T0 << std::endl;
-  std::cout << GridLogMessage << "TC0                  "<< conf << "   " << WFlow_EC << std::endl;
-  std::cout << GridLogMessage << "TopologicalCharge    "<< conf << "   " << WFlow_TC   << std::endl;
-  std::cout << GridLogMessage << "TopologicalCharge5Li "<< conf << "   " << WFlow_TC5Li<< std::endl;
+  RealD WFlow_plaq  = WilsonLoops<PeriodicGimplR>::avgPlaquette(Uflow);
+  RealD WFlow_TC    = WilsonLoops<PeriodicGimplR>::TopologicalCharge(Uflow);
+  RealD WFlow_TC5Li = WilsonLoops<PeriodicGimplR>::TopologicalCharge5Li(Uflow);
+  RealD WFlow_T0    = WF.energyDensityPlaquette(t,Uflow);
+  RealD WFlow_EC    = WF.energyDensityCloverleaf(t,Uflow);
+  std::cout << GridLogMessage << "Plaquette            "<< conf << "   " << WFlow_plaq  << std::endl;
+  std::cout << GridLogMessage << "T0                   "<< conf << "   " << WFlow_T0    << std::endl;
+  std::cout << GridLogMessage << "TC0                  "<< conf << "   " << WFlow_EC    << std::endl;
+  std::cout << GridLogMessage << "TopologicalCharge    "<< conf << "   " << WFlow_TC    << std::endl;
+  std::cout << GridLogMessage << "TopologicalCharge5Li "<< conf << "   " << WFlow_TC5Li << std::endl;
 
   std::cout<< GridLogMessage << " Admissibility check:\n";
   const double sp_adm = 0.067;                // admissible threshold
