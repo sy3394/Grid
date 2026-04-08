@@ -275,7 +275,7 @@ for dof in smr lat; do
             dfiles+=( $dfile ) #$mfile )
             echo $tau $dof $n
 
-	    if [[ $REGEN == 1 ]] ; then
+	    if [[ $REGEN == 0 ]] ; then
 		F=""
 		for f in `ls $DATA_DIR/${fname}_* | sort -n` ; do F+=$f,; done
 		Fs=${F%?}
@@ -338,7 +338,7 @@ for dof in smr lat; do
             mfile=${HMC}/${fname}_${ext}.avi
             #dfiles+=( $dfile ) #$mfile )
 
-	    if [[ $REGEN == 1 ]] ; then
+	    if [[ $REGEN == 0 ]] ; then
 		F=""
                 for f in `ls $DATA_DIR/${fname}_* | sort -n` ; do F+=$f,; done
                 Fs=${F%?}
@@ -575,7 +575,7 @@ done
 
 #########   INPUT   #################
 CONFS=( 702 7026 70201 70202 70203 70204 70205 703 70301 718 719 )
-regens=( 1   0     0     0     0     0     0    0    0    0   0  )
+regens=( 0   0     0     0     0     0     0    0    0    0   0  )
 ######################################
 
 # Gluonic topological charge density files: ${HMC_DIR}/dnsty/${conf}/${fname}.${tau_MD}
@@ -649,7 +649,7 @@ done
 
 #########   INPUT   #################
 CONFS=( 702 7026 70201 70202 70203 70204 70205 703 70301 718 719 )
-regens=( 1   0     0     0     0     0     0    0    0    0   0  )
+regens=( 0   0     0     0     0     0     0    0    0    0   0  )
 ######################################
 
 DATA_DIR=${HMC_DIR}/snapshots
@@ -876,7 +876,7 @@ for ferm_conf in "${FERM_CONFS[@]}"; do
     dpath=${HMC_DIR}/data/corr_ip_fermion_${ferm_conf}.dat
     dfiles+=( $dfile )
 
-    if [[ $REGEN == 1 ]] ; then
+    if [[ $REGEN == 0 ]] ; then
         >$dpath
         for q_def in q_A_mid q_B_eps q_Bp_mgap q_C_bdy; do
             >foo_ferm
