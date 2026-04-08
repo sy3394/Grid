@@ -34,7 +34,7 @@ directory
 
 int main(int argc, char **argv) {
   using namespace Grid;
-  
+
   Grid_init(&argc, &argv);
   GridLogLayout();
 
@@ -51,145 +51,144 @@ int main(int argc, char **argv) {
   ConfParameters          CPar(Reader);
   ACFParameters           APar(Reader);
 
-  std::string fname;
-  std::string file_path  = WFPar.path;
-  int W = APar.MScut, tau = WFPar.tau; //W: data[t>W] is not used in Madras-Sokal approximation of the error  
-  ComplexD coeff0, coeff1;
-  int total_configs = CPar.EndConfiguration - CPar.StartConfiguration + 1;
-  int T             = total_configs/APar.MDtime_div_fac; // #processed configs per bin
-  int arr_size      = T*APar.MDtime_div_fac;
-  if ( APar.MDtime_div_fac == 1 ) assert( APar.R>0 || W >= 100);
+  const std::string file_path = WFPar.path;
+  const int tau = WFPar.tau;
+  const int W   = APar.MScut;  // Madras-Sokal cutoff: G[t>W] unused in MS error estimate
 
-  ComplexField A0(&Grid), A1(&Grid), avg(&Grid), one(&Grid); one=ComplexField::scalar_type(1.0,0.0);
-  std::vector<ComplexField> F(total_configs,&Grid), G(total_configs,&Grid), G2(total_configs,&Grid);
+  const int total_configs = CPar.EndConfiguration - CPar.StartConfiguration + 1;
+  const int T             = total_configs / APar.MDtime_div_fac;  // configs per bin
+  const int n_bin         = APar.MDtime_div_fac;                  // number of MD-time bins
+  const int arr_size      = T * n_bin;                            // total stored ACF entries
 
-  
+  if (APar.MDtime_div_fac == 1) assert(APar.R > 0 || W >= 100);
+
+  int debug = GridCmdOptionExists(argv, argv+argc, "--debug");
+
+  ComplexField one(&Grid); one = ComplexField::scalar_type(1.0, 0.0);
+  ComplexField A0(&Grid), A1(&Grid), avg(&Grid);
+
+  // F[i]:   raw observable field for configuration i
+  // G[it]:  NVS autocovariance — subtracts ensemble mean <<a>> (a uniform scalar per bin)
+  // G2[it]: NVS autocovariance — subtracts local mean field avg(x) (spatially varying)
+  std::vector<ComplexField> F(total_configs, &Grid);
+  std::vector<ComplexField> G(arr_size, &Grid), G2(arr_size, &Grid);
+
   std::cout << std::setprecision(15);
 
   ////////////////////////
   // Retrieve the fields
   ////////////////////////
-  for (int i=0; i<total_configs; i++) {
+  for (int i = 0; i < total_configs; i++) {
     int conf = CPar.StartConfiguration + i;
-    fname = file_path + WFPar.data_name + "_" + std::to_string(tau) + "_" + CPar.conf_prefix + ".";
-    readFile(F[i], fname + std::to_string(conf));
-#if 1 // DEBUG
-    RealD out = real(sum(F[i]));
-    std::cout << GridLogMessage << "NVS " + WFPar.data_name + " (conf, tau, val):   " << " " << conf << " " << tau << " "
-              << out/Real(Grid.gSites()) << std::endl;
-#endif
+    std::string fname = file_path + WFPar.data_name + "_" + std::to_string(tau)
+                      + "_" + CPar.conf_prefix + "." + std::to_string(conf);
+    readFile(F[i], fname);
+    if (debug) {
+      RealD out = real(sum(F[i]));
+      std::cout << GridLogMessage << "NVS " << WFPar.data_name
+                << " (conf, tau, val): " << conf << " " << tau << " "
+                << out / RealD(Grid.gSites()) << std::endl;
+    }
   }
 
   /////////////////////////////////////////
   // Compute NVS autocovariance function
   /////////////////////////////////////////
-  for (int i_bin=0, it=0; it<arr_size; i_bin++){  
+  // NVS: use the ensemble mean <<a>> as the subtracted mean, rather than the per-config
+  // spatial mean \bar a(x).  Two estimators are computed:
+  //   G[it](x)  = avg over i of  (A(x,i) - <<a>>)(A(x,i+t) - <<a>>)   using scalar <<a>>
+  //   G2[it](x) = avg over i of  (A(x,i) - avg(x))(A(x,i+t) - avg(x)) using field  avg(x)
+  for (int i_bin = 0; i_bin < n_bin; i_bin++) {
 
-    // Compute estimation of ensemble average
+    // Estimate the ensemble mean within this bin
     avg = Zero();
-    for (int t=0 ; t<T; t++) {
-      avg = avg + (1/RealD(T))*F[i_bin*T + t];
+    for (int t = 0; t < T; t++)
+      avg = avg + (1.0 / RealD(T)) * F[i_bin * T + t];
+
+    // Scalar ensemble mean: spatial average of avg(x)
+    ComplexD avg_scalar = TensorRemove(sum(avg)) / RealD(Grid.gSites());
+
+    for (int t = 0; t < T; t++) {
+      int it = i_bin * T + t;
+      G[it] = Zero();  G2[it] = Zero();
+
+      // n_src: number of source times used (full time average or single source)
+      int n_src = APar.isFullTimeAvg ? T - t : 1;
+      for (int i = 0; i < n_src; i++) {
+        A0 = F[i_bin * T + i];
+        A1 = F[i_bin * T + i + t];
+
+        G[it]  = G[it]  + (A0 - avg_scalar * one) * (A1 - avg_scalar * one);
+        G2[it] = G2[it] + (A0 - avg)               * (A1 - avg);
+      }
+
+      G[it]  = (1.0 / RealD(n_src)) * G[it];
+      G2[it] = (1.0 / RealD(n_src)) * G2[it];
     }
-
-    // Compute NVS Auto-COV in two ways (<- corresponds to 2 diff estimation methods)
-    for (int t=0; t<T; t++, it++){
-
-      G[it] = Zero(); G2[it] = Zero();
-      
-      int n_src_configs = APar.isFullTimeAvg ? T-t : 1;
-      for (int i=0; i<n_src_configs; i++){ // if we store G_x(t) in a vector, we can loop over i first and then over t
-	  
-	A0 = F[i_bin*T + i];
-	A1 = F[i_bin*T + i + t];
-	
-	coeff0 = TensorRemove(sum(avg))/RealD(Grid.gSites());
-	// We replace \bar a(x) by << \bar a >>
-	G[it] = G[it] + ( A0 - coeff0*one )*( A1 - coeff0*one );
-	// Use \bar a(x) which is inaccurate est. of <a>
-	G2[it] = G2[it] + ( A0 - avg )*( A1 - avg );
-	}
-
-      G[it] = (1.0/((RealD) n_src_configs)) * G[it]; G2[it] = (1.0/((RealD) n_src_configs)) * G2[it];
-
-#if 0 // DEBUG: Monitor variation of COV
-      Coordinate scoor; for (int mu=0; mu < Nd; mu++) scoor[mu] = 0;
-      RealD Gt0 = real(peekSite(G[it],scoor));
-      ComplexD coeff0 = real(sum(G[it]))/RealD(Grid.gSites());
-      A0 = G[it] - coeff0*one;
-      A0 = A0*A0;
-      std::cout << GridLogMessage << "NVS COV at origin for " + WFPar.data_name + " " << t << " " << Gt0 << " " << real(sum(A0))/RealD(Grid.gSites()) << std::endl;
-#endif
-      
-      }// END: loop within a bin for MD time
-    }// END: loop over bins
+  }
 
   ///////////////////////////
   // Data for Error Estimate
   ///////////////////////////
-  for(const int& bs : APar.space_block_sizes){
-    ///////////////////////////////////////////////////////////////////////////////////////
-    // Apply blocking on autocovariance function fields (block average or sparse sampling) 
-    ///////////////////////////////////////////////////////////////////////////////////////
-    Coordinate clatt_size(Nd);
-    for(int i=0;i<Nd;i++) clatt_size[i] = Grid.FullDimensions()[i]/bs;
-    GridCartesian Coarse(clatt_size,simd_layout,mpi_layout);
-    
-    // block averaging
-    std::vector<ComplexField> G_B(arr_size,&Coarse), G2_B(arr_size,&Coarse);
-    for (int i=0; i<arr_size; i++){
-      blockSum(G_B[i],G[i]);
-      G_B[i] = (1.0/RealD(std::pow(bs,Nd)))*G_B[i];
-      blockSum(G2_B[i],G2[i]);
-      G2_B[i] = (1.0/RealD(std::pow(bs,Nd)))*G2_B[i];
-    }
-    
-    // sparse sampling
-    std::vector<ComplexField> G_s(arr_size,&Coarse), G2_s(arr_size,&Coarse);
-    for (int i=0; i<arr_size; i++){
-      
-    LatticeInteger coor(&Grid);
-    ComplexField tmp(&Grid), filter(&Grid), zero(&Grid); filter = one; zero = Zero();
-    for (int d=0; d<Nd; d++) {
-      LatticeCoordinate(coor,d);
-      filter = where(mod(coor,bs)==Integer(0),filter,zero);
-    }
-    tmp = filter*G[i]; blockSum(G_s[i],tmp);
-    tmp = filter*G2[i]; blockSum(G2_s[i],tmp);
-    }
-    
-    /***********   Generate data  ************************************************
-      No Binning => Use Madras-Sokal approximation for error estimation
-      Otherwise  => error estimate via sample variance by binning over MD time
-    ******************************************************************************/
-    // TODO: add MF estimate (c.f. VS file)
-    int n_bin = total_configs/T;
-    if ( total_configs == T ){
-      // Madras-Sokal Approximation
-      //   Valid: when t << T
-      assert( APar.R>0 || T >= W );
-      MS_approx(&Coarse, G_B, T, W, bs, tau, "Blocked " + WFPar.data_name + " ACC", "NVS");
-      MS_approx(&Coarse, G_s, T, W, bs, tau, "Sparsed " + WFPar.data_name + " ACC", "NVS");
-      
-      MS_approx(&Coarse, G2_B, T, W, bs, tau, "Blocked " + WFPar.data_name + " ACC2", "NVS");
-      MS_approx(&Coarse, G2_s, T, W, bs, tau, "Sparsed " + WFPar.data_name + " ACC2", "NVS");
-    }
-    else {
-      // Binning
-      binning(&Coarse, G_B, T, n_bin, bs, tau, "Blocked " + WFPar.data_name + " ACC", "NVS");
-      binning(&Coarse, G_s, T, n_bin, bs, tau, "Sparsed " + WFPar.data_name + " ACC", "NVS");
-      
-      binning2(&Coarse, G_B, T, n_bin, bs, tau, "Blocked " + WFPar.data_name + " ACC", "NVS");
-      binning2(&Coarse, G_s, T, n_bin, bs, tau, "Sparsed " + WFPar.data_name + " ACC", "NVS");
+  for (const int& bs : APar.space_block_sizes) {
 
-      
-      binning(&Coarse, G2_B, T, n_bin, bs, tau, "Blocked " + WFPar.data_name + " ACC2", "NVS");
-      binning(&Coarse, G2_s, T, n_bin, bs, tau, "Sparsed " + WFPar.data_name + " ACC2", "NVS");
-      
-      binning2(&Coarse, G2_B, T, n_bin, bs, tau, "Blocked " + WFPar.data_name + " ACC2", "NVS");
-      binning2(&Coarse, G2_s, T, n_bin, bs, tau, "Sparsed " + WFPar.data_name + " ACC2", "NVS");
+    // Build coarsened lattice with block size bs in all directions
+    Coordinate clatt_size(Nd);
+    for (int i = 0; i < Nd; i++) clatt_size[i] = Grid.FullDimensions()[i] / bs;
+    GridCartesian Coarse(clatt_size, simd_layout, mpi_layout);
+
+    ////////////////////// Block averaging //////////////////////
+    std::vector<ComplexField> G_B(arr_size, &Coarse), G2_B(arr_size, &Coarse);
+    for (int i = 0; i < arr_size; i++) {
+      blockSum(G_B[i],  G[i]);   G_B[i]  = (1.0 / RealD(std::pow(bs, Nd))) * G_B[i];
+      blockSum(G2_B[i], G2[i]);  G2_B[i] = (1.0 / RealD(std::pow(bs, Nd))) * G2_B[i];
+    }
+
+    ////////////////////// Sparse sampling //////////////////////
+    // Retain only sites where every coordinate is a multiple of bs
+    std::vector<ComplexField> G_s(arr_size, &Coarse), G2_s(arr_size, &Coarse);
+    {
+      LatticeInteger coor(&Grid);
+      ComplexField filter(&Grid), zero(&Grid); filter = one; zero = Zero();
+      for (int d = 0; d < Nd; d++) {
+        LatticeCoordinate(coor, d);
+        filter = where(mod(coor, bs) == Integer(0), filter, zero);
+      }
+      ComplexField tmp(&Grid);
+      for (int i = 0; i < arr_size; i++) {
+        tmp = filter * G[i];   blockSum(G_s[i],  tmp);
+        tmp = filter * G2[i];  blockSum(G2_s[i], tmp);
+      }
+    }
+
+    /***********   Error estimation  *************************************
+      No binning  => Madras-Sokal approximation (valid when t << T)
+      With binning => sample variance over MD-time bins
+    *********************************************************************/
+    std::string tag  = WFPar.data_name + " ACC";
+    std::string tag2 = WFPar.data_name + " ACC2";
+
+    if (total_configs == T) {
+      // Madras-Sokal approximation
+      assert(APar.R > 0 || T >= W);
+      MS_approx(&Coarse, G_B,  T, W, bs, tau, "Blocked " + tag,  "NVS");
+      MS_approx(&Coarse, G_s,  T, W, bs, tau, "Sparsed " + tag,  "NVS");
+      MS_approx(&Coarse, G2_B, T, W, bs, tau, "Blocked " + tag2, "NVS");
+      MS_approx(&Coarse, G2_s, T, W, bs, tau, "Sparsed " + tag2, "NVS");
+    } else {
+      // Binning over MD-time bins
+      binning( &Coarse, G_B,  T, n_bin, bs, tau, "Blocked " + tag,  "NVS");
+      binning( &Coarse, G_s,  T, n_bin, bs, tau, "Sparsed " + tag,  "NVS");
+      binning2(&Coarse, G_B,  T, n_bin, bs, tau, "Blocked " + tag,  "NVS");
+      binning2(&Coarse, G_s,  T, n_bin, bs, tau, "Sparsed " + tag,  "NVS");
+
+      binning( &Coarse, G2_B, T, n_bin, bs, tau, "Blocked " + tag2, "NVS");
+      binning( &Coarse, G2_s, T, n_bin, bs, tau, "Sparsed " + tag2, "NVS");
+      binning2(&Coarse, G2_B, T, n_bin, bs, tau, "Blocked " + tag2, "NVS");
+      binning2(&Coarse, G2_s, T, n_bin, bs, tau, "Sparsed " + tag2, "NVS");
     }
   }
-  
+
   Grid_finalize();
 }  // main
 
