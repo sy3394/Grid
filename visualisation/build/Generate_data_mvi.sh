@@ -286,11 +286,14 @@ fi
 
 
 ###########   INPUT   ###########################
-TRAJ_CONFS=( 702 719 71902 )
+CONFS=(  702  719  71902 )
+REGENS=(   1    1      1 )   # set 0 to skip a config
 NCUT=4
 #################################################
 
-for conf in "${TRAJ_CONFS[@]}"; do
+for i_conf in "${!CONFS[@]}"; do
+    conf=${CONFS[$i_conf]}
+    REGEN=${REGENS[$i_conf]}
 
 DATA_DIR=${HMC_DIR}/eigen/${conf}
 
