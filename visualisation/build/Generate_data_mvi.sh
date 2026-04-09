@@ -195,7 +195,7 @@ done
 #       Without it q_Bp silently falls back to sign(mu_n) = same as q_B.
 #
 # --comp_file (optional): qlat stochastic DWF TCD reference fields (SCIDAC).
-#   Located in COMP_DIR/<conf>/topo_field_<idx>.scidac (converted by pickle_to_scidac.ipynb).
+#   Located in visualisation/data/topo_field_<idx>.scidac (converted by pickle_to_scidac.ipynb).
 #   If present, each is compared against q_A/B/Bp/C; results go to data/comp_ref_<def>.dat.
 #   Format: comp_idx  conf  Q_evec  Q_ref  Corr  IP  rms_diff
 ########################################################################################################################
@@ -205,7 +205,7 @@ CONFS=( $(seq -f "%03g" $((CONF_S)) 1 $CONF_F) )  # default: full ensemble
 ###########################################################
 
 DATA_DIR_dnsty=${HMC_DIR}/dnsty
-COMP_DIR=${HMC_DIR}/comp_fields   # qlat reference SCIDAC files: <conf>/topo_field_<idx>.scidac
+COMP_DIR=$(cd "$(dirname "$0")/.." && pwd)/data   # qlat reference SCIDAC files: visualisation/data/topo_field_<idx>.scidac
 
 # Output IP/corr files — pure numeric, no string columns
 for q_def in q_A q_B q_Bp q_C; do
@@ -252,7 +252,7 @@ if [[ $REGEN == 1 ]] ; then
             comp_opt=""
             comp_files=""
             for idx in 0 1; do
-                f=${COMP_DIR}/${conf}/topo_field_${idx}.scidac
+                f=${COMP_DIR}/topo_field_${idx}.scidac
                 [[ -f $f ]] && comp_files+=$f,
             done
             comp_files=${comp_files%?}   # strip trailing comma
@@ -303,7 +303,7 @@ if [[ $REGEN == 1 ]] ; then
             ### Comp panels appended when qlat reference files exist for this conf
             Fs_all=${pfx}_A_${tau}_smr.${conf},${pfx}_B_${tau}_smr.${conf},${pfx}_Bp_${tau}_smr.${conf},${pfx}_C_${tau}_smr.${conf}
             for idx in 0 1; do
-                f=${COMP_DIR}/${conf}/topo_field_${idx}.scidac
+                f=${COMP_DIR}/topo_field_${idx}.scidac
                 [[ -f $f ]] && Fs_all+=,$f
             done
             mpeg_all=${HMC_DIR}/Top_dnsty_all_defs_${conf}_tau${tau}.avi
