@@ -569,6 +569,80 @@ int main(int argc, char* argv[])
       }
     }
   }
+  /****** Compare fermion TCD definitions vs qlat reference field (--comp_file) ****/
+  // --comp_file <file>[,<file2>]
+  //   SCIDAC file(s) from qlat containing the reference TCD (typically the
+  //   stochastic DWF midpoint estimator, i.e. the q_A analog, from
+  //   f_tadpole_loop.field written by 32c-hmc-test-gen.ipynb).
+  //   Multiple comma-separated files are averaged before comparison.
+  //   Prints for each fermion TCD definition:
+  //     Q_evec, Q_ref, Corr(evec,ref), IP(evec,ref), rms_diff
+  if(compute_topo && !evals.empty() && GridCmdOptionExists(argv,argv+argc,"--comp_file")){
+    arg = GridCmdOptionPayload(argv,argv+argc,"--comp_file");
+    std::vector<std::string> comp_fnames;
+    GridCmdOptionCSL(arg, comp_fnames);
+
+    // Load and average all provided reference files
+    LatticeComplexD ref_field(grid); ref_field = Zero();
+    for(const auto& fn : comp_fnames){
+      LatticeComplexD tmp(grid);
+      readFile(tmp, fn);
+      std::cout << GridLogMessage << "--comp_file " << fn
+                << "  Q=" << real(TensorRemove(sum(tmp))) << std::endl;
+      ref_field = ref_field + tmp;
+    }
+    if(comp_fnames.size() > 1)
+      ref_field = (1.0/RealD(comp_fnames.size())) * ref_field;
+
+    double Q_ref = real(TensorRemove(sum(ref_field)));
+    std::cout << GridLogMessage << "comp_file Q (avg) = " << Q_ref << std::endl;
+
+    typedef typename PeriodicGimplR::ComplexField ComplexField;
+    LatticeComplexD one(grid); one = ComplexField::scalar_type(1.0, 0.0);
+    ComplexD avg_ref = TensorRemove(sum(ref_field)) / RealD(grid->gSites());
+
+    struct QDef { std::string name; LatticeComplexD* field; };
+    std::vector<QDef> qdefs = {{"q_A",&q_mid},{"q_B",&q_eps},{"q_Bp",&q_prime},{"q_C",&q_bdy}};
+
+    std::cout << GridLogMessage
+              << std::left  << std::setw(6)  << "def"
+              << std::right << std::setw(14) << "Q_evec"
+                            << std::setw(14) << "Q_ref"
+                            << std::setw(14) << "Corr"
+                            << std::setw(14) << "IP"
+                            << std::setw(14) << "rms_diff" << std::endl;
+
+    for(auto& qd : qdefs){
+      double   Q_evec   = real(TensorRemove(sum(*qd.field)));
+      ComplexD avg_evec = TensorRemove(sum(*qd.field)) / RealD(grid->gSites());
+
+      // Pearson correlation coefficient (mean-subtracted)
+      LatticeComplexD X(grid), Y(grid);
+      X = *qd.field - avg_evec * one;
+      Y = ref_field - avg_ref  * one;
+      double corr = real(TensorRemove(sum(X*Y))) / std::sqrt(norm2(X) * norm2(Y));
+
+      // Normalised inner product
+      X = *qd.field;  Y = ref_field;
+      double ip = real(TensorRemove(innerProduct(X,Y))) / std::sqrt(norm2(X)) / std::sqrt(norm2(Y));
+
+      // RMS pointwise difference
+      LatticeComplexD diff(grid); diff = *qd.field - ref_field;
+      double rms_diff = std::sqrt(norm2(diff) / RealD(grid->gSites()));
+
+      std::cout << GridLogMessage
+                << std::left  << std::setw(6)  << qd.name
+                << std::right << std::setw(14) << Q_evec
+                              << std::setw(14) << Q_ref
+                              << std::setw(14) << corr
+                              << std::setw(14) << ip
+                              << std::setw(14) << rms_diff << std::endl;
+
+      // Machine-readable line for shell/notebook parsing: "CompRef: def conf Q_evec Q_ref Corr IP rms_diff"
+      std::cout << "CompRef: " << qd.name << " " << conf_id << " "
+                << Q_evec << " " << Q_ref << " " << corr << " " << ip << " " << rms_diff << std::endl;
+    }
+  }
   /******************************************************************************/
 
   /****************   Filter Gluonic TCD by Fermionic Chiral Eigen Modes  ******/

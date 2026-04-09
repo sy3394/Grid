@@ -120,3 +120,5 @@ gh-pages/
 Grid/qcd/spin/gamma-gen/*.h
 Grid/qcd/spin/gamma-gen/*.cc
 Grid/util/Version.h
+systems/personal_mac/
+visualisation/data/
