@@ -298,9 +298,14 @@ if [[ $REGEN == 1 ]] ; then
                 dfiles+=( ${HMC}/eigen/${conf}/Top_dnsty_q_${q_def}_${tau}_smr.${conf} )
             done
 
-            ### Step 3: 4-panel T-animated movie (FieldDensityAnimateMultiFiles --animate T)
-            ### fc = data.size() = 4 => viewports tile horizontally, window 4096x1024
+            ### Step 3: T-animated movie (FieldDensityAnimateMultiFiles --animate T)
+            ### Base panels: q_A | q_B | q_Bp | q_C
+            ### Comp panels appended when qlat reference files exist for this conf
             Fs_all=${pfx}_A_${tau}_smr.${conf},${pfx}_B_${tau}_smr.${conf},${pfx}_Bp_${tau}_smr.${conf},${pfx}_C_${tau}_smr.${conf}
+            for idx in 0 1; do
+                f=${COMP_DIR}/${conf}/topo_field_${idx}.scidac
+                [[ -f $f ]] && Fs_all+=,$f
+            done
             mpeg_all=${HMC_DIR}/Top_dnsty_all_defs_${conf}_tau${tau}.avi
             if [[ -f ${pfx}_A_${tau}_smr.${conf} ]]; then
                 ${CDIR}/FieldDensityAnimateMultiFiles --files $Fs_all --grid $vol --animate T \
