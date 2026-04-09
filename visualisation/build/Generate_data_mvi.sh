@@ -193,6 +193,11 @@ done
 #
 # NOTE: EVALS_FILE is required for proper q_Bp (m_gap/mu_n weight).
 #       Without it q_Bp silently falls back to sign(mu_n) = same as q_B.
+#
+# --comp_file (optional): qlat stochastic DWF TCD reference fields (SCIDAC).
+#   Located in COMP_DIR/<conf>/topo_field_<idx>.scidac (converted by pickle_to_scidac.ipynb).
+#   If present, each is compared against q_A/B/Bp/C; results go to data/comp_ref_<def>.dat.
+#   Format: comp_idx  conf  Q_evec  Q_ref  Corr  IP  rms_diff
 ########################################################################################################################
 
 ##########   INPUT   ######################################
@@ -200,11 +205,17 @@ CONFS=( $(seq -f "%03g" $((CONF_S)) 1 $CONF_F) )  # default: full ensemble
 ###########################################################
 
 DATA_DIR_dnsty=${HMC_DIR}/dnsty
+COMP_DIR=${HMC_DIR}/comp_fields   # qlat reference SCIDAC files: <conf>/topo_field_<idx>.scidac
 
 # Output IP/corr files — pure numeric, no string columns
 for q_def in q_A q_B q_Bp q_C; do
     >${HMC_DIR}/data/corr_ip_${q_def}.dat
     dfiles+=( ${HMC}/data/corr_ip_${q_def}.dat )
+done
+
+# Output comp-ref files (created only when --comp_file fires for at least one conf)
+for q_def in q_A q_B q_Bp q_C; do
+    >${HMC_DIR}/data/comp_ref_${q_def}.dat
 done
 
 if [[ $REGEN == 1 ]] ; then
@@ -237,18 +248,30 @@ if [[ $REGEN == 1 ]] ; then
             eval_opt=""
             [[ -f "$EVALS_FILE" ]] && eval_opt="--evals $EVALS_FILE"
 
+            ### qlat reference SCIDAC files for this conf (optional)
+            comp_opt=""
+            comp_files=""
+            for idx in 0 1; do
+                f=${COMP_DIR}/${conf}/topo_field_${idx}.scidac
+                [[ -f $f ]] && comp_files+=$f,
+            done
+            comp_files=${comp_files%?}   # strip trailing comma
+            [[ -n "$comp_files" ]] && comp_opt="--comp_file $comp_files"
+
             ### Steps 1+2: compute topo fields + IP/corr vs gluonic TCD in one call
             ### --topo_out template: C++ substitutes {def} with A, B, Bp, C
-            ### Output lines starting with "Topo PCF" go to per-def files via label split
+            ### --comp_file (if present): compares each qlat field vs q_A/B/Bp/C
+            ### Output lines starting with "Topo PCF" and "CompRef" parsed below
             scratch=${HMC_DIR}/tmp_topo_pcf_${conf}_${tau}
             ${CDIR}/FieldDensityEigen \
                 --files2 $F2s --Ls 48 $eval_opt \
                 --topo_out ${DATA_DIR_topo}/Top_dnsty_q_{def}_${tau}_smr.${conf} \
                 --files1 $F1s --topo_compare --conf_id $conf \
+                $comp_opt \
                 > $scratch
 
             # Split PCF output into 4 per-def files
-            # Each block is preceded by "# q_X"; lines are "Topo PCF Corr: TD_i conf val"
+            # Each block is preceded by "# q_X"; lines are "Topo PCF Corr/IP: TD_i conf val"
             # Reformat to: TD_tau  tau  conf  value  (matching notebook MultiIndex schema)
             for q_def in q_A q_B q_Bp q_C; do
                 awk -v q=$q_def -v tau=$tau -v tds="0 4 16" '
@@ -257,6 +280,16 @@ if [[ $REGEN == 1 ]] ; then
                     active && /^Topo PCF IP:/   { split(tds,td," "); print td[$3+1], tau, $4, $5 }
                 ' $scratch >> ${HMC_DIR}/data/corr_ip_${q_def}.dat
             done
+
+            # Parse CompRef lines (present only when --comp_file fired)
+            # Line format: "CompRef: def comp_idx conf Q_evec Q_ref Corr IP rms_diff"
+            # Output: comp_idx  tau  conf  Q_evec  Q_ref  Corr  IP  rms_diff
+            for q_def in q_A q_B q_Bp q_C; do
+                awk -v q=$q_def -v tau=$tau '
+                    /^CompRef:/ && $2==q { print $3, tau, $4, $5, $6, $7, $8, $9 }
+                ' $scratch >> ${HMC_DIR}/data/comp_ref_${q_def}.dat
+            done
+
             rm -f $scratch
 
             # Register topo density files for archiving
