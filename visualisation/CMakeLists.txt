@@ -28,23 +28,34 @@ if (NOT VTK_FOUND)
 endif()
 
 # HDF5 (C library only — C++ bindings may be absent on some systems).
-# CMake's find_package may not locate it on Cray PE; fall back to env vars
-# set by "module load cray-hdf5" (CRAY_HDF5_DIR, HDF5_DIR, HDF5_ROOT).
+# Try CMake's finder first; if it fails fall back to env vars and then to
+# the known Frontier spack path baked into Grid's configure summary.
 find_package(HDF5 COMPONENTS C QUIET)
 if (HDF5_FOUND)
   include_directories(${HDF5_INCLUDE_DIRS})
   message(STATUS "HDF5 found via CMake: ${HDF5_INCLUDE_DIRS}")
 else()
+  set(_hdf5_inc "")
+  # Env vars set by "module load cray-hdf5" or spack
   foreach(_hdf5_env CRAY_HDF5_DIR HDF5_DIR HDF5_ROOT)
-    if (DEFINED ENV{${_hdf5_env}})
+    if (DEFINED ENV{${_hdf5_env}} AND EXISTS "$ENV{${_hdf5_env}}/include/hdf5.h")
       set(_hdf5_inc "$ENV{${_hdf5_env}}/include")
-      if (EXISTS "${_hdf5_inc}/hdf5.h")
-        include_directories(${_hdf5_inc})
-        message(STATUS "HDF5 include from env ${_hdf5_env}: ${_hdf5_inc}")
-        break()
-      endif()
+      break()
     endif()
   endforeach()
+  # Frontier spack fallback (from Grid's configure summary)
+  if (NOT _hdf5_inc)
+    set(_frontier_hdf5 "/autofs/nccs-svm1_home2/syamamoto/src/spack/opt/spack/linux-zen3/hdf5-1.14.6-zjapmrieixabrttqp6zmixtwzuxymign/include")
+    if (EXISTS "${_frontier_hdf5}/hdf5.h")
+      set(_hdf5_inc "${_frontier_hdf5}")
+    endif()
+  endif()
+  if (_hdf5_inc)
+    include_directories(${_hdf5_inc})
+    message(STATUS "HDF5 include: ${_hdf5_inc}")
+  else()
+    message(WARNING "HDF5 not found — HDF5 read path will be disabled")
+  endif()
 endif()
 
 
