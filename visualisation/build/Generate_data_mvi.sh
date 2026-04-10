@@ -201,7 +201,10 @@ done
 ########################################################################################################################
 
 ##########   INPUT   ######################################
-CONFS=( $(seq -f "%03g" $((CONF_S)) 1 $CONF_F) )  # default: full ensemble
+CONFS=(    700  701  702  703  704  705  706  707  708  709 )
+REGENS_25=(  0    0    1    0    0    0    0    0    0    0 )  # 1=run, 0=skip
+# 702: has comp_file data (topo_field_*.scidac) and correctly ordered evec files.
+# Add more confs here as data becomes available.
 ###########################################################
 
 DATA_DIR_dnsty=${HMC_DIR}/dnsty
@@ -213,13 +216,16 @@ for q_def in q_A q_B q_Bp q_C; do
     dfiles+=( ${HMC}/data/corr_ip_${q_def}.dat )
 done
 
-# Output comp-ref files (created only when --comp_file fires for at least one conf)
+# Output comp-ref files — appended each run; to reset: rm ${HMC_DIR}/data/comp_ref_*.dat
+# Format: comp_idx  tau  conf  Q_evec  Q_ref  Corr  IP  rms_diff
 for q_def in q_A q_B q_Bp q_C; do
-    >${HMC_DIR}/data/comp_ref_${q_def}.dat
+    touch ${HMC_DIR}/data/comp_ref_${q_def}.dat
 done
 
-if [[ $REGEN == 1 ]] ; then
-    for conf in "${CONFS[@]}"; do
+for i_conf in "${!CONFS[@]}"; do
+    conf=${CONFS[$i_conf]}
+    REGEN=${REGENS_25[$i_conf]}
+    if [[ $REGEN == 1 ]] ; then
 
         DATA_DIR_eigen=${HMC_DIR}/eigen/${conf}
         DATA_DIR_topo=${HMC_DIR}/eigen/${conf}   # Top_dnsty_q_X_<tau>_smr.<conf> lives here
@@ -248,7 +254,7 @@ if [[ $REGEN == 1 ]] ; then
             eval_opt=""
             [[ -f "$EVALS_FILE" ]] && eval_opt="--evals $EVALS_FILE"
 
-            ### qlat reference SCIDAC files for this conf (optional)
+            ### qlat reference SCIDAC files (optional; requires comp_file data + ordered evecs)
             comp_opt=""
             comp_files=""
             for idx in 0 1; do
@@ -313,9 +319,9 @@ if [[ $REGEN == 1 ]] ; then
                        --mpeg $mpeg_all --isosurface -0.01
             fi
 
-        done
-    done
-fi
+        done   # tau
+    fi     # REGEN
+done       # i_conf
 
 
 ########################################################################################################################
