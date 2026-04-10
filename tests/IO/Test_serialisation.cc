@@ -328,7 +328,7 @@ int main(int argc,char **argv)
   //  ioTest<JSONWriter, JSONReader>("iotest.json", vec,  "JSON   (vector of objects)");
 
   //// HDF5
-#ifdef HAVE_HDF5
+#ifdef HAVE_HDF5_CXX
   ioTest<Hdf5Writer, Hdf5Reader>("iotest.h5", obj, "HDF5   (object)           ");
   ioTest<Hdf5Writer, Hdf5Reader>("iotest.h5", vec, "HDF5   (vector of objects)");
   std::cout << "\n==== detailed Hdf5 tensor tests (Grid::EigenIO)" << std::endl;

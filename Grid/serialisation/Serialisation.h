@@ -44,6 +44,7 @@ Author: Peter Boyle <paboyle@ph.ed.ac.uk>
 // Hdf5IO.h requires the HDF5 C++ bindings (H5Cpp.h).
 // Spack builds often ship only the C library; skip gracefully.
 #if __has_include(<H5Cpp.h>)
+#define HAVE_HDF5_CXX
 #include "Hdf5IO.h"
 #endif
 #endif

@@ -137,7 +137,7 @@ int main(int argc, char *argv[])
   std::cout << GridLogMessage << "Alash(phi,phi) created, execution time " << stop-start << " us" << std::endl;
   
   std::string FileName = "Meson_Fields";
-#ifdef HAVE_HDF5
+#ifdef HAVE_HDF5_CXX
   using Default_Reader = Grid::Hdf5Reader;
   using Default_Writer = Grid::Hdf5Writer;
   FileName.append(".h5");
