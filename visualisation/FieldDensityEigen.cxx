@@ -38,6 +38,9 @@
 #include <sstream>
 
 #include <Grid/Grid.h>
+#if defined(HAVE_HDF5)
+#include <hdf5.h>
+#endif
 
 int mpeg = 0 ;
 int Ls = -1;
@@ -48,18 +51,21 @@ int dynm_dir = 3;
 std::vector<std::string> dynm_labels = {"X", "Y", "Z", "T", "tau"};
 
 // HDF5 reader: dataset "field" shape (Nsites,2) float64, Grid lex order (x fastest)
+// Uses the HDF5 C API (hdf5.h) — works even when C++ bindings (H5Cpp.h) are absent.
 template <class T> void readFileHDF5(T& out, std::string const fname){
-#ifdef HAVE_HDF5
+#if defined(HAVE_HDF5)
   typedef typename T::vector_object vobj;
   typedef typename vobj::scalar_object sobj;
   GridBase *grid   = out.Grid();
   int64_t   Nsites = grid->_gsites;
 
-  H5NS::H5File  file(fname, H5F_ACC_RDONLY);
-  H5NS::DataSet ds   = file.openDataSet("field");
+  hid_t fid = H5Fopen(fname.c_str(), H5F_ACC_RDONLY, H5P_DEFAULT); assert(fid >= 0);
+  hid_t did = H5Dopen2(fid, "field", H5P_DEFAULT);                  assert(did >= 0);
 
   std::vector<double> buf(2 * Nsites);
-  ds.read(buf.data(), H5NS::PredType::NATIVE_DOUBLE);
+  herr_t err = H5Dread(did, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, buf.data());
+  assert(err >= 0);
+  H5Dclose(did); H5Fclose(fid);
 
   std::vector<sobj> lexbuf(Nsites);
   for(int64_t i = 0; i < Nsites; i++)
