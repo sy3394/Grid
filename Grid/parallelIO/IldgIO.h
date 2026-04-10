@@ -225,8 +225,8 @@ class GridLimeReader : public BinaryIO {
 
       uint64_t file_bytes =limeReaderBytes(LimeR);
 
-      std::cout << GridLogMessage << "LIME record: " << limeReaderType(LimeR)
-                << "  " << file_bytes << " bytes  seeking: " << record_name << std::endl;
+//    std::cout << GridLogMessage << "LIME record: " << limeReaderType(LimeR)
+//              << "  " << file_bytes << " bytes  seeking: " << record_name << std::endl;
 
       if ( !strncmp(limeReaderType(LimeR), record_name.c_str(),strlen(record_name.c_str()) )  ) {
 
@@ -234,10 +234,10 @@ class GridLimeReader : public BinaryIO {
 
 	uint64_t PayloadSize = sizeof(sobj) * field.Grid()->_gsites;
 
-	std::cout << GridLogMessage << "R sizeof(sobj)=" << sizeof(sobj)
-	          << "  Gsites=" << field.Grid()->_gsites
-	          << "  PayloadExpected=" << PayloadSize
-	          << "  file_bytes=" << file_bytes << std::endl;
+//	std::cout << GridLogMessage << "R sizeof(sobj)=" << sizeof(sobj)
+//	          << "  Gsites=" << field.Grid()->_gsites
+//	          << "  PayloadExpected=" << PayloadSize
+//	          << "  file_bytes=" << file_bytes << std::endl;
 
 	assert(PayloadSize == file_bytes);// Must match or user error
 
