@@ -1,6 +1,12 @@
 CLIME=`spack find --paths c-lime@2-3-9 | grep c-lime| cut -c 15-`
+#HDF5=`spack find --paths hdf5%gcc@14.2.0 | grep hdf5 | cut -c 14-`
+export HDF5=$(spack location -i hdf5%gcc@14.2.0)
+ls $HDF5/lib* 
+
+echo $HDF5
 ../../configure --enable-comms=mpi-auto \
 --with-lime=$CLIME \
+--with-hdf5=$HDF5 \
 --enable-unified=no \
 --enable-shm=nvlink \
 --enable-tracing=none \
@@ -19,4 +25,4 @@ CXXFLAGS="-fPIC -I${ROCM_PATH}/include/ -I${MPICH_DIR}/include -L/lib64 " \
 
 
 
-
+#

@@ -325,7 +325,7 @@ fi
 
 ###########   INPUT   ###########################
 CONFS=(  702  719  71902 )
-REGENS=(   1    1      1 )   # set 0 to skip a config
+REGENS=(   0    1      1 )   # set 0 to skip a config
 NCUT=4
 #################################################
 
