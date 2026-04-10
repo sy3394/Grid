@@ -27,6 +27,12 @@ if (NOT VTK_FOUND)
   message(FATAL_ERROR "GridViewer: Unable to find the VTK build folder.")
 endif()
 
+# HDF5 (C library only — C++ bindings may be absent on some systems)
+find_package(HDF5 COMPONENTS C)
+if (HDF5_FOUND)
+  include_directories(${HDF5_INCLUDE_DIRS})
+endif()
+
 
 # Prevent a "command line is too long" failure in Windows.
 set(CMAKE_NINJA_FORCE_RESPONSE_FILE "ON" CACHE BOOL "Force Ninja to use response files.")
