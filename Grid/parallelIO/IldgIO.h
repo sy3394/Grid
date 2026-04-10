@@ -225,8 +225,10 @@ class GridLimeReader : public BinaryIO {
 
       uint64_t file_bytes =limeReaderBytes(LimeR);
 
-      std::cerr << "LIME record: " << limeReaderType(LimeR) << "  " << file_bytes << " bytes" << std::endl;
-      std::cerr << "LIME seeking: " << record_name << std::endl;
+      { FILE *_dbg=fopen("scidac_debug.txt","a");
+        fprintf(_dbg,"LIME record: %s  %llu bytes  seeking: %s\n",
+                limeReaderType(LimeR),(unsigned long long)file_bytes,record_name.c_str());
+        fclose(_dbg); }
 
       if ( !strncmp(limeReaderType(LimeR), record_name.c_str(),strlen(record_name.c_str()) )  ) {
 
@@ -234,10 +236,11 @@ class GridLimeReader : public BinaryIO {
 
 	uint64_t PayloadSize = sizeof(sobj) * field.Grid()->_gsites;
 
-	std::cerr << "R sizeof(sobj)= " <<sizeof(sobj)<<std::endl;
-	std::cerr << "R Gsites " <<field.Grid()->_gsites<<std::endl;
-	std::cerr << "R Payload expected " <<PayloadSize<<std::endl;
-	std::cerr << "R file size " <<file_bytes <<std::endl;
+	{ FILE *_dbg=fopen("scidac_debug.txt","a");
+	  fprintf(_dbg,"R sizeof(sobj)=%zu  Gsites=%lld  PayloadSize=%llu  file_bytes=%llu\n",
+	          sizeof(sobj),(long long)field.Grid()->_gsites,
+	          (unsigned long long)PayloadSize,(unsigned long long)file_bytes);
+	  fclose(_dbg); }
 
 	assert(PayloadSize == file_bytes);// Must match or user error
 
