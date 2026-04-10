@@ -456,31 +456,34 @@ int main(int argc, char** argv) {
           chi_B = chi_B + sl;   // accumulate sum_s eps_code(s)*rho_n(x,s)
         }
       }
-      // Formula B:  q_B(x)  += sign(mu_n) * chi_B(x)
-      q_B_4D  = q_B_4D  + sign_mu * chi_B;
-      // Formula B': q_B'(x) += (m_gap/mu_n) * chi_B(x)   [proper bulk suppression]
-      q_Bp_4D = q_Bp_4D + w_Bp    * chi_B;
+      // Formula B:  q_B(x)  += -sign(mu_n) * chi_B(x)
+      // Minus sign needed because chi_B = sum_s eps(s)*rho_n is opposite in sign
+      // to the conventional topological charge density for this eps/wall convention.
+      q_B_4D  = q_B_4D  - sign_mu * chi_B;
+      // Formula B': q_B'(x) += -(m_gap/mu_n) * chi_B(x)  [proper bulk suppression]
+      q_Bp_4D = q_Bp_4D - w_Bp    * chi_B;
 
       // 5D scalar density rho_n(x,s) = |psi_n(x,s)|^2 (no eps_code factor)
       LatticeComplexD rho5D = localInnerProduct(finalevec[i], finalevec[i]);
 
-      // Formula C: q_C(x) += sign(mu_n) * [rho_n(x,Ls-1) - rho_n(x,0)]
-      // Standard DWF boundary formula: positive for right-handed zero modes (mu_n>0)
-      // living on right wall (s=Ls-1), same sign as q_B.
+      // Formula C: q_C(x) += -sign(mu_n) * [rho_n(x,Ls-1) - rho_n(x,0)]
+      // Empirically verified correct sign for this eps/wall convention:
+      // gives positive correlation with gluonic TCD for conf 702 (Q_gauge=-1).
       {
         LatticeComplexD bdy_s0(UGrid), bdy_sLs(UGrid);
         ExtractSlice(bdy_s0,  rho5D, 0,    0);  // left wall  s=0
         ExtractSlice(bdy_sLs, rho5D, Ls-1, 0);  // right wall s=Ls-1
-        q_C_4D = q_C_4D + sign_mu * (bdy_sLs - bdy_s0);
+        q_C_4D = q_C_4D - sign_mu * (bdy_sLs - bdy_s0);
       }
 
-      // Formula A: q_A(x) += sign(mu_n) * 0.5 * [rho_n(x,Ls/2) - rho_n(x,Ls/2-1)]
+      // Formula A: q_A(x) += -sign(mu_n) * 0.5 * [rho_n(x,Ls/2) - rho_n(x,Ls/2-1)]
+      // Consistent sign convention with q_B and q_C above.
       // For large Ls (e.g. 48) this is exponentially suppressed ~ e^{-m*Ls/2} ≈ 0.
       if(Ls >= 2){
         LatticeComplexD mid_lo(UGrid), mid_hi(UGrid);
         ExtractSlice(mid_lo, rho5D, Ls/2-1, 0);  // below midpoint
         ExtractSlice(mid_hi, rho5D, Ls/2,   0);  // above midpoint
-        q_A_4D = q_A_4D + sign_mu * 0.5 * (mid_hi - mid_lo);
+        q_A_4D = q_A_4D - sign_mu * 0.5 * (mid_hi - mid_lo);
       }
     }
 
