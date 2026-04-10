@@ -52,7 +52,16 @@ else()
   endif()
   if (_hdf5_inc)
     include_directories(${_hdf5_inc})
+    # Derive lib dir from include dir (../lib)
+    get_filename_component(_hdf5_root "${_hdf5_inc}" DIRECTORY)
+    find_library(_hdf5_lib hdf5 HINTS "${_hdf5_root}/lib" NO_DEFAULT_PATH)
+    if (_hdf5_lib)
+      set(HDF5_LIBRARIES ${_hdf5_lib})
+    else()
+      set(HDF5_LIBRARIES "-L${_hdf5_root}/lib -lhdf5")
+    endif()
     message(STATUS "HDF5 include: ${_hdf5_inc}")
+    message(STATUS "HDF5 library: ${HDF5_LIBRARIES}")
   else()
     message(WARNING "HDF5 not found — HDF5 read path will be disabled")
   endif()
@@ -66,13 +75,13 @@ add_executable(FieldDensityAnimate MACOSX_BUNDLE FieldDensityAnimate.cxx )
 target_link_libraries(FieldDensityAnimate PRIVATE ${VTK_LIBRARIES})
 
 add_executable(FieldDensityAnimateMultiFiles MACOSX_BUNDLE FieldDensityAnimateMultiFiles.cxx )
-target_link_libraries(FieldDensityAnimateMultiFiles PRIVATE ${VTK_LIBRARIES})
+target_link_libraries(FieldDensityAnimateMultiFiles PRIVATE ${VTK_LIBRARIES} ${HDF5_LIBRARIES})
 
 add_executable(FieldDensityFindRegion MACOSX_BUNDLE FieldDensityFindRegion.cxx )
 target_link_libraries(FieldDensityFindRegion PRIVATE ${VTK_LIBRARIES})
 
 add_executable(FieldDensityEigen MACOSX_BUNDLE FieldDensityEigen.cxx )
-target_link_libraries(FieldDensityEigen PRIVATE ${VTK_LIBRARIES})
+target_link_libraries(FieldDensityEigen PRIVATE ${VTK_LIBRARIES} ${HDF5_LIBRARIES})
 
 # vtk_module_autoinit is needed
 vtk_module_autoinit(
