@@ -225,8 +225,8 @@ class GridLimeReader : public BinaryIO {
 
       uint64_t file_bytes =limeReaderBytes(LimeR);
 
-      std::cerr << GridLogMessage << limeReaderType(LimeR) << " "<< file_bytes <<" bytes "<<std::endl;
-      std::cerr << GridLogMessage<< " readLimeObject seeking "<<  record_name <<" found record :" <<limeReaderType(LimeR) <<std::endl;
+      std::cerr << "LIME record: " << limeReaderType(LimeR) << "  " << file_bytes << " bytes" << std::endl;
+      std::cerr << "LIME seeking: " << record_name << std::endl;
 
       if ( !strncmp(limeReaderType(LimeR), record_name.c_str(),strlen(record_name.c_str()) )  ) {
 
