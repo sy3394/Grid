@@ -49,6 +49,18 @@ std::vector<std::string> dynm_labels = {"X", "Y", "Z", "T", "tau"};
 
 template <class T> void readFile(T& out, std::string const fname){
 #ifdef HAVE_LIME
+  typedef typename T::vector_object vobj;
+  typedef typename vobj::scalar_object sobj;
+  uint64_t PayloadExpected = sizeof(sobj) * out.Grid()->_gsites;
+  std::cout << Grid::GridLogMessage
+            << "readFile: " << fname
+            << "  sizeof(sobj)=" << sizeof(sobj)
+            << "  _gsites=" << out.Grid()->_gsites
+            << "  PayloadExpected=" << PayloadExpected
+            << std::endl;
+  // print actual file size for comparison
+  if(FILE *fp = fopen(fname.c_str(),"rb")){ fseek(fp,0,SEEK_END); long fsz=ftell(fp); fclose(fp);
+    std::cout << Grid::GridLogMessage << "readFile: file size on disk = " << fsz << " bytes" << std::endl; }
   Grid::emptyUserRecord record;
   Grid::ScidacReader RD;
   RD.open(fname);
