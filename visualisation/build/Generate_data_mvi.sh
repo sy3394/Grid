@@ -264,6 +264,7 @@ if [[ $REGEN == 1 ]] ; then
             ### Output lines starting with "Topo PCF" and "CompRef" parsed below
             scratch=${HMC_DIR}/tmp_topo_pcf_${conf}_${tau}
             ${CDIR}/FieldDensityEigen \
+                --grid $vol \
                 --files2 $F2s --Ls 48 $eval_opt \
                 --topo_out ${DATA_DIR_topo}/Top_dnsty_q_{def}_${tau}_smr.${conf} \
                 --files1 $F1s --topo_compare --conf_id $conf \
