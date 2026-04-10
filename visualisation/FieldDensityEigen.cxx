@@ -82,9 +82,31 @@ static bool isHDF5file(std::string const &fname){
   return false;
 }
 
+// Raw binary reader: big-endian complex128, Grid lex order (x fastest), no header.
+// Python: arr.T.astype(np.dtype('>c16')).tofile("field.bin")
+template <class T> void readFileBinary(T& out, std::string const fname){
+  typedef typename T::vector_object vobj;
+  typedef typename vobj::scalar_object sobj;
+  uint32_t nersc_csum=0, scidac_csuma=0, scidac_csumb=0;
+  Grid::BinarySimpleMunger<sobj,sobj> munge;
+  Grid::BinaryIO::readLatticeObject<vobj,sobj>(out, fname, munge, 0, "IEEE64BIG",
+                                               nersc_csum, scidac_csuma, scidac_csumb);
+  std::cout << Grid::GridLogMessage << "readFileBinary: loaded " << fname << std::endl;
+}
+
+static bool isRawBinaryFile(std::string const &fname){
+  if(fname.size() > 4 && fname.substr(fname.size()-4) == ".bin") return true;
+  if(fname.size() > 4 && fname.substr(fname.size()-4) == ".raw") return true;
+  return false;
+}
+
 template <class T> void readFile(T& out, std::string const fname){
   if(isHDF5file(fname)){
     readFileHDF5(out, fname);
+    return;
+  }
+  if(isRawBinaryFile(fname)){
+    readFileBinary(out, fname);
     return;
   }
 #ifdef HAVE_LIME
