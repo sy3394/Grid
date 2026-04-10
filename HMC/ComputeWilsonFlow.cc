@@ -108,17 +108,12 @@ int main(int argc, char **argv) {
 
   for (int conf = CPar.StartConfiguration; conf <= CPar.EndConfiguration; conf+= CPar.Skip){
 
-#if 0    
-  CPNersc.CheckpointRestore(conf, Umu, sRNG, pRNG);
-#else
-  // Don't require Grid format RNGs
   FieldMetaData header;
   std::string file, filesmr;
   file    = CPar.conf_path + "/" + CPar.conf_prefix      + "." + std::to_string(conf);
   filesmr = CPar.conf_path + "/" + CPar.conf_smr_prefix  + "." + std::to_string(conf);
 
   NerscIO::readConfiguration(Umu,header,file);
-#endif
   
   std::cout << std::setprecision(15);
   std::cout << GridLogMessage << "Initial plaquette: "<< WilsonLoops<PeriodicGimplR>::avgPlaquette(Umu) << std::endl;

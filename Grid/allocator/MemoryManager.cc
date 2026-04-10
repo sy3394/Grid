@@ -35,9 +35,13 @@ uint64_t total_host;;
 void MemoryManager::DisplayMallinfo(void)
 {
 #ifdef __linux__
-  struct mallinfo mi; // really want mallinfo2, but glibc version isn't uniform
-  
+#if defined(__GLIBC__) && (__GLIBC__ > 2 || (__GLIBC__ == 2 && __GLIBC_MINOR__ >= 33))
+  struct mallinfo2 mi;
+  mi = mallinfo2();
+#else
+  struct mallinfo mi;
   mi = mallinfo();
+#endif
 
   std::cout << "MemoryManager: Total non-mmapped bytes (arena):       "<< (size_t)mi.arena<<std::endl;
   std::cout << "MemoryManager: # of free chunks (ordblks):            "<< (size_t)mi.ordblks<<std::endl;
