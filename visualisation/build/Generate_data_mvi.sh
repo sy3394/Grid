@@ -216,9 +216,10 @@ for q_def in q_A q_B q_Bp q_C; do
     dfiles+=( ${HMC}/data/corr_ip_${q_def}.dat )
 done
 
-# Output comp-ref files (created only when --comp_file fires for at least one conf)
+# Output comp-ref files — appended each run; to reset: rm ${HMC_DIR}/data/comp_ref_*.dat
+# Format: comp_idx  tau  conf  Q_evec  Q_ref  Corr  IP  rms_diff
 for q_def in q_A q_B q_Bp q_C; do
-    >${HMC_DIR}/data/comp_ref_${q_def}.dat
+    touch ${HMC_DIR}/data/comp_ref_${q_def}.dat
 done
 
 for i_conf in "${!CONFS[@]}"; do
