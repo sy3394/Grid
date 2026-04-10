@@ -201,10 +201,10 @@ done
 ########################################################################################################################
 
 ##########   INPUT   ######################################
-CONFS=( $(seq -f "%03g" $((CONF_S)) 1 $CONF_F) )  # default: full ensemble
-# Configs with comp_file data AND correctly ordered evec files.
+CONFS=(    700  701  702  703  704  705  706  707  708  709 )
+REGENS_25=(  0    0    1    0    0    0    0    0    0    0 )  # 1=run, 0=skip
+# 702: has comp_file data (topo_field_*.scidac) and correctly ordered evec files.
 # Add more confs here as data becomes available.
-COMP_CONFS=( 702 )
 ###########################################################
 
 DATA_DIR_dnsty=${HMC_DIR}/dnsty
@@ -221,8 +221,10 @@ for q_def in q_A q_B q_Bp q_C; do
     >${HMC_DIR}/data/comp_ref_${q_def}.dat
 done
 
-if [[ $REGEN == 1 ]] ; then
-    for conf in "${CONFS[@]}"; do
+for i_conf in "${!CONFS[@]}"; do
+    conf=${CONFS[$i_conf]}
+    REGEN=${REGENS_25[$i_conf]}
+    if [[ $REGEN == 1 ]] ; then
 
         DATA_DIR_eigen=${HMC_DIR}/eigen/${conf}
         DATA_DIR_topo=${HMC_DIR}/eigen/${conf}   # Top_dnsty_q_X_<tau>_smr.<conf> lives here
@@ -251,18 +253,15 @@ if [[ $REGEN == 1 ]] ; then
             eval_opt=""
             [[ -f "$EVALS_FILE" ]] && eval_opt="--evals $EVALS_FILE"
 
-            ### qlat reference SCIDAC files for this conf (optional)
-            ### Only enabled for confs listed in COMP_CONFS (comp_file data + ordered evecs available)
+            ### qlat reference SCIDAC files (optional; requires comp_file data + ordered evecs)
             comp_opt=""
-            if [[ " ${COMP_CONFS[*]} " == *" $((10#$conf)) "* ]]; then
-                comp_files=""
-                for idx in 0 1; do
-                    f=${COMP_DIR}/topo_field_${idx}.scidac
-                    [[ -f $f ]] && comp_files+=$f,
-                done
-                comp_files=${comp_files%?}   # strip trailing comma
-                [[ -n "$comp_files" ]] && comp_opt="--comp_file $comp_files"
-            fi
+            comp_files=""
+            for idx in 0 1; do
+                f=${COMP_DIR}/topo_field_${idx}.scidac
+                [[ -f $f ]] && comp_files+=$f,
+            done
+            comp_files=${comp_files%?}   # strip trailing comma
+            [[ -n "$comp_files" ]] && comp_opt="--comp_file $comp_files"
 
             ### Steps 1+2: compute topo fields + IP/corr vs gluonic TCD in one call
             ### --topo_out template: C++ substitutes {def} with A, B, Bp, C
@@ -319,9 +318,9 @@ if [[ $REGEN == 1 ]] ; then
                        --mpeg $mpeg_all --isosurface -0.01
             fi
 
-        done
-    done
-fi
+        done   # tau
+    fi     # REGEN
+done       # i_conf
 
 
 ########################################################################################################################
