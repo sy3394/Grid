@@ -56,7 +56,7 @@ template <class T> void readFileHDF5(T& out, std::string const fname){
 #if defined(HAVE_HDF5)
   typedef typename T::vector_object vobj;
   typedef typename vobj::scalar_object sobj;
-  GridBase *grid   = out.Grid();
+  Grid::GridBase *grid   = out.Grid();
   int64_t   Nsites = grid->_gsites;
 
   hid_t fid = H5Fopen(fname.c_str(), H5F_ACC_RDONLY, H5P_DEFAULT); assert(fid >= 0);
