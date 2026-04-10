@@ -268,7 +268,7 @@ if [[ $REGEN == 1 ]] ; then
                 --topo_out ${DATA_DIR_topo}/Top_dnsty_q_{def}_${tau}_smr.${conf} \
                 --files1 $F1s --topo_compare --conf_id $conf \
                 $comp_opt \
-                > $scratch
+                | tee $scratch
 
             # Split PCF output into 4 per-def files
             # Each block is preceded by "# q_X"; lines are "Topo PCF Corr/IP: TD_i conf val"
