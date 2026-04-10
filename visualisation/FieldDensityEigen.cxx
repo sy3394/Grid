@@ -47,20 +47,41 @@ int omit_dir = 4;
 int dynm_dir = 3;
 std::vector<std::string> dynm_labels = {"X", "Y", "Z", "T", "tau"};
 
-template <class T> void readFile(T& out, std::string const fname){
-#ifdef HAVE_LIME
+// HDF5 reader: dataset "field" shape (Nsites,2) float64, Grid lex order (x fastest)
+template <class T> void readFileHDF5(T& out, std::string const fname){
+#ifdef HAVE_HDF5
   typedef typename T::vector_object vobj;
   typedef typename vobj::scalar_object sobj;
-  uint64_t PayloadExpected = sizeof(sobj) * out.Grid()->_gsites;
-  std::cout << Grid::GridLogMessage
-            << "readFile: " << fname
-            << "  sizeof(sobj)=" << sizeof(sobj)
-            << "  _gsites=" << out.Grid()->_gsites
-            << "  PayloadExpected=" << PayloadExpected
-            << std::endl;
-  // print actual file size for comparison
-  if(FILE *fp = fopen(fname.c_str(),"rb")){ fseek(fp,0,SEEK_END); long fsz=ftell(fp); fclose(fp);
-    std::cout << Grid::GridLogMessage << "readFile: file size on disk = " << fsz << " bytes" << std::endl; }
+  GridBase *grid   = out.Grid();
+  int64_t   Nsites = grid->_gsites;
+
+  H5NS::H5File  file(fname, H5F_ACC_RDONLY);
+  H5NS::DataSet ds   = file.openDataSet("field");
+
+  std::vector<double> buf(2 * Nsites);
+  ds.read(buf.data(), H5NS::PredType::NATIVE_DOUBLE);
+
+  std::vector<sobj> lexbuf(Nsites);
+  for(int64_t i = 0; i < Nsites; i++)
+    lexbuf[i]()()() = Grid::ComplexD(buf[2*i], buf[2*i+1]);
+
+  Grid::vectorizeFromLexOrdArray(lexbuf, out);
+  std::cout << Grid::GridLogMessage << "readFileHDF5: loaded " << fname << std::endl;
+#endif
+}
+
+static bool isHDF5file(std::string const &fname){
+  if(fname.size() > 3 && fname.substr(fname.size()-3) == ".h5")   return true;
+  if(fname.size() > 5 && fname.substr(fname.size()-5) == ".hdf5") return true;
+  return false;
+}
+
+template <class T> void readFile(T& out, std::string const fname){
+  if(isHDF5file(fname)){
+    readFileHDF5(out, fname);
+    return;
+  }
+#ifdef HAVE_LIME
   Grid::emptyUserRecord record;
   Grid::ScidacReader RD;
   RD.open(fname);

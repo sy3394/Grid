@@ -69,7 +69,40 @@ bool save_file=0;
 std::vector<std::string> dynm_labels = {"X", "Y", "Z", "T", "configs"};
 std::ofstream data_f;
 
+// HDF5 reader: dataset "field" shape (Nsites,2) float64, Grid lex order (x fastest)
+template <class T> void readFileHDF5(T& out, std::string const fname){
+#ifdef HAVE_HDF5
+  typedef typename T::vector_object vobj;
+  typedef typename vobj::scalar_object sobj;
+  GridBase *grid   = out.Grid();
+  int64_t   Nsites = grid->_gsites;
+
+  H5NS::H5File  file(fname, H5F_ACC_RDONLY);
+  H5NS::DataSet ds   = file.openDataSet("field");
+
+  std::vector<double> buf(2 * Nsites);
+  ds.read(buf.data(), H5NS::PredType::NATIVE_DOUBLE);
+
+  std::vector<sobj> lexbuf(Nsites);
+  for(int64_t i = 0; i < Nsites; i++)
+    lexbuf[i]()()() = Grid::ComplexD(buf[2*i], buf[2*i+1]);
+
+  Grid::vectorizeFromLexOrdArray(lexbuf, out);
+  std::cout << Grid::GridLogMessage << "readFileHDF5: loaded " << fname << std::endl;
+#endif
+}
+
+static bool isHDF5file(std::string const &fname){
+  if(fname.size() > 3 && fname.substr(fname.size()-3) == ".h5")   return true;
+  if(fname.size() > 5 && fname.substr(fname.size()-5) == ".hdf5") return true;
+  return false;
+}
+
 template <class T> void readFile(T& out, std::string const fname){
+  if(isHDF5file(fname)){
+    readFileHDF5(out, fname);
+    return;
+  }
 #ifdef HAVE_LIME
   Grid::emptyUserRecord record;
   Grid::ScidacReader RD;
@@ -465,6 +498,20 @@ int main(int argc, char* argv[])
     std::cout << "Reading file: "<<file_list[c]<<std::endl;
     readFile(data[c],file_list[c]);
   }
+
+  // --comp_file <file>[,<file2>,...]: append extra fields (HDF5 or SCIDAC) for side-by-side visualisation
+  if( GridCmdOptionExists(argv,argv+argc,"--comp_file") ){
+    arg = GridCmdOptionPayload(argv,argv+argc,"--comp_file");
+    std::vector<std::string> comp_fnames;
+    GridCmdOptionCSL(arg, comp_fnames);
+    for(auto const &cf : comp_fnames){
+      std::cout << "Reading comp_file: " << cf << std::endl;
+      LatticeComplexD ref(grid);
+      readFile(ref, cf);
+      data.push_back(ref);
+    }
+  }
+
   int flag = 0; for(auto dir:omit_intcpts) if(dir<0) flag++;
   std::string display_info = flag ? "summed over ":"";
   for( int i_od=0; i_od<(int)omit_dirs.size(); i_od++){
