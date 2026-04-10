@@ -202,6 +202,9 @@ done
 
 ##########   INPUT   ######################################
 CONFS=( $(seq -f "%03g" $((CONF_S)) 1 $CONF_F) )  # default: full ensemble
+# Configs with comp_file data AND correctly ordered evec files.
+# Add more confs here as data becomes available.
+COMP_CONFS=( 702 )
 ###########################################################
 
 DATA_DIR_dnsty=${HMC_DIR}/dnsty
@@ -249,14 +252,17 @@ if [[ $REGEN == 1 ]] ; then
             [[ -f "$EVALS_FILE" ]] && eval_opt="--evals $EVALS_FILE"
 
             ### qlat reference SCIDAC files for this conf (optional)
+            ### Only enabled for confs listed in COMP_CONFS (comp_file data + ordered evecs available)
             comp_opt=""
-            comp_files=""
-            for idx in 0 1; do
-                f=${COMP_DIR}/topo_field_${idx}.scidac
-                [[ -f $f ]] && comp_files+=$f,
-            done
-            comp_files=${comp_files%?}   # strip trailing comma
-            [[ -n "$comp_files" ]] && comp_opt="--comp_file $comp_files"
+            if [[ " ${COMP_CONFS[*]} " == *" $((10#$conf)) "* ]]; then
+                comp_files=""
+                for idx in 0 1; do
+                    f=${COMP_DIR}/topo_field_${idx}.scidac
+                    [[ -f $f ]] && comp_files+=$f,
+                done
+                comp_files=${comp_files%?}   # strip trailing comma
+                [[ -n "$comp_files" ]] && comp_opt="--comp_file $comp_files"
+            fi
 
             ### Steps 1+2: compute topo fields + IP/corr vs gluonic TCD in one call
             ### --topo_out template: C++ substitutes {def} with A, B, Bp, C
@@ -325,7 +331,7 @@ fi
 
 ###########   INPUT   ###########################
 CONFS=(  702  719  71902 )
-REGENS=(   1    1      1 )   # set 0 to skip a config
+REGENS=(   0    1      1 )   # set 0 to skip a config
 NCUT=4
 #################################################
 
