@@ -460,14 +460,20 @@ int main(int argc, char* argv[])
     //   convention (eps(Ls-1)=+1, eps(0)=-1).
     //
     // -----------------------------------------------------------------------
-    // FORMULA A:  midpoint density                 (Midpoint form, analog of Blum Eq. 9)
+    // FORMULA A:  midpoint density  (m_gap/mu_n weighted, Midpoint form)
     // -----------------------------------------------------------------------
-    //   q_A(x) = -sum_n sign(mu_n) * 0.5 * [rho_n(x,Ls/2) - rho_n(x,Ls/2-1)]
+    //   q_A(x) = -sum_n (m_gap/mu_n) * 0.5 * [rho_n(x,Ls/2) - rho_n(x,Ls/2-1)]
     //
-    //   Derivation:
-    //     Analogous to Formula C but using the midpoint slices s=Ls/2 and s=Ls/2-1
-    //     instead of the physical walls s=Ls-1 and s=0.  Corresponds to the
-    //     "midpoint axial current" J^a_{5q,mid}(x) defined in Blum Eq. (9).
+    //   WHY m_gap/mu_n and NOT sign(mu_n):
+    //     The midpoint amplitude chi_n^A ~ e^{-alpha*Ls} is exponentially suppressed
+    //     for large Ls (eigenvector decays away from its wall).  In the exact formula
+    //     q^exact = -(m_f/mu_n)*chi_n^A, the weight m_f/mu_n ~ m_f/m_res ~ e^{+alpha*Ls}
+    //     diverges at exactly the same rate, so the product is O(1).  Using sign(mu_n)=+-1
+    //     instead removes the compensating factor, leaving only e^{-alpha*Ls} -> 0 for
+    //     large Ls (e.g. Ls=48 gives Q_A ~ 0 regardless of gauge topology).
+    //     m_gap/mu_n = (m_f+m_res)/mu_n preserves the exact cancellation:
+    //       topological modes: |mu_n| ~ m_gap  =>  m_gap/mu_n ~ +-1  (same as sign approx)
+    //       bulk modes:        |mu_n| ~ Lambda  =>  m_gap/mu_n ~ 0    (UV noise suppressed)
     //     The factor 0.5 normalises relative to the wall formula.
     // ===========================================================================
     if(compute_topo) {
@@ -508,15 +514,19 @@ int main(int argc, char* argv[])
         q_bdy = q_bdy - sign_mu * (bdy_sLs - bdy_s0);
       }
 
-      // --- Formula A: midpoint density ---
-      // q_A(x) += -sign(mu_n) * 0.5 * [rho_n(x,Ls/2) - rho_n(x,Ls/2-1)]
-      // Midpoint slices straddle the 5D bulk; analogous to Formula C at mid-plane.
-      // Corresponds to Blum Eq. (9) J^a_{5q,mid}(x).
+      // --- Formula A: midpoint density (m_gap/mu_n weighted) ---
+      // q_A(x) += -(m_gap/mu_n) * 0.5 * [rho_n(x,Ls/2) - rho_n(x,Ls/2-1)]
+      // Must use m_gap/mu_n, NOT sign(mu_n):
+      // The midpoint amplitude chi_n^A ~ e^{-alpha*Ls} is exponentially suppressed at large Ls.
+      // The exact weight m_f/mu_n ~ 1/m_res compensates exactly, giving O(1).
+      // sign(mu_n) = +-1 removes this compensation => q_A -> 0 for Ls=48.
+      // m_gap/mu_n restores it: topological modes |mu_n|~m_gap => m_gap/mu_n~+-1,
+      // bulk modes suppressed by m_gap/Lambda_bulk << 1.
       if(Ls >= 2){
         LatticeComplexD mid_lo(grid), mid_hi(grid);
         ExtractSlice(mid_lo, tmp, Ls/2-1, 0);   // below midpoint (eps_code=-1)
         ExtractSlice(mid_hi, tmp, Ls/2,   0);   // above midpoint (eps_code=+1)
-        q_mid = q_mid - sign_mu * 0.5 * (mid_hi - mid_lo);
+        q_mid = q_mid - w_Ap * 0.5 * (mid_hi - mid_lo);
       }
 
       std::cout << "TopoContrib evec=" << c
@@ -588,7 +598,7 @@ int main(int argc, char* argv[])
               << "  Q_C=" << real(TensorRemove(sum(q_bdy))) << std::endl;
 
     // Formula A: midpoint density  [Blum Eq. 9 analog]
-    //   q_A(x) = -sum_n sign(mu_n) * 0.5 * [rho_n(x,Ls/2) - rho_n(x,Ls/2-1)]
+    //   q_A(x) = -sum_n (m_gap/mu_n) * 0.5 * [rho_n(x,Ls/2) - rho_n(x,Ls/2-1)]
     writeFile(q_mid, fill_def(topo_out,"A"));
     std::cout << "Wrote q_A   -> " << fill_def(topo_out,"A")
               << "  Q_A=" << real(TensorRemove(sum(q_mid))) << std::endl;
