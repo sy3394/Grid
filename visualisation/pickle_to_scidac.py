@@ -24,16 +24,26 @@ import os
 # LIME record writer
 # ──────────────────────────────────────────────────────────────────────────────
 
-LIME_MAGIC   = 0x456789AB01234567
+LIME_MAGIC   = 0x456789AB   # 32-bit magic (first 4 bytes of the header word)
 LIME_VERSION = 1
 
 def _lime_record(type_str: str, data: bytes, MB: bool, ME: bool) -> bytes:
-    """Pack one LIME record (148-byte header + data padded to 8-byte boundary)."""
-    flags     = (0x8000 if MB else 0) | (0x4000 if ME else 0)
-    type_b    = type_str.encode('ascii').ljust(128, b'\x00')[:128]
-    header    = struct.pack('>QHHQ128s', LIME_MAGIC, LIME_VERSION,
-                            flags, len(data), type_b)
-    pad_len   = (8 - len(data) % 8) % 8
+    """Pack one LIME record (144-byte header + data padded to 8-byte boundary).
+
+    Binary header layout (from lime_binary_header.h, 18 × 8-byte words = 144 bytes):
+      bytes  0- 3 : magic       = 0x456789AB  (uint32)
+      bytes  4- 5 : version     = 1           (uint16)
+      byte   6    : MB|ME flags               (uint8,  0x80=MB 0x40=ME)
+      byte   7    : reserved    = 0           (uint8)
+      bytes  8-15 : data_length              (uint64)
+      bytes 16-143: record type string        (128 bytes, null-padded)
+    """
+    flags_byte = (0x80 if MB else 0) | (0x40 if ME else 0)
+    type_b     = type_str.encode('ascii').ljust(128, b'\x00')[:128]
+    header     = struct.pack('>IHBBQ128s', LIME_MAGIC, LIME_VERSION,
+                             flags_byte, 0, len(data), type_b)
+    # 4+2+1+1+8+128 = 144 bytes
+    pad_len    = (8 - len(data) % 8) % 8
     return header + data + b'\x00' * pad_len
 
 
