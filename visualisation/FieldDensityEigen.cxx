@@ -428,14 +428,15 @@ int main(int argc, char* argv[])
     // -----------------------------------------------------------------------
     // FORMULA B:  eps_code(s)-chirality density   (Bulk form, from Blum Eq. 17 / tr[Gamma5])
     // -----------------------------------------------------------------------
-    //   q_B(x) = sum_n sign(mu_n) * sum_s eps_code(s) * rho_n(x,s)
+    //   q_B(x) = -sum_n sign(mu_n) * sum_s eps_code(s) * rho_n(x,s)
     //
     //   Derivation:
-    //     Q = -(1/2) sum_n sign(mu_n) <psi_n|Gamma5_Blum|psi_n>
-    //       =  (1/2) sum_n sign(mu_n) sum_s eps_code(s) |psi_n(x,s)|^2   (summed over x)
-    //   Here Gamma5_Blum = delta_{ss'} sgn((Ls-1)/2 - s)  (Blum Eq. 17, SCALAR sign,
-    //   not gamma5*R5).  The factor 1/2 is absorbed into the normalization convention;
-    //   we accumulate without it to match the other two formulas.
+    //     q^exact = -sum_n (m_f/mu_n) chi_n^B,   chi_n^B = sum_s Gamma5_Blum(s)|psi_n|^2
+    //     eps_code(s) = -Gamma5_Blum(s),  so chi_n^B = -sum_s eps_code(s)|psi_n|^2
+    //     sign approx m_f/mu_n -> sign(mu_n):
+    //       q_B = -sum_n sign(mu_n)*(-sum_s eps_code(s)|psi_n|^2)
+    //           = -sum_n sign(mu_n) * sum_s eps_code(s)|psi_n|^2
+    //   The leading minus sign is essential and matches Compute_DWF_G5R5.cc.
     //   Near-zero modes localized at one wall contribute +/-1; bulk symmetric modes
     //   cancel because eps_code sums to zero over a uniformly distributed mode.
     //
@@ -491,8 +492,8 @@ int main(int argc, char* argv[])
         for(int s = 0; s < Ls; s++){
           ExtractSlice(eps_slice, tmp, s, 0);
           double eps_s = (s >= Ls/2) ? 1.0 : -1.0;   // eps_code(s)
-          q_eps   = q_eps   + (sign_mu * eps_s) * eps_slice;  // Formula B
-          q_prime = q_prime + (w_Ap    * eps_s) * eps_slice;  // Formula B'
+          q_eps   = q_eps   - (sign_mu * eps_s) * eps_slice;  // Formula B
+          q_prime = q_prime - (w_Ap    * eps_s) * eps_slice;  // Formula B'
         }
       }
 
@@ -566,13 +567,13 @@ int main(int argc, char* argv[])
     };
 
     // Formula B: eps_code(s)-chirality density  [sign(mu_n) weight, bulk form]
-    //   q_B(x) = sum_n sign(mu_n) * sum_s eps_code(s) * rho_n(x,s)
+    //   q_B(x) = -sum_n sign(mu_n) * sum_s eps_code(s) * rho_n(x,s)
     writeFile(q_eps, fill_def(topo_out,"B"));
     std::cout << "Wrote q_B   -> " << fill_def(topo_out,"B")
               << "  Q_B=" << real(TensorRemove(sum(q_eps))) << std::endl;
 
     // Formula B': m_gap-weighted chirality density  [m_gap/mu_n weight, bulk improved]
-    //   q_B'(x) = sum_n (m_gap/mu_n) * sum_s eps_code(s) * rho_n(x,s)
+    //   q_B'(x) = -sum_n (m_gap/mu_n) * sum_s eps_code(s) * rho_n(x,s)
     //   Bulk modes suppressed by m_gap/Lambda_bulk << 1.
     //   Recommended for pointwise comparison with gradient-flowed q^gf(x).
     writeFile(q_prime, fill_def(topo_out,"Bp"));
