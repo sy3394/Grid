@@ -476,14 +476,19 @@ int main(int argc, char** argv) {
         q_C_4D = q_C_4D - sign_mu * (bdy_sLs - bdy_s0);
       }
 
-      // Formula A: q_A(x) += -sign(mu_n) * 0.5 * [rho_n(x,Ls/2) - rho_n(x,Ls/2-1)]
-      // Consistent sign convention with q_B and q_C above.
-      // For large Ls (e.g. 48) this is exponentially suppressed ~ e^{-m*Ls/2} ≈ 0.
+      // Formula A: q_A(x) += -(m_gap/mu_n) * 0.5 * [rho_n(x,Ls/2) - rho_n(x,Ls/2-1)]
+      // Uses m_gap/mu_n weight, NOT sign(mu_n).
+      // Reason: the midpoint amplitude chi_n^A ~ e^{-alpha*Ls} is exponentially suppressed
+      // for large Ls.  In the exact formula the weight m_f/mu_n ~ 1/m_res ~ e^{+alpha*Ls}
+      // exactly compensates, giving an O(1) result.  Replacing m_f/mu_n -> sign(mu_n) = +-1
+      // removes the compensation and q_A -> 0 identically for large Ls (e.g. Ls=48).
+      // The m_gap/mu_n weight preserves the cancellation; for topological modes
+      // |mu_n| ~ m_gap so m_gap/mu_n ~ +-1, while bulk modes are suppressed by m_gap/Lambda << 1.
       if(Ls >= 2){
         LatticeComplexD mid_lo(UGrid), mid_hi(UGrid);
         ExtractSlice(mid_lo, rho5D, Ls/2-1, 0);  // below midpoint
         ExtractSlice(mid_hi, rho5D, Ls/2,   0);  // above midpoint
-        q_A_4D = q_A_4D - sign_mu * 0.5 * (mid_hi - mid_lo);
+        q_A_4D = q_A_4D - w_Bp * 0.5 * (mid_hi - mid_lo);
       }
     }
 
