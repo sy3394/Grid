@@ -623,6 +623,7 @@ int main(int argc, char* argv[])
   // keyboard-based interaction with the data within the render window.
   //
   vtkNew<vtkRenderWindow> renWin;
+  renWin->SetOffScreenRendering(1);   // headless: no X display needed (Frontier, batch nodes)
   vtkNew<vtkRenderWindowInteractor> iren;
   iren->SetRenderWindow(renWin);
 
