@@ -2,6 +2,9 @@
 echo spack
 #. /autofs/nccs-svm1_home1/paboyle/Crusher/Grid/spack/share/spack/setup-env.sh
 
+export HDF5=$(spack location -i hdf5%gcc@14.2.0)
+export LD_LIBRARY_PATH=$HDF5/lib:$LD_LIBRARY_PATH~
+
 module load cce/15.0.1
 module load rocm/5.3.0
 module load cray-fftw
