@@ -358,17 +358,17 @@ int main(int argc, char* argv[])
   FieldMetaData header;
   std::vector<LatticeComplexD> data1(file_list1.size()-take_diff,grid);
   for(int c=0;c<data1.size();c++) {
-    std::cout << "Reading file1: "<<file_list1[c]<<std::endl;
+    std::cout << GridLogMessage << "Reading file1: "<<file_list1[c]<<std::endl;
     readFile(data1[c],file_list1[c]);
-    std::cout<<"Sum "<<c<<" "<<real(TensorRemove(sum(data1[c])))<<std::endl;
+    std::cout << GridLogMessage << "Sum file1["<<c<<"] Q=" <<real(TensorRemove(sum(data1[c])))<<std::endl;
   }
   if(take_diff){
     for(int c=0;c<data1.size()-1;c++)
       data1[c] = data1[c+1] - data1[c];
     LatticeComplexD tmp(data1[0].Grid());
-    std::cout << "Reading file1: "<<file_list1.back()<<std::endl;
+    std::cout << GridLogMessage << "Reading file1: "<<file_list1.back()<<std::endl;
     readFile(tmp,file_list1.back());
-    std::cout<<"Sum last "<<real(TensorRemove(sum(tmp)))<<std::endl;
+    std::cout << GridLogMessage << "Sum file1[last] Q="<<real(TensorRemove(sum(tmp)))<<std::endl;
     data1.back() = tmp - data1.back();
   }
 
@@ -381,7 +381,7 @@ int main(int argc, char* argv[])
 
   std::vector<LatticeComplexD> data2(file_list2.size()-take_diff,grid);
   for(int c=0;c<data2.size();c++) {
-    std::cout << "Reading file2: "<<file_list2[c]<<std::endl;
+    std::cout << GridLogMessage << "Reading file2: "<<file_list2[c]<<std::endl;
     LatticeComplexD tmp(gridF);
     readFile(tmp,file_list2[c]);
     if(Ls > 0){
@@ -395,7 +395,7 @@ int main(int argc, char* argv[])
       // 4D input: use directly (e.g. pre-computed fermion TCD definition files)
       data2[c] = tmp;
     }
-    std::cout<<"Sum "<<c<<" "<<real(TensorRemove(sum(data2[c])))<<std::endl;
+    std::cout << GridLogMessage << "Sum file2["<<c<<"] Q="<<real(TensorRemove(sum(data2[c])))<<std::endl;
 
     // ==================== Topo charge density (3 formulas) ====================
     //
