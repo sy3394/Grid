@@ -221,6 +221,11 @@ for q_def in q_A q_B q_C; do
     touch ${HMC_DIR}/data/comp_ref_${q_def}.dat
 done
 
+# Output stochastic-vs-gluonic file — appended each run
+# Format: comp_idx  TD_tau  tau  conf  Q_ref  Q_gluon  Corr  IP
+touch ${HMC_DIR}/data/corr_ip_stoch.dat
+dfiles+=( ${HMC}/data/corr_ip_stoch.dat )
+
 for i_conf in "${!CONFS[@]}"; do
     conf=${CONFS[$i_conf]}
     REGEN=${REGENS_25[$i_conf]}
@@ -295,6 +300,13 @@ for i_conf in "${!CONFS[@]}"; do
                     /^CompRef:/ && $2==q { print $3, tau, $4, $5, $6, $7, $8, $9 }
                 ' $scratch >> ${HMC_DIR}/data/comp_ref_${q_def}.dat
             done
+
+            # Parse TopoCompRef lines: stochastic qlat field vs gluonic TCD
+            # Line format: "TopoCompRef: comp_idx TD_tau_idx conf Q_ref Q_gluon Corr IP"
+            # Output: comp_idx  TD_tau  tau  conf  Q_ref  Q_gluon  Corr  IP
+            awk -v tau=$tau -v tds="0 4 16" '
+                /^TopoCompRef:/ { split(tds,td," "); print $2, td[$3+1], tau, $4, $5, $6, $7, $8 }
+            ' $scratch >> ${HMC_DIR}/data/corr_ip_stoch.dat
 
             rm -f $scratch
 

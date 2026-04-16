@@ -688,6 +688,23 @@ int main(int argc, char* argv[])
                   << Q_evec << " " << Q_ref << " " << corr << " " << ip << " " << rms_diff << std::endl;
       }
 
+      // --- Compare qlat stochastic field vs gluonic TCD (when --topo_compare also active) ---
+      // Output: "TopoCompRef: comp_idx TD_tau_idx conf Q_ref Q_gluon Corr IP"
+      if(topo_compare && !data1.empty()){
+        for(int i = 0; i < (int)data1.size(); i++){
+          double   Q_gluon   = real(TensorRemove(sum(data1[i])));
+          ComplexD avg_gluon = TensorRemove(sum(data1[i])) / RealD(grid->gSites());
+          LatticeComplexD X(grid), Y(grid);
+          X = ref      - avg_ref   * one;
+          Y = data1[i] - avg_gluon * one;
+          double corr_sg = real(TensorRemove(sum(X*Y))) / std::sqrt(norm2(X) * norm2(Y));
+          X = ref;  Y = data1[i];
+          double ip_sg = real(TensorRemove(innerProduct(X,Y))) / std::sqrt(norm2(X)) / std::sqrt(norm2(Y));
+          std::cout << "TopoCompRef: " << ci << " " << i << " " << conf_id << " "
+                    << Q_ref << " " << Q_gluon << " " << corr_sg << " " << ip_sg << std::endl;
+        }
+      }
+
       // Stash for appending to data1 (visualisation frames) below
       comp_fields.push_back(ref);
     }
