@@ -110,8 +110,8 @@ int main(int argc, char **argv) {
 
   FieldMetaData header;
   std::string file, filesmr;
-  file    = CPar.conf_path + "/" + CPar.conf_prefix      + "." + std::to_string(conf);
-  filesmr = CPar.conf_path + "/" + CPar.conf_smr_prefix  + "." + std::to_string(conf);
+  file    = CPar.conf_path + CPar.conf_prefix      + "." + std::to_string(conf);
+  filesmr = CPar.conf_path + CPar.conf_smr_prefix  + "." + std::to_string(conf);
 
   NerscIO::readConfiguration(Umu,header,file);
   
