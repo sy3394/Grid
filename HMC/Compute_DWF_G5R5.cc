@@ -379,7 +379,7 @@ int main(int argc, char** argv) {
     std::cout << GridLogMessage << eMMe                                << std::endl;
 
     // Write eigenvalue text file: one value per line, sorted by |mu_n| ascending.
-    // Read back in FieldDensityEigen via --evals for q_Bp (m_gap/mu_n) weighting.
+    // Read back in FieldDensityEigen via --evals for m_gap/mu_n weighting (all estimators).
     if( UGrid->IsBoss() ){
       std::string eval_file = LanParams.outpath + "/" + std::to_string(i_conf) +
                               "/eigenvalues_tau_" + tau + "." + std::to_string(i_conf);
@@ -410,18 +410,14 @@ int main(int argc, char** argv) {
       }
     }
     /***********************************************************************/
-    /*   Four topological charge density estimators (q_A, q_B, q_B', q_C) */
+    /*   Three topological charge density estimators (q_A, q_B, q_C)      */
+    /*   All use m_gap/mu_n weight  (m_gap = min_n|mu_n| ~ m_f + m_res)   */
     /*                                                                      */
-    /*  q_B : sign(mu_n) weight, all 5D slices   — Bulk (Formula B)        */
-    /*  q_Bp: m_gap/mu_n weight, all 5D slices   — Bulk improved (B')      */
-    /*  q_C : sign(mu_n) weight, boundary slices — Boundary (Formula C)    */
-    /*  q_A : sign(mu_n) weight, midpoint slices — Midpoint (Formula A)    */
-    /*                                                                      */
-    /*  m_gap = min_n |mu_n|  ~  m_f + m_res  (spectral gap of H_DWF).    */
-    /*  For q_Bp: bulk modes are suppressed by m_gap/|mu_n| << 1,          */
-    /*  making q_Bp the recommended estimator for pointwise comparison      */
-    /*  with gradient-flowed gauge q(x).  q_A/B/C are recommended for      */
-    /*  global Q and topological susceptibility chi_t.                      */
+    /*  q_B : m_gap/mu_n weight, all 5D slices   — Bulk (Formula B)        */
+    /*  q_C : m_gap/mu_n weight, boundary slices — Boundary (Formula C)    */
+    /*  q_A : m_gap/mu_n weight, midpoint slices — Midpoint (Formula A)    */
+    /*        NOTE: q_A is unreliable under low-mode truncation (severed    */
+    /*        5D current); retained for diagnostics only.                   */
     /***********************************************************************/
 
     // --- Spectral-gap estimate: m_gap ~ m_f + m_res ---
@@ -432,14 +428,13 @@ int main(int argc, char** argv) {
     std::cout << GridLogMessage << "m_gap estimate (min|mu_n|) = " << m_gap << std::endl;
 
     // --- 4D accumulators ---
-    LatticeComplexD q_B_4D(UGrid), q_Bp_4D(UGrid), q_C_4D(UGrid), q_A_4D(UGrid);
-    q_B_4D = Zero(); q_Bp_4D = Zero(); q_C_4D = Zero(); q_A_4D = Zero();
+    LatticeComplexD q_B_4D(UGrid), q_C_4D(UGrid), q_A_4D(UGrid);
+    q_B_4D = Zero(); q_C_4D = Zero(); q_A_4D = Zero();
 
     for(int i = 0; i < Nconv; i++){
-      RealD mu_n    = eMe[i];
-      RealD sign_mu = (mu_n >= 0.0) ? 1.0 : -1.0;
-      // m_gap/mu_n weight for Formula B'.  Guard against mu_n==0 (should not occur).
-      RealD w_Bp    = (mu_n != 0.0) ? (m_gap / mu_n) : 0.0;
+      RealD mu_n = eMe[i];
+      // m_gap/mu_n weight for all formulas.  Guard against mu_n==0 (should not occur).
+      RealD w_Bp = (mu_n != 0.0) ? (m_gap / mu_n) : 0.0;
 
       // 5D scalar density: rho_n(x,s) = |psi_n(x,s)|^2  (already stored as G5evec)
       // G5evec[i] was built with eps_code(s) applied:
@@ -456,24 +451,23 @@ int main(int argc, char** argv) {
           chi_B = chi_B + sl;   // accumulate sum_s eps_code(s)*rho_n(x,s)
         }
       }
-      // Formula B:  q_B(x)  += -sign(mu_n) * chi_B(x)
+      // Formula B:  q_B(x)  += -(m_gap/mu_n) * chi_B(x)
+      // Uses m_gap/mu_n weight: topological modes get ~+-1, bulk modes suppressed.
       // Minus sign needed because chi_B = sum_s eps(s)*rho_n is opposite in sign
       // to the conventional topological charge density for this eps/wall convention.
-      q_B_4D  = q_B_4D  - sign_mu * chi_B;
-      // Formula B': q_B'(x) += -(m_gap/mu_n) * chi_B(x)  [proper bulk suppression]
-      q_Bp_4D = q_Bp_4D - w_Bp    * chi_B;
+      q_B_4D = q_B_4D - w_Bp * chi_B;
 
       // 5D scalar density rho_n(x,s) = |psi_n(x,s)|^2 (no eps_code factor)
       LatticeComplexD rho5D = localInnerProduct(finalevec[i], finalevec[i]);
 
-      // Formula C: q_C(x) += -sign(mu_n) * [rho_n(x,Ls-1) - rho_n(x,0)]
-      // Empirically verified correct sign for this eps/wall convention:
-      // gives positive correlation with gluonic TCD for conf 702 (Q_gauge=-1).
+      // Formula C: q_C(x) += -(m_gap/mu_n) * [rho_n(x,Ls-1) - rho_n(x,0)]
+      // Uses m_gap/mu_n weight (same rationale as Formulas A and B):
+      // topological modes |mu_n|~m_gap => weight ~+-1, bulk modes suppressed.
       {
         LatticeComplexD bdy_s0(UGrid), bdy_sLs(UGrid);
         ExtractSlice(bdy_s0,  rho5D, 0,    0);  // left wall  s=0
         ExtractSlice(bdy_sLs, rho5D, Ls-1, 0);  // right wall s=Ls-1
-        q_C_4D = q_C_4D - sign_mu * (bdy_sLs - bdy_s0);
+        q_C_4D = q_C_4D - w_Bp * (bdy_sLs - bdy_s0);
       }
 
       // Formula A: q_A(x) += -(m_gap/mu_n) * 0.5 * [rho_n(x,Ls/2) - rho_n(x,Ls/2-1)]
@@ -495,17 +489,15 @@ int main(int argc, char** argv) {
     // --- Report global charges ---
     std::cout << GridLogMessage
               << "TCD estimators:"
-              << "  Q_B="  << real(TensorRemove(sum(q_B_4D)))
-              << "  Q_B'=" << real(TensorRemove(sum(q_Bp_4D)))
-              << "  Q_C="  << real(TensorRemove(sum(q_C_4D)))
-              << "  Q_A="  << real(TensorRemove(sum(q_A_4D))) << std::endl;
+              << "  Q_B=" << real(TensorRemove(sum(q_B_4D)))
+              << "  Q_C=" << real(TensorRemove(sum(q_C_4D)))
+              << "  Q_A=" << real(TensorRemove(sum(q_A_4D))) << std::endl;
 
     // --- Write 4D fields ---
     std::string obase = LanParams.outpath + "/" + std::to_string(i_conf) + "/";
-    writeFile(q_B_4D,  obase + "topo_q_B_tau_"  + tau + "." + std::to_string(i_conf));
-    writeFile(q_Bp_4D, obase + "topo_q_Bp_tau_" + tau + "." + std::to_string(i_conf));
-    writeFile(q_C_4D,  obase + "topo_q_C_tau_"  + tau + "." + std::to_string(i_conf));
-    writeFile(q_A_4D,  obase + "topo_q_A_tau_"  + tau + "." + std::to_string(i_conf));
+    writeFile(q_B_4D, obase + "topo_q_B_tau_" + tau + "." + std::to_string(i_conf));
+    writeFile(q_C_4D, obase + "topo_q_C_tau_" + tau + "." + std::to_string(i_conf));
+    writeFile(q_A_4D, obase + "topo_q_A_tau_" + tau + "." + std::to_string(i_conf));
     /******************* end four-estimator block ****************************/
 
     for(int i = 0; i < Nconv; i++){

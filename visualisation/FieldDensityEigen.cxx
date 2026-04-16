@@ -376,8 +376,8 @@ int main(int argc, char* argv[])
   //   data2[c]: plain sum over s (existing behaviour, used for visualisation)
   //   q_eps, q_bdy, q_mid: three q_top formulas accumulated over eigenvectors
   bool compute_topo = (Ls > 0) && !file_list2.empty();
-  LatticeComplexD q_eps(grid), q_bdy(grid), q_mid(grid), q_prime(grid);
-  if(compute_topo){ q_eps = Zero(); q_bdy = Zero(); q_mid = Zero(); q_prime = Zero(); }
+  LatticeComplexD q_eps(grid), q_bdy(grid), q_mid(grid);
+  if(compute_topo){ q_eps = Zero(); q_bdy = Zero(); q_mid = Zero(); }
 
   std::vector<LatticeComplexD> data2(file_list2.size()-take_diff,grid);
   for(int c=0;c<data2.size();c++) {
@@ -417,43 +417,38 @@ int main(int argc, char* argv[])
     // (axpby_ssp applies factor -1 for s < Ls/2, +1 for s >= Ls/2).
     //
     // evals[c] = mu_n = eigenvalue of H_DWF (includes m_f).
-    //   Near-zero (topological) modes: |mu_n| ~ m_f  -> sign(mu_n) captures chirality.
-    //   Bulk (+/-mu) pairs:            contributions cancel in the sum.
+    //   Near-zero (topological) modes: |mu_n| ~ m_gap = m_f + m_res.
+    //   Bulk (+/-mu) pairs: contributions cancel in the sum.
     //
-    // WHY sign(mu_n) instead of m_f/mu_n:
-    //   The exact formula contains the factor m_f/mu_n, but for near-zero modes
-    //   |mu_n| ~ m_f (up to m_res), so m_f/mu_n ~ sign(mu_n).  Using sign(mu_n)
-    //   directly avoids explicit m_f dependence and works correctly even at m_f=0.
+    // All three formulas use m_gap/mu_n weight (see topo_charge.tex §5):
+    //   topological modes: |mu_n| ~ m_gap  =>  m_gap/mu_n ~ +-1  (captures chirality)
+    //   bulk modes:        |mu_n| ~ Lambda  =>  m_gap/mu_n ~ 0   (UV suppressed)
     //
     // -----------------------------------------------------------------------
-    // FORMULA B:  eps_code(s)-chirality density   (Bulk form, from Blum Eq. 17 / tr[Gamma5])
+    // FORMULA B:  eps_code(s)-chirality density   (Bulk form)
     // -----------------------------------------------------------------------
-    //   q_B(x) = -sum_n sign(mu_n) * sum_s eps_code(s) * rho_n(x,s)
+    //   q_B(x) = -sum_n (m_gap/mu_n) * sum_s eps_code(s) * rho_n(x,s)
     //
     //   Derivation:
     //     q^exact = -sum_n (m_f/mu_n) chi_n^B,   chi_n^B = sum_s Gamma5_Blum(s)|psi_n|^2
     //     eps_code(s) = -Gamma5_Blum(s),  so chi_n^B = -sum_s eps_code(s)|psi_n|^2
-    //     sign approx m_f/mu_n -> sign(mu_n):
-    //       q_B = -sum_n sign(mu_n)*(-sum_s eps_code(s)|psi_n|^2)
-    //           = -sum_n sign(mu_n) * sum_s eps_code(s)|psi_n|^2
-    //   The leading minus sign is essential and matches Compute_DWF_G5R5.cc.
-    //   Near-zero modes localized at one wall contribute +/-1; bulk symmetric modes
+    //     replacing m_f/mu_n -> m_gap/mu_n:
+    //       q_B = -sum_n (m_gap/mu_n)*(-sum_s eps_code(s)|psi_n|^2)
+    //           = -sum_n (m_gap/mu_n) * sum_s eps_code(s)|psi_n|^2  (with overall minus)
+    //   Near-zero modes localized at one wall contribute ~+-1; bulk symmetric modes
     //   cancel because eps_code sums to zero over a uniformly distributed mode.
     //
     // -----------------------------------------------------------------------
-    // FORMULA C:  boundary projection density      (Boundary form, related to Blum Eq. 8)
+    // FORMULA C:  boundary projection density      (Boundary form)
     // -----------------------------------------------------------------------
-    //   q_C(x) = -sum_n sign(mu_n) * [rho_n(x,Ls-1) - rho_n(x,0)]
+    //   q_C(x) = -sum_n (m_gap/mu_n) * [rho_n(x,Ls-1) - rho_n(x,0)]
     //
     //   Derivation:
     //     q_top(x) = -m_f * tr[gamma5 * S^{4D}(x,x)]
     //              = -m_f * sum_n (1/mu_n) * [psi_n†(x,Ls-1) P_R psi_n(x,Ls-1)
     //                                        + psi_n†(x,0)   P_L psi_n(x,0)]
-    //   where P_R = (1+gamma5)/2, P_L = (1-gamma5)/2  with the STANDARD 4D gamma5,
-    //   and the PLUS sign between the two wall terms is exact (it arises from the
-    //   gamma5 factor inside tr[gamma5 D^{-1}] when D^{-1} is expressed via D_H^{-1}).
-    //   Replacing m_f/mu_n -> sign(mu_n) and the spinor-projected densities by the
-    //   scalar proxy rho(x,s) = |psi(x,s)|^2:
+    //   where P_R = (1+gamma5)/2, P_L = (1-gamma5)/2  with the STANDARD 4D gamma5.
+    //   Replacing m_f/mu_n -> m_gap/mu_n and spinor projections by scalar proxy:
     //     psi†(x,Ls-1) P_R psi(x,Ls-1) ~ rho(x,Ls-1)  [right-wall mode: P_R ~ 1]
     //     psi†(x,0)    P_L psi(x,0)    ~ rho(x,0)      [left-wall mode:  P_L ~ 1]
     //   The relative minus sign in (rho(Ls-1) - rho(0)) encodes the eps_code
@@ -464,54 +459,45 @@ int main(int argc, char* argv[])
     // -----------------------------------------------------------------------
     //   q_A(x) = -sum_n (m_gap/mu_n) * 0.5 * [rho_n(x,Ls/2) - rho_n(x,Ls/2-1)]
     //
-    //   WHY m_gap/mu_n and NOT sign(mu_n):
+    //   WHY m_gap/mu_n is essential here:
     //     The midpoint amplitude chi_n^A ~ e^{-alpha*Ls} is exponentially suppressed
-    //     for large Ls (eigenvector decays away from its wall).  In the exact formula
-    //     q^exact = -(m_f/mu_n)*chi_n^A, the weight m_f/mu_n ~ m_f/m_res ~ e^{+alpha*Ls}
-    //     diverges at exactly the same rate, so the product is O(1).  Using sign(mu_n)=+-1
-    //     instead removes the compensating factor, leaving only e^{-alpha*Ls} -> 0 for
-    //     large Ls (e.g. Ls=48 gives Q_A ~ 0 regardless of gauge topology).
-    //     m_gap/mu_n = (m_f+m_res)/mu_n preserves the exact cancellation:
-    //       topological modes: |mu_n| ~ m_gap  =>  m_gap/mu_n ~ +-1  (same as sign approx)
-    //       bulk modes:        |mu_n| ~ Lambda  =>  m_gap/mu_n ~ 0    (UV noise suppressed)
-    //     The factor 0.5 normalises relative to the wall formula.
+    //     for large Ls.  The exact weight m_f/mu_n ~ m_f/m_res ~ e^{+alpha*Ls}
+    //     compensates exactly; m_gap/mu_n preserves this cancellation.
+    //     Using sign(mu_n)=+-1 removes the factor => q_A -> 0 for Ls=48.
+    //     NOTE: q_A is unreliable under low-mode truncation (severed 5D current).
     // ===========================================================================
     if(compute_topo) {
       // Eigenvalue of H_DWF = gamma5*R5*D_DWF (includes m_f, passed via --evals).
-      double mu_n    = (c < (int)evals.size()) ? evals[c] : 0.0;
-      // sign(mu_n): +1 or -1.  For near-zero modes, m_f/mu_n ~ sign(mu_n)*1.
+      double mu_n = (c < (int)evals.size()) ? evals[c] : 0.0;
       // Bulk (+/-mu) pairs cancel automatically in the sum over modes.
-      double sign_mu = (mu_n >= 0.0) ? 1.0 : -1.0;
-      // m_gap/mu_n weight for Formula A' (q_prime).
-      // Uses the spectral gap m_gap = m_f + m_res instead of sign(mu_n):
-      //   - topological modes: |mu_n| ~ m_gap  =>  w_Ap ~ sign(mu_n)  (same as q_A)
-      //   - bulk modes:        |mu_n| ~ Lambda  =>  w_Ap ~ m_gap/Lambda << 1  (suppressed)
+      // m_gap/mu_n weight for all formulas (A, B, C).
+      // Uses the spectral gap m_gap = m_f + m_res:
+      //   - topological modes: |mu_n| ~ m_gap  =>  w ~ +-1  (captures chirality)
+      //   - bulk modes:        |mu_n| ~ Lambda  =>  w ~ m_gap/Lambda << 1  (UV suppressed)
       // Guard against division by zero (should never occur with physical evals).
       double w_Ap = (mu_n != 0.0) ? (m_gap / mu_n) : 0.0;
 
-      // --- Formula B:  sign(mu_n)-weighted eps_code chirality sum ---
-      // --- Formula B': m_gap/mu_n-weighted eps_code chirality sum  ---
-      // Both accumulate sum_s eps_code(s) * rho_n(x,s); they differ only in weight.
+      // --- Formula B: m_gap/mu_n-weighted eps_code chirality sum ---
+      // q_B(x) += -(m_gap/mu_n) * sum_s eps_code(s) * rho_n(x,s)
       // eps_code(s) = -1 for s < Ls/2  (left),  +1 for s >= Ls/2  (right).
       {
         LatticeComplexD eps_slice(grid);
         for(int s = 0; s < Ls; s++){
           ExtractSlice(eps_slice, tmp, s, 0);
           double eps_s = (s >= Ls/2) ? 1.0 : -1.0;   // eps_code(s)
-          q_eps   = q_eps   - (sign_mu * eps_s) * eps_slice;  // Formula B
-          q_prime = q_prime - (w_Ap    * eps_s) * eps_slice;  // Formula B'
+          q_eps = q_eps - (w_Ap * eps_s) * eps_slice;
         }
       }
 
       // --- Formula C: boundary projection ---
-      // q_C(x) += -sign(mu_n) * [rho_n(x,Ls-1) - rho_n(x,0)]
+      // q_C(x) += -(m_gap/mu_n) * [rho_n(x,Ls-1) - rho_n(x,0)]
+      // Uses m_gap/mu_n weight (same rationale as Formulas A and B).
       // s=Ls-1: right wall (eps_code=+1),  s=0: left wall (eps_code=-1).
-      // Scalar proxy for the exact spinor boundary formula (see comment above).
       {
         LatticeComplexD bdy_s0(grid), bdy_sLs(grid);
         ExtractSlice(bdy_s0,  tmp, 0,    0);   // left wall,  s=0
         ExtractSlice(bdy_sLs, tmp, Ls-1, 0);   // right wall, s=Ls-1
-        q_bdy = q_bdy - sign_mu * (bdy_sLs - bdy_s0);
+        q_bdy = q_bdy - w_Ap * (bdy_sLs - bdy_s0);
       }
 
       // --- Formula A: midpoint density (m_gap/mu_n weighted) ---
@@ -530,10 +516,8 @@ int main(int argc, char* argv[])
       }
 
       std::cout << "TopoContrib evec=" << c
-                << " mu_n=" << mu_n << " sign(mu_n)=" << sign_mu
-                << " w_Bp=" << w_Ap
+                << " mu_n=" << mu_n << " w=" << w_Ap
                 << " Q_B="  << real(TensorRemove(sum(q_eps)))
-                << " Q_B'=" << real(TensorRemove(sum(q_prime)))
                 << " Q_C="  << real(TensorRemove(sum(q_bdy)))
                 << " Q_A="  << real(TensorRemove(sum(q_mid))) << std::endl;
     }
@@ -567,7 +551,7 @@ int main(int argc, char* argv[])
   // Output file naming: pass --topo_out with a {def} placeholder, e.g.
   //   --topo_out /path/Top_dnsty_q_{def}_0_smr.702
   // C++ replaces {def} with A, B, Bp, C to produce the four output files.
-  // q_A, q_B, q_C use sign(mu_n); q_Bp uses m_gap/mu_n (requires --evals).
+  // q_A, q_B, q_C all use m_gap/mu_n weight (requires --evals for m_gap).
   if(compute_topo && !evals.empty()){
     // Lambda: substitute {def} placeholder in topo_out template string.
     auto fill_def = [](std::string tmpl, const std::string& d) -> std::string {
@@ -577,22 +561,14 @@ int main(int argc, char* argv[])
     };
 
     // Formula B: eps_code(s)-chirality density  [sign(mu_n) weight, bulk form]
-    //   q_B(x) = -sum_n sign(mu_n) * sum_s eps_code(s) * rho_n(x,s)
+    //   q_B(x) = -sum_n (m_gap/mu_n) * sum_s eps_code(s) * rho_n(x,s)
     writeFile(q_eps, fill_def(topo_out,"B"));
     std::cout << "Wrote q_B   -> " << fill_def(topo_out,"B")
-              << "  Q_B=" << real(TensorRemove(sum(q_eps))) << std::endl;
-
-    // Formula B': m_gap-weighted chirality density  [m_gap/mu_n weight, bulk improved]
-    //   q_B'(x) = -sum_n (m_gap/mu_n) * sum_s eps_code(s) * rho_n(x,s)
-    //   Bulk modes suppressed by m_gap/Lambda_bulk << 1.
-    //   Recommended for pointwise comparison with gradient-flowed q^gf(x).
-    writeFile(q_prime, fill_def(topo_out,"Bp"));
-    std::cout << "Wrote q_B'  -> " << fill_def(topo_out,"Bp")
-              << "  Q_B'=" << real(TensorRemove(sum(q_prime)))
+              << "  Q_B=" << real(TensorRemove(sum(q_eps)))
               << "  (m_gap=" << m_gap << ")" << std::endl;
 
-    // Formula C: boundary projection density  [Blum Eq. 8 scalar proxy]
-    //   q_C(x) = -sum_n sign(mu_n) * [rho_n(x,Ls-1) - rho_n(x,0)]
+    // Formula C: boundary projection density
+    //   q_C(x) = -sum_n (m_gap/mu_n) * [rho_n(x,Ls-1) - rho_n(x,0)]
     writeFile(q_bdy, fill_def(topo_out,"C"));
     std::cout << "Wrote q_C   -> " << fill_def(topo_out,"C")
               << "  Q_C=" << real(TensorRemove(sum(q_bdy))) << std::endl;
@@ -604,14 +580,14 @@ int main(int argc, char* argv[])
               << "  Q_A=" << real(TensorRemove(sum(q_mid))) << std::endl;
   }
   /****** IP & Corr of each fermion TCD definition vs gluonic TCD (--topo_compare) *****/
-  // Requires: --topo_out (so q_eps/q_prime/q_bdy/q_mid are available),
+  // Requires: --topo_out (so q_eps/q_bdy/q_mid are available),
   //           --files1   (one file per gluonic flow time, e.g. TD_tau=0,4,16),
   //           --conf_id  (integer config number, written to output for notebook parsing).
   // Output per line (pure numeric): TD_tau  tau  conf  Corr  IP
   //   where TD_tau is the index i of files1[i], tau comes from --conf_id context,
   //   and the label "Topo_PCF: q_X" is printed to stderr for diagnostics only.
-  // q_A, q_B, q_C use sign(mu_n) (Approximation 1).
-  // The 4 output blocks (one per q_def) are labelled by a comment line "# q_X"
+  // q_A, q_B, q_C all use m_gap/mu_n weight.
+  // The 3 output blocks (one per q_def) are labelled by a comment line "# q_X"
   // so the shell can split them into 4 per-def files via grep.
   int conf_id = -1;
   if( GridCmdOptionExists(argv,argv+argc,"--conf_id") ){
@@ -623,7 +599,7 @@ int main(int argc, char* argv[])
     typedef typename PeriodicGimplR::ComplexField ComplexField;
     // data1[i] = gluonic TCD at flow time index i  (one file per TD_tau)
     struct QDef { std::string name; LatticeComplexD* field; };
-    std::vector<QDef> qdefs = {{"q_A",&q_mid},{"q_B",&q_eps},{"q_Bp",&q_prime},{"q_C",&q_bdy}};
+    std::vector<QDef> qdefs = {{"q_A",&q_mid},{"q_B",&q_eps},{"q_C",&q_bdy}};
     for(auto& qd : qdefs){
       std::cout << "# " << qd.name << std::endl;  // shell uses this to split output
       for(int i=0; i<(int)data1.size(); i++){
@@ -660,7 +636,7 @@ int main(int argc, char* argv[])
     LatticeComplexD one(grid); one = ComplexField::scalar_type(1.0, 0.0);
 
     struct QDef { std::string name; LatticeComplexD* field; };
-    std::vector<QDef> qdefs = {{"q_A",&q_mid},{"q_B",&q_eps},{"q_Bp",&q_prime},{"q_C",&q_bdy}};
+    std::vector<QDef> qdefs = {{"q_A",&q_mid},{"q_B",&q_eps},{"q_C",&q_bdy}};
 
     // Header for human-readable table
     std::cout << GridLogMessage

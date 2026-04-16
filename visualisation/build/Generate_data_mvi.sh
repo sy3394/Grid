@@ -15,8 +15,8 @@
 #       §2.2  Gluonic E density & topo charge (T-summed, configs as animation axis)
 #       §2.3  H_DWF eigenvector density (TLs-summed, configs as animation axis)
 #       §2.4  Chiral density (ZT-summed, configs as animation axis)
-#       §2.5  Fermion topo charge density: compute q_A/B/Bp/C, IP & corr vs gluonic TCD,
-#             and 4-panel T-animated movie of all 4 definitions
+#       §2.5  Fermion topo charge density: compute q_A/B/C, IP & corr vs gluonic TCD,
+#             and 3-panel T-animated movie of all 3 definitions
 #  §3   Trajectory analysis — H_DWF evecs, config 702
 #       §3.1  Per-evec density movies: ZT-summed, ZT-updated, T-updated (5D & 4D)
 #       §3.2  Sum over all modes at each tau_MD snapshot (FieldDensityEigen)
@@ -173,8 +173,8 @@ for tau in 0 4; do
 done
 
 ########################################################################################################################
-### §2.5  Fermion topo charge density: q_A/B/Bp/C per config, IP & corr vs gluonic TCD,
-###       and 4-panel T-animated movie of all 4 definitions
+### §2.5  Fermion topo charge density: q_A/B/C per config, IP & corr vs gluonic TCD,
+###       and 3-panel T-animated movie of all 3 definitions
 #
 # For each (conf, tau_W):
 #   Step 1 + 2 (single FieldDensityEigen call):
@@ -184,19 +184,18 @@ done
 #       => prints "# q_X" label lines + "Topo PCF Corr/IP: TD_tau conf value" to stdout
 #       => shell splits by label into 4 per-def output files (pure numeric, notebook-ready)
 #   Step 3 (FieldDensityAnimateMultiFiles):
-#     --animate T  with 4 input files => 4-panel side-by-side T-animated movie
+#     --animate T  with 3 input files => 3-panel side-by-side T-animated movie
 #
 # Output data files (one per def, format: TD_tau  conf  corr  — matching notebook schema):
-#   data/corr_ip_q_A.dat   data/corr_ip_q_B.dat
-#   data/corr_ip_q_Bp.dat  data/corr_ip_q_C.dat
+#   data/corr_ip_q_A.dat   data/corr_ip_q_B.dat   data/corr_ip_q_C.dat
 #   Rows: (TD_tau=0,4,16) x (tau=0,4) x (Corr, IP) per conf  => 12*nconf rows total
 #
-# NOTE: EVALS_FILE is required for proper q_Bp (m_gap/mu_n weight).
-#       Without it q_Bp silently falls back to sign(mu_n) = same as q_B.
+# NOTE: EVALS_FILE is required for m_gap/mu_n weighting in all estimators q_A/B/C.
+#       Without it, m_gap falls back to mass_f (fermion mass parameter).
 #
 # --comp_file (optional): qlat stochastic DWF TCD reference fields (SCIDAC).
 #   Located in visualisation/data/topo_field_<idx>.scidac (converted by pickle_to_scidac.py).
-#   If present, each is compared against q_A/B/Bp/C; results go to data/comp_ref_<def>.dat.
+#   If present, each is compared against q_A/B/C; results go to data/comp_ref_<def>.dat.
 #   Format: comp_idx  conf  Q_evec  Q_ref  Corr  IP  rms_diff
 ########################################################################################################################
 
@@ -211,14 +210,14 @@ DATA_DIR_dnsty=${HMC_DIR}/dnsty
 COMP_DIR=$(cd "$(dirname "$0")/.." && pwd)/data   # qlat reference SCIDAC files: visualisation/data/topo_field_<idx>.scidac
 
 # Output IP/corr files — pure numeric, no string columns
-for q_def in q_A q_B q_Bp q_C; do
+for q_def in q_A q_B q_C; do
     >${HMC_DIR}/data/corr_ip_${q_def}.dat
     dfiles+=( ${HMC}/data/corr_ip_${q_def}.dat )
 done
 
 # Output comp-ref files — appended each run; to reset: rm ${HMC_DIR}/data/comp_ref_*.dat
 # Format: comp_idx  tau  conf  Q_evec  Q_ref  Corr  IP  rms_diff
-for q_def in q_A q_B q_Bp q_C; do
+for q_def in q_A q_B q_C; do
     touch ${HMC_DIR}/data/comp_ref_${q_def}.dat
 done
 
@@ -249,7 +248,7 @@ for i_conf in "${!CONFS[@]}"; do
             done
             F1s=${F1%?}
 
-            ### Eigenvalue file (enables proper q_Bp weighting; written by Compute_DWF_G5R5)
+            ### Eigenvalue file (enables m_gap/mu_n weighting; written by Compute_DWF_G5R5)
             EVALS_FILE=${DATA_DIR_eigen}/eigenvalues_tau_${tau}.${conf}
             eval_opt=""
             [[ -f "$EVALS_FILE" ]] && eval_opt="--evals $EVALS_FILE"
@@ -266,7 +265,7 @@ for i_conf in "${!CONFS[@]}"; do
 
             ### Steps 1+2: compute topo fields + IP/corr vs gluonic TCD in one call
             ### --topo_out template: C++ substitutes {def} with A, B, Bp, C
-            ### --comp_file (if present): compares each qlat field vs q_A/B/Bp/C
+            ### --comp_file (if present): compares each qlat field vs q_A/B/C
             ### Output lines starting with "Topo PCF" and "CompRef" parsed below
             scratch=${HMC_DIR}/tmp_topo_pcf_${conf}_${tau}
             ${CDIR}/FieldDensityEigen \
@@ -277,10 +276,10 @@ for i_conf in "${!CONFS[@]}"; do
                 $comp_opt \
                 | tee $scratch
 
-            # Split PCF output into 4 per-def files
+            # Split PCF output into 3 per-def files
             # Each block is preceded by "# q_X"; lines are "Topo PCF Corr/IP: TD_i conf val"
             # Reformat to: TD_tau  tau  conf  value  (matching notebook MultiIndex schema)
-            for q_def in q_A q_B q_Bp q_C; do
+            for q_def in q_A q_B q_C; do
                 awk -v q=$q_def -v tau=$tau -v tds="0 4 16" '
                     /^# / { active=($2==q) }
                     active && /^Topo PCF Corr:/ { split(tds,td," "); print td[$3+1], tau, $4, $5 }
@@ -291,7 +290,7 @@ for i_conf in "${!CONFS[@]}"; do
             # Parse CompRef lines (present only when --comp_file fired)
             # Line format: "CompRef: def comp_idx conf Q_evec Q_ref Corr IP rms_diff"
             # Output: comp_idx  tau  conf  Q_evec  Q_ref  Corr  IP  rms_diff
-            for q_def in q_A q_B q_Bp q_C; do
+            for q_def in q_A q_B q_C; do
                 awk -v q=$q_def -v tau=$tau '
                     /^CompRef:/ && $2==q { print $3, tau, $4, $5, $6, $7, $8, $9 }
                 ' $scratch >> ${HMC_DIR}/data/comp_ref_${q_def}.dat
@@ -301,14 +300,14 @@ for i_conf in "${!CONFS[@]}"; do
 
             # Register topo density files for archiving
             pfx=${DATA_DIR_topo}/Top_dnsty_q
-            for q_def in A B Bp C; do
+            for q_def in A B C; do
                 dfiles+=( ${HMC}/eigen/${conf}/Top_dnsty_q_${q_def}_${tau}_smr.${conf} )
             done
 
             ### Step 3: T-animated movie (FieldDensityAnimateMultiFiles --animate T)
-            ### Base panels: q_A | q_B | q_Bp | q_C
+            ### Base panels: q_A | q_B | q_C
             ### Comp panels appended when qlat reference files exist for this conf
-            Fs_all=${pfx}_A_${tau}_smr.${conf},${pfx}_B_${tau}_smr.${conf},${pfx}_Bp_${tau}_smr.${conf},${pfx}_C_${tau}_smr.${conf}
+            Fs_all=${pfx}_A_${tau}_smr.${conf},${pfx}_B_${tau}_smr.${conf},${pfx}_C_${tau}_smr.${conf}
             for idx in 0 1; do
                 f=${COMP_DIR}/topo_field_${idx}.scidac
                 [[ -f $f ]] && Fs_all+=,$f

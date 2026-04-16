@@ -4,7 +4,7 @@
 # Generate_data_mvi_sp_sum_archive.sh
 #
 # ARCHIVED / OBSOLETE — kept for reproducing data generated before the four formal
-# fermion topo charge estimators (q_A, q_B, q_Bp, q_C) were derived.
+# fermion topo charge estimators (q_A, q_B, q_C) were derived.
 #
 # The spectral sum (sp_sum) computed here is:
 #   sp_sum(x) = sum_n [ -chi_B^n(x) + 0.5*sign(mu_n)*sqrt(mu_n^2-m_f^2)*rho_n(x) ]
