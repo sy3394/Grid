@@ -475,7 +475,7 @@ int main(int argc, char* argv[])
       //   - topological modes: |mu_n| ~ m_gap  =>  w ~ +-1  (captures chirality)
       //   - bulk modes:        |mu_n| ~ Lambda  =>  w ~ m_gap/Lambda << 1  (UV suppressed)
       // Guard against division by zero (should never occur with physical evals).
-      double w_Ap = (mu_n != 0.0) ? (m_gap / mu_n) : 0.0;
+      double w = (mu_n != 0.0) ? (m_gap / mu_n) : 0.0;
 
       // --- Formula B: m_gap/mu_n-weighted eps_code chirality sum ---
       // q_B(x) += -(m_gap/mu_n) * sum_s eps_code(s) * rho_n(x,s)
@@ -485,7 +485,7 @@ int main(int argc, char* argv[])
         for(int s = 0; s < Ls; s++){
           ExtractSlice(eps_slice, tmp, s, 0);
           double eps_s = (s >= Ls/2) ? 1.0 : -1.0;   // eps_code(s)
-          q_eps = q_eps - (w_Ap * eps_s) * eps_slice;
+          q_eps = q_eps - (w * eps_s) * eps_slice;
         }
       }
 
@@ -497,7 +497,7 @@ int main(int argc, char* argv[])
         LatticeComplexD bdy_s0(grid), bdy_sLs(grid);
         ExtractSlice(bdy_s0,  tmp, 0,    0);   // left wall,  s=0
         ExtractSlice(bdy_sLs, tmp, Ls-1, 0);   // right wall, s=Ls-1
-        q_bdy = q_bdy - w_Ap * (bdy_sLs - bdy_s0);
+        q_bdy = q_bdy - w * (bdy_sLs - bdy_s0);
       }
 
       // --- Formula A: midpoint density (m_gap/mu_n weighted) ---
@@ -512,11 +512,11 @@ int main(int argc, char* argv[])
         LatticeComplexD mid_lo(grid), mid_hi(grid);
         ExtractSlice(mid_lo, tmp, Ls/2-1, 0);   // below midpoint (eps_code=-1)
         ExtractSlice(mid_hi, tmp, Ls/2,   0);   // above midpoint (eps_code=+1)
-        q_mid = q_mid - w_Ap * 0.5 * (mid_hi - mid_lo);
+        q_mid = q_mid - w * 0.5 * (mid_hi - mid_lo);
       }
 
       std::cout << "TopoContrib evec=" << c
-                << " mu_n=" << mu_n << " w=" << w_Ap
+                << " mu_n=" << mu_n << " w=" << w
                 << " Q_B="  << real(TensorRemove(sum(q_eps)))
                 << " Q_C="  << real(TensorRemove(sum(q_bdy)))
                 << " Q_A="  << real(TensorRemove(sum(q_mid))) << std::endl;
@@ -686,6 +686,23 @@ int main(int argc, char* argv[])
         // Machine-readable for shell/notebook: "CompRef: def comp_idx conf Q_evec Q_ref Corr IP rms_diff"
         std::cout << "CompRef: " << qd.name << " " << ci << " " << conf_id << " "
                   << Q_evec << " " << Q_ref << " " << corr << " " << ip << " " << rms_diff << std::endl;
+      }
+
+      // --- Compare qlat stochastic field vs gluonic TCD (when --topo_compare also active) ---
+      // Output: "TopoCompRef: comp_idx TD_tau_idx conf Q_ref Q_gluon Corr IP"
+      if(topo_compare && !data1.empty()){
+        for(int i = 0; i < (int)data1.size(); i++){
+          double   Q_gluon   = real(TensorRemove(sum(data1[i])));
+          ComplexD avg_gluon = TensorRemove(sum(data1[i])) / RealD(grid->gSites());
+          LatticeComplexD X(grid), Y(grid);
+          X = ref      - avg_ref   * one;
+          Y = data1[i] - avg_gluon * one;
+          double corr_sg = real(TensorRemove(sum(X*Y))) / std::sqrt(norm2(X) * norm2(Y));
+          X = ref;  Y = data1[i];
+          double ip_sg = real(TensorRemove(innerProduct(X,Y))) / std::sqrt(norm2(X)) / std::sqrt(norm2(Y));
+          std::cout << "TopoCompRef: " << ci << " " << i << " " << conf_id << " "
+                    << Q_ref << " " << Q_gluon << " " << corr_sg << " " << ip_sg << std::endl;
+        }
       }
 
       // Stash for appending to data1 (visualisation frames) below

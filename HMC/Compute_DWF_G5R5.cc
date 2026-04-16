@@ -413,11 +413,11 @@ int main(int argc, char** argv) {
     /*   Three topological charge density estimators (q_A, q_B, q_C)      */
     /*   All use m_gap/mu_n weight  (m_gap = min_n|mu_n| ~ m_f + m_res)   */
     /*                                                                      */
+    /*  q_A : m_gap/mu_n weight, midpoint slices — Midpoint (Formula A)    */
+    /*        NOTE: unreliable under low-mode truncation (severed 5D        */
+    /*        current); retained for diagnostics only.                      */
     /*  q_B : m_gap/mu_n weight, all 5D slices   — Bulk (Formula B)        */
     /*  q_C : m_gap/mu_n weight, boundary slices — Boundary (Formula C)    */
-    /*  q_A : m_gap/mu_n weight, midpoint slices — Midpoint (Formula A)    */
-    /*        NOTE: q_A is unreliable under low-mode truncation (severed    */
-    /*        5D current); retained for diagnostics only.                   */
     /***********************************************************************/
 
     // --- Spectral-gap estimate: m_gap ~ m_f + m_res ---
@@ -428,76 +428,70 @@ int main(int argc, char** argv) {
     std::cout << GridLogMessage << "m_gap estimate (min|mu_n|) = " << m_gap << std::endl;
 
     // --- 4D accumulators ---
-    LatticeComplexD q_B_4D(UGrid), q_C_4D(UGrid), q_A_4D(UGrid);
-    q_B_4D = Zero(); q_C_4D = Zero(); q_A_4D = Zero();
+    LatticeComplexD q_A_4D(UGrid), q_B_4D(UGrid), q_C_4D(UGrid);
+    q_A_4D = Zero(); q_B_4D = Zero(); q_C_4D = Zero();
 
     for(int i = 0; i < Nconv; i++){
       RealD mu_n = eMe[i];
       // m_gap/mu_n weight for all formulas.  Guard against mu_n==0 (should not occur).
-      RealD w_Bp = (mu_n != 0.0) ? (m_gap / mu_n) : 0.0;
-
-      // 5D scalar density: rho_n(x,s) = |psi_n(x,s)|^2  (already stored as G5evec)
-      // G5evec[i] was built with eps_code(s) applied:
-      //   s <  Ls/2: G5evec[i] = -finalevec[i]   (eps_code = -1)
-      //   s >= Ls/2: G5evec[i] = +finalevec[i]   (eps_code = +1)
-      // So localInnerProduct(finalevec[i], G5evec[i]) = eps_code(s)*rho_n(x,s).
-      // Summing over s gives chi_n^B(x) = sum_s eps_code(s) * rho_n(x,s).
-      LatticeComplexD chi_B(UGrid); chi_B = Zero();
-      {
-        LatticeComplexD g5rho5D = localInnerProduct(finalevec[i], G5evec[i]); // 5D field
-        LatticeComplexD sl(UGrid);
-        for(int s = 0; s < Ls; s++){
-          ExtractSlice(sl, g5rho5D, s, 0);
-          chi_B = chi_B + sl;   // accumulate sum_s eps_code(s)*rho_n(x,s)
-        }
-      }
-      // Formula B:  q_B(x)  += -(m_gap/mu_n) * chi_B(x)
-      // Uses m_gap/mu_n weight: topological modes get ~+-1, bulk modes suppressed.
-      // Minus sign needed because chi_B = sum_s eps(s)*rho_n is opposite in sign
-      // to the conventional topological charge density for this eps/wall convention.
-      q_B_4D = q_B_4D - w_Bp * chi_B;
+      RealD w = (mu_n != 0.0) ? (m_gap / mu_n) : 0.0;
 
       // 5D scalar density rho_n(x,s) = |psi_n(x,s)|^2 (no eps_code factor)
       LatticeComplexD rho5D = localInnerProduct(finalevec[i], finalevec[i]);
 
-      // Formula C: q_C(x) += -(m_gap/mu_n) * [rho_n(x,Ls-1) - rho_n(x,0)]
-      // Uses m_gap/mu_n weight (same rationale as Formulas A and B):
-      // topological modes |mu_n|~m_gap => weight ~+-1, bulk modes suppressed.
-      {
-        LatticeComplexD bdy_s0(UGrid), bdy_sLs(UGrid);
-        ExtractSlice(bdy_s0,  rho5D, 0,    0);  // left wall  s=0
-        ExtractSlice(bdy_sLs, rho5D, Ls-1, 0);  // right wall s=Ls-1
-        q_C_4D = q_C_4D - w_Bp * (bdy_sLs - bdy_s0);
-      }
-
       // Formula A: q_A(x) += -(m_gap/mu_n) * 0.5 * [rho_n(x,Ls/2) - rho_n(x,Ls/2-1)]
       // Uses m_gap/mu_n weight, NOT sign(mu_n).
-      // Reason: the midpoint amplitude chi_n^A ~ e^{-alpha*Ls} is exponentially suppressed
-      // for large Ls.  In the exact formula the weight m_f/mu_n ~ 1/m_res ~ e^{+alpha*Ls}
-      // exactly compensates, giving an O(1) result.  Replacing m_f/mu_n -> sign(mu_n) = +-1
-      // removes the compensation and q_A -> 0 identically for large Ls (e.g. Ls=48).
-      // The m_gap/mu_n weight preserves the cancellation; for topological modes
-      // |mu_n| ~ m_gap so m_gap/mu_n ~ +-1, while bulk modes are suppressed by m_gap/Lambda << 1.
+      // The midpoint amplitude chi_n^A ~ e^{-alpha*Ls} is exponentially suppressed for
+      // large Ls; the weight m_f/mu_n ~ 1/m_res ~ e^{+alpha*Ls} exactly compensates.
+      // m_gap/mu_n preserves this cancellation; sign(mu_n) does not (q_A->0 for Ls=48).
+      // NOTE: unreliable under low-mode truncation (severed 5D current).
       if(Ls >= 2){
         LatticeComplexD mid_lo(UGrid), mid_hi(UGrid);
         ExtractSlice(mid_lo, rho5D, Ls/2-1, 0);  // below midpoint
         ExtractSlice(mid_hi, rho5D, Ls/2,   0);  // above midpoint
-        q_A_4D = q_A_4D - w_Bp * 0.5 * (mid_hi - mid_lo);
+        q_A_4D = q_A_4D - w * 0.5 * (mid_hi - mid_lo);
+      }
+
+      // 5D eps_code-weighted density for Formula B.
+      // G5evec[i] was built with eps_code(s) applied:
+      //   s <  Ls/2: G5evec[i] = -finalevec[i]   (eps_code = -1)
+      //   s >= Ls/2: G5evec[i] = +finalevec[i]   (eps_code = +1)
+      // Summing gives chi_B(x) = sum_s eps_code(s) * rho_n(x,s).
+      LatticeComplexD chi_B(UGrid); chi_B = Zero();
+      {
+        LatticeComplexD g5rho5D = localInnerProduct(finalevec[i], G5evec[i]);
+        LatticeComplexD sl(UGrid);
+        for(int s = 0; s < Ls; s++){
+          ExtractSlice(sl, g5rho5D, s, 0);
+          chi_B = chi_B + sl;
+        }
+      }
+      // Formula B: q_B(x) += -(m_gap/mu_n) * chi_B(x)
+      // Minus sign: chi_B = sum_s eps(s)*rho_n is opposite in sign to the conventional
+      // topological charge density for this eps/wall convention.
+      q_B_4D = q_B_4D - w * chi_B;
+
+      // Formula C: q_C(x) += -(m_gap/mu_n) * [rho_n(x,Ls-1) - rho_n(x,0)]
+      {
+        LatticeComplexD bdy_s0(UGrid), bdy_sLs(UGrid);
+        ExtractSlice(bdy_s0,  rho5D, 0,    0);  // left wall  s=0
+        ExtractSlice(bdy_sLs, rho5D, Ls-1, 0);  // right wall s=Ls-1
+        q_C_4D = q_C_4D - w * (bdy_sLs - bdy_s0);
       }
     }
 
     // --- Report global charges ---
     std::cout << GridLogMessage
               << "TCD estimators:"
+              << "  Q_A=" << real(TensorRemove(sum(q_A_4D)))
               << "  Q_B=" << real(TensorRemove(sum(q_B_4D)))
-              << "  Q_C=" << real(TensorRemove(sum(q_C_4D)))
-              << "  Q_A=" << real(TensorRemove(sum(q_A_4D))) << std::endl;
+              << "  Q_C=" << real(TensorRemove(sum(q_C_4D))) << std::endl;
 
     // --- Write 4D fields ---
     std::string obase = LanParams.outpath + "/" + std::to_string(i_conf) + "/";
+    writeFile(q_A_4D, obase + "topo_q_A_tau_" + tau + "." + std::to_string(i_conf));
     writeFile(q_B_4D, obase + "topo_q_B_tau_" + tau + "." + std::to_string(i_conf));
     writeFile(q_C_4D, obase + "topo_q_C_tau_" + tau + "." + std::to_string(i_conf));
-    writeFile(q_A_4D, obase + "topo_q_A_tau_" + tau + "." + std::to_string(i_conf));
     /******************* end four-estimator block ****************************/
 
     for(int i = 0; i < Nconv; i++){
