@@ -189,21 +189,22 @@ public:
 		
 		// the first two frame dim's are always latt dim
 		site[coor_map[0]] = x0; site[coor_map[1]] = x1;
-		if(dynm_dir<n_dims) site[dynm_dir] = x3;    // dynm_dir != file index => coor_map[2] != latt index 
+		if(dynm_dir<n_dims) site[dynm_dir] = x3;    // dynm_dir != file index => coor_map[2] != latt index
 		else                site[coor_map[2]] = x2; // dynm_dir == file index => coor_map[2] == latt index
 
 		for(int i=0; i<(int)omit_dirs.size(); i++) site[omit_dirs[i]] = omit_intcpts[i];
 		/***  The last elem of omit_dirs can be the file index  ***/
-		
-		// The last omit dir != file index => one frame index can be a file index
-		//   Recall: omit dir is the dir not one of the frame axes)
-		if(omit_dirs.back()<n_dims){ 
+
+		// The last omit dir != file index => one frame index can be a file index.
+		// Guard against empty omit_dirs (happens when configs is the implicit panel dim
+		// and no --fix/--cycle/--sum was given): fall through to else branch.
+		if(!omit_dirs.empty() && omit_dirs.back()<n_dims){
 		  site[omit_dirs.back()] = omit_intcpts.back();
 		  value = coor_map[2] == n_dims? real(peekSite(*grid_data[x2],site)) : real(peekSite(*grid_data[x3],site));
 		}
-		// The last omit dir == file index => all frame dims are latt dims
-		//   Recall: omit_dir != dynm_dir => each file content is shown in separate frames && x3 is used above
-		else { 
+		// The last omit dir == file index, or omit_dirs is empty (configs→panels):
+		// each FrameUpdater owns exactly one grid_data entry (= data[f]).
+		else {
 		  site[coor_map[2]] = x2;
 		  value = real(peekSite(*grid_data[0],site));
 		}
@@ -450,8 +451,17 @@ int main(int argc, char* argv[])
     if(!errs.empty()){
       for(auto& e : errs) std::cerr << "ERROR: " << e << std::endl; exit(1);
     }
+    // configs (index n_dims) is a special "panel" dimension: when left unassigned it
+    // creates one side-by-side viewport per file rather than a spatial display axis.
+    // Exclude it from the spatial display-dim count so that invocations like
+    //   --files q_A,q_B,q_C,qlat_0,qlat_1 --animate T
+    // work correctly: T is animated, X/Y/Z are the 3 spatial display dims, and the
+    // N files produce N side-by-side panels.
     std::vector<int> disp;
-    for(int d = 0; d < n_dirs_total; d++) if(!role.count(d)) disp.push_back(d);
+    for(int d = 0; d < n_dirs_total; d++)
+      if(!role.count(d) && d != n_dims) disp.push_back(d);  // n_dims == configs index
+    if(!role.count(n_dims))
+      std::cout << "configs: panel dimension (N files → N side-by-side panels)" << std::endl;
     if((int)disp.size() != 3){
       std::cerr << "ERROR: " << disp.size() << " display dims inferred (need exactly 3).\n"
                 << "  Unassigned:";
@@ -781,7 +791,9 @@ int main(int argc, char* argv[])
 
     // Sign up to receive TimerEvent
     std::vector<LatticeComplexD*> tmp;
-    if(omit_dirs.back()<latt_size.size()) for(int i=0;i<data.size();i++) tmp.push_back(&data[i]);
+    // Guard against empty omit_dirs (configs→panels, no --fix/--cycle/--sum given).
+    if(!omit_dirs.empty() && omit_dirs.back()<(int)latt_size.size())
+      for(int i=0;i<(int)data.size();i++) tmp.push_back(&data[i]);
     else tmp.push_back(&data[f]);
     
     vtkNew<FrameUpdater> fu;
