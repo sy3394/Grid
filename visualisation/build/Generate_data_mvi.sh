@@ -317,13 +317,12 @@ for i_conf in "${!CONFS[@]}"; do
             done
 
             ### Step 3: T-animated movie (FieldDensityAnimateMultiFiles --animate T)
-            ### Base panels: q_A | q_B | q_C
-            ### Comp panels appended when qlat reference files exist for this conf
+            ### Shows q_A | q_B | q_C side-by-side (3 files × --animate T = exactly 3 display dims).
+            ### qlat scidac files are intentionally excluded: each extra file adds a "configs"
+            ### dimension, giving 4 unresolved dims (X,Y,Z,configs) and triggering
+            ###   "ERROR: 4 display dims inferred (need exactly 3)".
+            ### Stochastic vs gluonic comparisons are captured by TopoCompRef output in Steps 1+2.
             Fs_all=${pfx}_A_${tau}_smr.${conf},${pfx}_B_${tau}_smr.${conf},${pfx}_C_${tau}_smr.${conf}
-            for idx in 0 1; do
-                f=${COMP_DIR}/topo_field_${idx}.scidac
-                [[ -f $f ]] && Fs_all+=,$f
-            done
             mpeg_all=${HMC_DIR}/Top_dnsty_all_defs_${conf}_tau${tau}.avi
             if [[ -f ${pfx}_A_${tau}_smr.${conf} ]]; then
                 ${CDIR}/FieldDensityAnimateMultiFiles --files $Fs_all --grid $vol --animate T \

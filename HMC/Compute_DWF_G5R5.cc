@@ -232,19 +232,23 @@ int main(int argc, char** argv) {
 		  << "(E_avg,T_sum) " << E << " " << T << " (E, T at origin) " << E0 << " " << T0 << " 5Li " << WFlow_TC5Li << std::endl;    
       });
     }
-    if( WFParams.is_flow )
-      WF.smear(Uflow, Umu);
-    else
-      Uflow = Umu;
+    // run_lanczos_and_save: run Lanczos on gauge field U at Wilson-flow time tau_str,
+    // compute all TCD estimators (q_A, q_B, q_C), and write output files.
+    // Called twice per config when is_flow=true:
+    //   (1) run_lanczos_and_save(Umu,   "0",  false) — unflowed config, tau=0
+    //   (2) run_lanczos_and_save(Uflow, tau,  true ) — flowed config,   tau=maxTau
+    // When is_flow=false only call (2) is made (Uflow==Umu in that case).
+    auto run_lanczos_and_save = [&](LatticeGaugeField& U,
+                                    const std::string& tau_str,
+                                    bool store_evecs) {
 
-    // TODO: add the following in the measurement for WF if to be repeated for diff flow times
-    std::cout << GridLogMessage << "Start: " << file << std::endl;
-    
+    std::cout << GridLogMessage << "Start Lanczos: " << file << " tau=" << tau_str << std::endl;
+
     int   Nm      = Nk + Np;
     int   MaxIt   = 10000;
     RealD resid   = 1.0e-5;
 
-    FermionOp                                                  Ddwf(Uflow,*FGrid,*FrbGrid,*UGrid,*UrbGrid,mass,M5);
+    FermionOp                                                  Ddwf(U,*FGrid,*FrbGrid,*UGrid,*UrbGrid,mass,M5);
     MdagMLinearOperator<FermionOp,FermionField>                HermOp(Ddwf);
     Gamma5R5HermitianLinearOperator<FermionOp, LatticeFermion> G5R5Herm(Ddwf);
 
@@ -382,7 +386,7 @@ int main(int argc, char** argv) {
     // Read back in FieldDensityEigen via --evals for m_gap/mu_n weighting (all estimators).
     if( UGrid->IsBoss() ){
       std::string eval_file = LanParams.outpath + "/" + std::to_string(i_conf) +
-                              "/eigenvalues_tau_" + tau + "." + std::to_string(i_conf);
+                              "/eigenvalues_tau_" + tau_str + "." + std::to_string(i_conf);
       FILE *fp_eval = fopen(eval_file.c_str(), "w");
       assert(fp_eval != NULL);
       for(int i = 0; i < Nconv; i++)
@@ -391,7 +395,7 @@ int main(int argc, char** argv) {
       std::cout << GridLogMessage << "Wrote eigenvalues to: " << eval_file << std::endl;
     }
 
-    conv_evecs_all.push_back(finalevec);    
+    if(store_evecs) conv_evecs_all.push_back(finalevec);
 
     
     /***********************************************************************/
@@ -489,9 +493,9 @@ int main(int argc, char** argv) {
 
     // --- Write 4D fields ---
     std::string obase = LanParams.outpath + "/" + std::to_string(i_conf) + "/";
-    writeFile(q_A_4D, obase + "topo_q_A_tau_" + tau + "." + std::to_string(i_conf));
-    writeFile(q_B_4D, obase + "topo_q_B_tau_" + tau + "." + std::to_string(i_conf));
-    writeFile(q_C_4D, obase + "topo_q_C_tau_" + tau + "." + std::to_string(i_conf));
+    writeFile(q_A_4D, obase + "topo_q_A_tau_" + tau_str + "." + std::to_string(i_conf));
+    writeFile(q_B_4D, obase + "topo_q_B_tau_" + tau_str + "." + std::to_string(i_conf));
+    writeFile(q_C_4D, obase + "topo_q_C_tau_" + tau_str + "." + std::to_string(i_conf));
     /******************* end four-estimator block ****************************/
 
     for(int i = 0; i < Nconv; i++){
@@ -504,13 +508,13 @@ int main(int argc, char** argv) {
       eval_rec.n    = i;
       writeFile(evdensity,
 		LanParams.outpath + "/" + std::to_string(i_conf) + "/evec_density" +
-		"_"+std::to_string(i)+"_tau_"+tau+"."+std::to_string(i_conf),
+		"_"+std::to_string(i)+"_tau_"+tau_str+"."+std::to_string(i_conf),
 		eval_rec);
 
       auto diag_g5density = localInnerProduct(finalevec[i],G5evec[i] );
       writeFile(diag_g5density,
                 LanParams.outpath + "/" + std::to_string(i_conf) + "/g5_density" +
-                "_"+std::to_string(i)+"_tau_"+tau+"."+std::to_string(i_conf));
+                "_"+std::to_string(i)+"_tau_"+tau_str+"."+std::to_string(i_conf));
       std::cout << GridLogMessage << "evec G5 evec: " << i << " " << TensorRemove(sum(diag_g5density)) << std::endl;
       
       for(int j = 0; j < Nconv; j++){
@@ -523,7 +527,7 @@ int main(int argc, char** argv) {
 	  auto g5density = localInnerProduct(finalevec[i], G5evec[j]);
 	  writeFile(g5density,
 		    LanParams.outpath + "/" + std::to_string(i_conf) + "/chiral_density_" +
-		    std::to_string(i)+"_"+std::to_string(j)+"_tau_"+tau+"."+std::to_string(i_conf));
+		    std::to_string(i)+"_"+std::to_string(j)+"_tau_"+tau_str+"."+std::to_string(i_conf));
 	}
       }
     }
@@ -535,7 +539,7 @@ int main(int argc, char** argv) {
     
     // Save Chiral matrix for the config as a text file
     if( UGrid->IsBoss()){
-      FILE *fp = fopen((LanParams.outpath + "/" + std::to_string(i_conf) + "/chiral_matrix_real_"+"tau_"+tau+"_"+std::to_string(i_conf)).c_str(),"w");
+      FILE *fp = fopen((LanParams.outpath + "/" + std::to_string(i_conf) + "/chiral_matrix_real_"+"tau_"+tau_str+"_"+std::to_string(i_conf)).c_str(),"w");
       assert(fp!=NULL);
       for(int i = 0; i < Nconv; i++){
 	for(int j = 0; j < Nconv; j++){
@@ -545,6 +549,21 @@ int main(int argc, char** argv) {
       }
       fclose(fp);
     }
+
+    }; // end lambda run_lanczos_and_save
+
+    // Pre-flow eigenvectors at tau=0 (only when Wilson flow is active)
+    if( WFParams.is_flow )
+      run_lanczos_and_save(Umu, "0", false);
+
+    // Apply Wilson flow (or pass-through when is_flow=false)
+    if( WFParams.is_flow )
+      WF.smear(Uflow, Umu);
+    else
+      Uflow = Umu;
+
+    // Post-flow eigenvectors at tau=maxTau (or unflowed if is_flow=false)
+    run_lanczos_and_save(Uflow, tau, true);
   }
   // Compute tensor of <evecs_i(ii), evecs_j(jj)> where evecs_i is the conv'ed evecs for i^th config
   // row major
