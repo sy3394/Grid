@@ -210,14 +210,36 @@ DATA_DIR_dnsty=${HMC_DIR}/dnsty
 COMP_DIR=$(cd "$(dirname "$0")/.." && pwd)/data   # qlat reference SCIDAC files: visualisation/data/topo_field_<idx>.scidac
 
 # Output IP/corr files — pure numeric, no string columns
-for q_def in q_A q_B q_C; do
+# WEIGHTS: comma-separated list of weight tokens passed to --weights.
+#   Each token is "sign", "mgap", or "label=value" (e.g. mext=0.011).
+#   Default: "sign,mgap"  (both tracks always).
+#   Example: WEIGHTS=sign,mgap,mext=0.011 ./Generate_data_mvi.sh
+WEIGHTS="${WEIGHTS:-sign,mgap}"
+
+# Parse WEIGHTS -> _weight_labels array (label part before any '=')
+_weight_labels=()
+IFS=',' read -ra _wtoks <<< "$WEIGHTS"
+for tok in "${_wtoks[@]}"; do
+    _weight_labels+=("${tok%%=*}")
+done
+
+# Build _q_defs_all from {A,B,C} x _weight_labels
+_q_defs_all=""
+for _lbl in "${_weight_labels[@]}"; do
+    for _def in A B C; do
+        _q_defs_all+="q_${_def}_${_lbl} "
+    done
+done
+_q_defs_all="${_q_defs_all% }"   # trim trailing space
+
+for q_def in $_q_defs_all; do
     >${HMC_DIR}/data/corr_ip_${q_def}.dat
     dfiles+=( ${HMC}/data/corr_ip_${q_def}.dat )
 done
 
 # Output comp-ref files — appended each run; to reset: rm ${HMC_DIR}/data/comp_ref_*.dat
 # Format: comp_idx  tau  conf  Q_evec  Q_ref  Corr  IP  rms_diff
-for q_def in q_A q_B q_C; do
+for q_def in $_q_defs_all; do
     touch ${HMC_DIR}/data/comp_ref_${q_def}.dat
 done
 
@@ -258,6 +280,11 @@ for i_conf in "${!CONFS[@]}"; do
             eval_opt=""
             [[ -f "$EVALS_FILE" ]] && eval_opt="--evals $EVALS_FILE"
 
+            ### Weight tracks: controlled by WEIGHTS env var (parsed above into _weight_labels).
+            ### Pass the full token list to --weights so FieldDensityEigen knows which
+            ### tracks to activate (sign, mgap, and/or any literal-value tracks).
+            weights_opt="--weights $WEIGHTS"
+
             ### qlat reference SCIDAC files (optional; requires comp_file data + ordered evecs)
             comp_opt=""
             comp_files=""
@@ -269,22 +296,23 @@ for i_conf in "${!CONFS[@]}"; do
             [[ -n "$comp_files" ]] && comp_opt="--comp_file $comp_files"
 
             ### Steps 1+2: compute topo fields + IP/corr vs gluonic TCD in one call
-            ### --topo_out template: C++ substitutes {def} with A, B, Bp, C
-            ### --comp_file (if present): compares each qlat field vs q_A/B/C
+            ### --topo_out template: C++ substitutes {def} with A_mgap, B_mgap, C_mgap,
+            ###                      A_sign, B_sign, C_sign  (6 output files per conf/tau)
+            ### --comp_file (if present): compares each qlat field vs all 6 defs
             ### Output lines starting with "Topo PCF" and "CompRef" parsed below
             scratch=${HMC_DIR}/tmp_topo_pcf_${conf}_${tau}
             ${CDIR}/FieldDensityEigen \
                 --grid $vol \
-                --files2 $F2s --Ls 48 $eval_opt \
+                --files2 $F2s --Ls 48 $eval_opt $weights_opt \
                 --topo_out ${DATA_DIR_topo}/Top_dnsty_q_{def}_${tau}_smr.${conf} \
                 --files1 $F1s --topo_compare --conf_id $conf \
                 $comp_opt \
                 | tee $scratch
 
-            # Split PCF output into 3 per-def files
-            # Each block is preceded by "# q_X"; lines are "Topo PCF Corr/IP: TD_i conf val"
+            # Split PCF output into per-def files; active set matches WEIGHTS token list
+            # Each block is preceded by "# q_X_wmode"; lines are "Topo PCF Corr/IP: TD_i conf val"
             # Reformat to: TD_tau  tau  conf  value  (matching notebook MultiIndex schema)
-            for q_def in q_A q_B q_C; do
+            for q_def in $_q_defs_all; do
                 awk -v q=$q_def -v tau=$tau -v tds="0 4 16" '
                     /^# / { active=($2==q) }
                     active && /^Topo PCF Corr:/ { split(tds,td," "); print td[$3+1], tau, $4, $5 }
@@ -295,7 +323,7 @@ for i_conf in "${!CONFS[@]}"; do
             # Parse CompRef lines (present only when --comp_file fired)
             # Line format: "CompRef: def comp_idx conf Q_evec Q_ref Corr IP rms_diff"
             # Output: comp_idx  tau  conf  Q_evec  Q_ref  Corr  IP  rms_diff
-            for q_def in q_A q_B q_C; do
+            for q_def in $_q_defs_all; do
                 awk -v q=$q_def -v tau=$tau '
                     /^CompRef:/ && $2==q { print $3, tau, $4, $5, $6, $7, $8, $9 }
                 ' $scratch >> ${HMC_DIR}/data/comp_ref_${q_def}.dat
@@ -312,23 +340,27 @@ for i_conf in "${!CONFS[@]}"; do
 
             # Register topo density files for archiving
             pfx=${DATA_DIR_topo}/Top_dnsty_q
-            for q_def in A B C; do
-                dfiles+=( ${HMC}/eigen/${conf}/Top_dnsty_q_${q_def}_${tau}_smr.${conf} )
+            for _lbl in "${_weight_labels[@]}"; do
+                for _def in A B C; do
+                    dfiles+=( ${HMC}/eigen/${conf}/Top_dnsty_q_${_def}_${_lbl}_${tau}_smr.${conf} )
+                done
             done
 
-            ### Step 3: T-animated movie — q_A | q_B | q_C | qlat_0 | qlat_1 side-by-side
-            ### All available files are passed in one call.  FieldDensityAnimateMultiFiles treats
-            ### the "configs" dimension as an implicit panel axis (one viewport per file) so it
-            ### does not count against the 3 spatial display dims (X, Y, Z).
-            ### (Fix applied in FieldDensityAnimateMultiFiles.cxx: exclude configs from the
-            ###  "need exactly 3" dim check, and guard omit_dirs.back() on empty omit_dirs.)
-            Fs_all=${pfx}_A_${tau}_smr.${conf},${pfx}_B_${tau}_smr.${conf},${pfx}_C_${tau}_smr.${conf}
+            ### Step 3: T-animated movie — one column per weight track (A/B/C rows) + qlat reference
+            Fs_all=""
+            for _lbl in "${_weight_labels[@]}"; do
+                for _def in A B C; do
+                    Fs_all+="${pfx}_${_def}_${_lbl}_${tau}_smr.${conf},"
+                done
+            done
             for idx in 0 1; do
                 f=${COMP_DIR}/topo_field_${idx}.scidac
-                [[ -f $f ]] && Fs_all+=,$f
+                [[ -f $f ]] && Fs_all+="${f},"
             done
+            Fs_all="${Fs_all%,}"   # strip trailing comma
             mpeg_all=${HMC_DIR}/Top_dnsty_all_defs_${conf}_tau${tau}.avi
-            if [[ -f ${pfx}_A_${tau}_smr.${conf} ]]; then
+            _first_lbl="${_weight_labels[0]}"
+            if [[ -f ${pfx}_A_${_first_lbl}_${tau}_smr.${conf} ]]; then
                 ${CDIR}/FieldDensityAnimateMultiFiles --files $Fs_all --grid $vol --animate T \
                        --mpeg $mpeg_all --isosurface -0.01
             fi

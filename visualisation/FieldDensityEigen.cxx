@@ -117,6 +117,39 @@ template <class T> void readFile(T& out, std::string const fname){
   RD.close();
 #endif
 }
+
+// H_DWF_EvalRecord: embedded in each evec_density SCIDAC file by Compute_DWF_G5R5.cc
+namespace Grid {
+  struct H_DWF_EvalRecord : Serializable {
+    GRID_SERIALIZABLE_CLASS_MEMBERS(H_DWF_EvalRecord,
+      double, eval,   // eigenvalue of H_DWF = gamma5*R5*D_DWF(mass)
+      int,    n       // mode index: pairs (+mu_0,-mu_0,+mu_1,-mu_1,...) ordered by |mu_n|
+    );
+  };
+}
+
+// Read a SCIDAC field and return the embedded H_DWF_EvalRecord.
+// Sets eval_out=0, n_out=-1 if the file format does not carry a record.
+template <class T>
+void readFileRecord(T& out, std::string const fname, double& eval_out, int& n_out){
+  eval_out = 0.0; n_out = -1;
+  if(isHDF5file(fname) || isRawBinaryFile(fname)){
+    readFile(out, fname);   // no user-record in these formats
+    return;
+  }
+#ifdef HAVE_LIME
+  Grid::H_DWF_EvalRecord rec;
+  Grid::ScidacReader RD;
+  RD.open(fname);
+  RD.readScidacFieldRecord(out, rec);
+  RD.close();
+  eval_out = rec.eval;
+  n_out    = rec.n;
+  std::cout << Grid::GridLogMessage
+            << "readFileRecord: " << fname
+            << "  eval=" << eval_out << "  n=" << n_out << std::endl;
+#endif
+}
 template <class T> void writeFile(T& in, std::string const fname){
 #ifdef HAVE_LIME
   // Ref: https://github.com/paboyle/Grid/blob/feature/scidac-wp1/tests/debug/Test_general_coarse_hdcg_phys48.cc#L111
@@ -268,6 +301,18 @@ int main(int argc, char* argv[])
   }
 
   // ---------- Topo charge density from eigenvectors ----------
+  // WeightSpec: one weight track to accumulate simultaneously.
+  //   label    : output file suffix and table key (e.g. "sign", "mgap", "mext")
+  //   is_sign  : true  => w = sign(mu_n)  (exact ±1; label keyword "sign")
+  //   mgap_val : used when !is_sign:
+  //              = 0   => w = m_gap_auto/mu_n  (auto = min_n|mu_n| from --evals)
+  //              ≠ 0   => w = mgap_val/mu_n    (user-supplied literal)
+  // --weights <token>[,<token>,...] controls which tracks are active (default: sign,mgap).
+  //   token = "sign"       => sign track
+  //   token = "mgap"       => auto-mgap track
+  //   token = "label=val"  => named literal track (e.g. mext=0.011)
+  // --m_gap <val>          => legacy alias; adds/updates a track named "mext".
+  //
   // evals: eigenvalues of H_DWF = Gamma5R5 * D_DWF(mass).
   //   These come from Compute_DWF_G5R5.cc (eMe[i]) and INCLUDE m_f.
   //   Near-zero modes have |mu_n| ~ m_f; bulk modes have |mu_n| ~ O(1).
@@ -276,16 +321,19 @@ int main(int argc, char* argv[])
   //     (b) a path to a text file:   --evals /path/to/evals.txt
   //         File format: one eigenvalue per line (blank lines / '#' comments ignored).
   //   The number of eigenvalues should match the number of --f2 density files;
-  //   if fewer are provided the remaining modes are treated as mu_n=0 (sign=+1).
-  // mass_f: input quark mass m_f used when generating the eigenvectors.
-  // m_gap:  spectral gap m_gap = m_f + m_res (physical quark mass including residual
-  //         chiral symmetry breaking).  Used as the weight in Formula A'.
-  //         If not supplied via --m_gap it is estimated as min_n|mu_n| from --evals.
-  // topo_out: output file prefix for the four q_top fields.
+  //   if fewer are provided the remaining modes are treated as mu_n=0 (sign=0).
+  // mass_f: input quark mass m_f; fallback for m_gap_auto when --evals is absent.
+  // topo_out: output file prefix for the q_top fields.
+  struct WeightSpec {
+    std::string label;
+    bool        is_sign;   // true  => w = sign(mu_n)
+    double      mgap_val;  // false => w = mgap_val/mu_n  (0 = auto: min|mu_n|, >0 = literal)
+  };
   double mass_f = 0.0;
-  double m_gap  = -1.0;   // sentinel: negative means "not yet set"
   std::vector<double> evals;
   std::string topo_out = "topo_evec";
+  // Default: both sign and mgap tracks always active
+  std::vector<WeightSpec> weight_specs = {{"sign",true,0.0},{"mgap",false,0.0}};
 
   if( GridCmdOptionExists(argv,argv+argc,"--mass") ){
     arg = GridCmdOptionPayload(argv,argv+argc,"--mass");
@@ -329,22 +377,71 @@ int main(int argc, char* argv[])
   if( GridCmdOptionExists(argv,argv+argc,"--topo_out") ){
     topo_out = GridCmdOptionPayload(argv,argv+argc,"--topo_out");
   }
+  // --weights: override the set of active weight tracks
+  if( GridCmdOptionExists(argv,argv+argc,"--weights") ){
+    arg = GridCmdOptionPayload(argv,argv+argc,"--weights");
+    std::vector<std::string> tokens;
+    GridCmdOptionCSL(arg, tokens);
+    weight_specs.clear();
+    for(auto& tok : tokens){
+      auto eq = tok.find('=');
+      if(eq != std::string::npos){
+        std::string base = tok.substr(0, eq);
+        double val = std::stod(tok.substr(eq+1));
+        // Auto-encode value into label: mext=0.011 → label "mext0.011"
+        // so the output filename is self-documenting (q_A_mext0.011.702).
+        // Strip trailing zeros: format as shortest decimal that round-trips.
+        std::ostringstream ss; ss << val;
+        std::string lbl = base + ss.str();
+        weight_specs.push_back({lbl, false, val});
+        std::cout << GridLogMessage << "--weights: track '" << lbl
+                  << "' mgap_val=" << val << std::endl;
+      } else if(tok == "sign"){
+        weight_specs.push_back({"sign", true, 0.0});
+        std::cout << GridLogMessage << "--weights: track 'sign' (w=sign(mu_n))" << std::endl;
+      } else if(tok == "mgap"){
+        weight_specs.push_back({"mgap", false, 0.0});
+        std::cout << GridLogMessage << "--weights: track 'mgap' (w=m_gap_auto/mu_n)" << std::endl;
+      } else {
+        std::cerr << "WARNING: unknown --weights token '" << tok << "' — ignored" << std::endl;
+      }
+    }
+  }
+  // --m_gap <val>: legacy alias; adds/updates track named "mext" with mgap_val=val
   if( GridCmdOptionExists(argv,argv+argc,"--m_gap") ){
     arg = GridCmdOptionPayload(argv,argv+argc,"--m_gap");
-    GridCmdOptionFloat(arg, m_gap);
-    std::cout << "m_gap set explicitly: " << m_gap << std::endl;
+    double m_gap_ext; GridCmdOptionFloat(arg, m_gap_ext);
+    bool found = false;
+    for(auto& ws : weight_specs)
+      if(ws.label == "mext"){ ws.is_sign = false; ws.mgap_val = m_gap_ext; found = true; break; }
+    if(!found) weight_specs.push_back({"mext", false, m_gap_ext});
+    std::cout << GridLogMessage << "--m_gap: added/updated 'mext' track with mgap_val="
+              << m_gap_ext << std::endl;
   }
-  // If m_gap was not supplied, estimate it as min_n |mu_n|.
-  // This approximates m_f + m_res = m_phys (the spectral gap of H_DWF).
-  if(m_gap < 0.0 && !evals.empty()){
-    m_gap = std::fabs(evals[0]);
-    for(auto& v : evals) if(std::fabs(v) < m_gap) m_gap = std::fabs(v);
-    std::cout << "m_gap auto-estimated as min|mu_n| = " << m_gap << std::endl;
-  } else if(m_gap < 0.0){
-    m_gap = mass_f;  // last-resort fallback
-    std::cout << "m_gap fallback to mass_f = " << m_gap << std::endl;
+  // m_gap_auto: min_n|mu_n| computed from the --evals text file (mass_f fallback).
+  // Must be known before the topo accumulation loop — embedded records only
+  // supply per-mode mu_n, not a pre-loop global min.
+  double m_gap_auto;
+  if(!evals.empty()){
+    m_gap_auto = std::fabs(evals[0]);
+    for(auto& v : evals) if(std::fabs(v) < m_gap_auto) m_gap_auto = std::fabs(v);
+    std::cout << GridLogMessage << "m_gap_auto = min|mu_n| = " << m_gap_auto
+              << " (from --evals)" << std::endl;
+  } else {
+    m_gap_auto = mass_f;
+    std::cout << GridLogMessage << "m_gap_auto = mass_f = " << m_gap_auto
+              << " (--evals not provided; supply for accurate mgap weight)" << std::endl;
   }
-  // ------------------------------------------------------------
+  // Print active weight tracks
+  {
+    std::cout << GridLogMessage << "Active weight tracks (" << weight_specs.size() << "):";
+    for(auto& ws : weight_specs){
+      if(ws.is_sign)             std::cout << "  " << ws.label << "(sign)";
+      else if(ws.mgap_val == 0)  std::cout << "  " << ws.label << "(mgap_auto)";
+      else                       std::cout << "  " << ws.label << "(" << ws.mgap_val << ")";
+    }
+    std::cout << std::endl;
+  }
 
   assert( omit_dir != dynm_dir && "The omitted dir cannot be the same as updated dimension" );
 
@@ -376,14 +473,31 @@ int main(int argc, char* argv[])
   //   data2[c]: plain sum over s (existing behaviour, used for visualisation)
   //   q_eps, q_bdy, q_mid: three q_top formulas accumulated over eigenvectors
   bool compute_topo = (Ls > 0) && !file_list2.empty();
-  LatticeComplexD q_eps(grid), q_bdy(grid), q_mid(grid);
-  if(compute_topo){ q_eps = Zero(); q_bdy = Zero(); q_mid = Zero(); }
+  // Dynamic topo accumulator vectors — one entry per active weight track.
+  // q_eps = formula B (eps_code chirality), q_bdy = formula C (boundary), q_mid = formula A (midpoint).
+  int ntracks = (int)weight_specs.size();
+  std::vector<LatticeComplexD> q_eps_all, q_bdy_all, q_mid_all;
+  if(compute_topo){
+    q_eps_all.reserve(ntracks); q_bdy_all.reserve(ntracks); q_mid_all.reserve(ntracks);
+    for(int t = 0; t < ntracks; t++){
+      q_eps_all.emplace_back(grid); q_eps_all.back() = Zero();
+      q_bdy_all.emplace_back(grid); q_bdy_all.back() = Zero();
+      q_mid_all.emplace_back(grid); q_mid_all.back() = Zero();
+    }
+  }
+
+  // Eigenvalues embedded inside each SCIDAC evec_density file (H_DWF_EvalRecord).
+  // Populated during data2 loading; takes priority over --evals when available.
+  std::vector<double> evals_embedded;
 
   std::vector<LatticeComplexD> data2(file_list2.size()-take_diff,grid);
   for(int c=0;c<data2.size();c++) {
     std::cout << GridLogMessage << "Reading file2: "<<file_list2[c]<<std::endl;
     LatticeComplexD tmp(gridF);
-    readFile(tmp,file_list2[c]);
+    double emb_eval = 0.0; int emb_n = -1;
+    readFileRecord(tmp, file_list2[c], emb_eval, emb_n);
+    if(emb_n >= 0)   // valid embedded record
+      evals_embedded.push_back(emb_eval);
     if(Ls > 0){
       // 5D input: sum over the Ls dimension to produce a 4D density
       LatticeComplexD tmp4D(grid); tmp4D = Zero(); data2[c] = Zero();
@@ -420,9 +534,8 @@ int main(int argc, char* argv[])
     //   Near-zero (topological) modes: |mu_n| ~ m_gap = m_f + m_res.
     //   Bulk (+/-mu) pairs: contributions cancel in the sum.
     //
-    // All three formulas use m_gap/mu_n weight (see topo_charge.tex §5):
-    //   topological modes: |mu_n| ~ m_gap  =>  m_gap/mu_n ~ +-1  (captures chirality)
-    //   bulk modes:        |mu_n| ~ Lambda  =>  m_gap/mu_n ~ 0   (UV suppressed)
+    // Both weight modes (sign and mgap) are accumulated simultaneously — see loop body.
+    // q_A midpoint always uses the mgap weight (exponential midpoint amplitude compensation).
     //
     // -----------------------------------------------------------------------
     // FORMULA B:  eps_code(s)-chirality density   (Bulk form)
@@ -467,59 +580,77 @@ int main(int argc, char* argv[])
     //     NOTE: q_A is unreliable under low-mode truncation (severed 5D current).
     // ===========================================================================
     if(compute_topo) {
-      // Eigenvalue of H_DWF = gamma5*R5*D_DWF (includes m_f, passed via --evals).
-      double mu_n = (c < (int)evals.size()) ? evals[c] : 0.0;
-      // Bulk (+/-mu) pairs cancel automatically in the sum over modes.
-      // m_gap/mu_n weight for all formulas (A, B, C).
-      // Uses the spectral gap m_gap = m_f + m_res:
-      //   - topological modes: |mu_n| ~ m_gap  =>  w ~ +-1  (captures chirality)
-      //   - bulk modes:        |mu_n| ~ Lambda  =>  w ~ m_gap/Lambda << 1  (UV suppressed)
-      // Guard against division by zero (should never occur with physical evals).
-      double w = (mu_n != 0.0) ? (m_gap / mu_n) : 0.0;
+      // Eigenvalue of H_DWF = gamma5*R5*D_DWF (includes m_f).
+      // Priority: (1) embedded H_DWF_EvalRecord, (2) --evals, (3) 0.0 (warning).
+      double mu_n;
+      if(c < (int)evals_embedded.size())
+        mu_n = evals_embedded[c];
+      else if(c < (int)evals.size())
+        mu_n = evals[c];
+      else {
+        mu_n = 0.0;
+        std::cout << GridLogMessage << "WARNING: no eigenvalue for mode " << c
+                  << " — set mu_n=0, mode will not contribute" << std::endl;
+      }
 
-      // --- Formula B: m_gap/mu_n-weighted eps_code chirality sum ---
-      // q_B(x) += -(m_gap/mu_n) * sum_s eps_code(s) * rho_n(x,s)
-      // eps_code(s) = -1 for s < Ls/2  (left),  +1 for s >= Ls/2  (right).
+      // Compute weight for each active track:
+      //   is_sign = true  => w = sign(mu_n)                            (exact ±1 or 0)
+      //   is_sign = false, mgap_val = 0 => w = m_gap_auto / mu_n      (auto = min|mu_n|)
+      //   is_sign = false, mgap_val ≠ 0 => w = mgap_val / mu_n        (user-supplied literal)
+      // q_A midpoint note: sign(mu_n) weight gives q_A -> 0 for large Ls
+      //   because the midpoint amplitude ~ exp(-alpha*Ls) requires m_f/mu_n compensation.
+      std::vector<double> track_w(ntracks, 0.0);
+      for(int t = 0; t < ntracks; t++){
+        const WeightSpec& ws = weight_specs[t];
+        if(ws.is_sign)
+          track_w[t] = (mu_n > 0.0) ? 1.0 : (mu_n < 0.0) ? -1.0 : 0.0;
+        else {
+          double mg = (ws.mgap_val == 0.0) ? m_gap_auto : ws.mgap_val;
+          track_w[t] = (mu_n != 0.0) ? (mg / mu_n) : 0.0;
+        }
+      }
+
+      // --- Formula B: eps_code chirality sum ---
+      // q_B(x) += -w * sum_s eps_code(s) * rho_n(x,s)
       {
         LatticeComplexD eps_slice(grid);
         for(int s = 0; s < Ls; s++){
           ExtractSlice(eps_slice, tmp, s, 0);
-          double eps_s = (s >= Ls/2) ? 1.0 : -1.0;   // eps_code(s)
-          q_eps = q_eps - (w * eps_s) * eps_slice;
+          double eps_s = (s >= Ls/2) ? 1.0 : -1.0;
+          for(int t = 0; t < ntracks; t++)
+            q_eps_all[t] = q_eps_all[t] - (track_w[t] * eps_s) * eps_slice;
         }
       }
 
       // --- Formula C: boundary projection ---
-      // q_C(x) += -(m_gap/mu_n) * [rho_n(x,Ls-1) - rho_n(x,0)]
-      // Uses m_gap/mu_n weight (same rationale as Formulas A and B).
-      // s=Ls-1: right wall (eps_code=+1),  s=0: left wall (eps_code=-1).
+      // q_C(x) += -w * [rho_n(x,Ls-1) - rho_n(x,0)]
       {
         LatticeComplexD bdy_s0(grid), bdy_sLs(grid);
-        ExtractSlice(bdy_s0,  tmp, 0,    0);   // left wall,  s=0
-        ExtractSlice(bdy_sLs, tmp, Ls-1, 0);   // right wall, s=Ls-1
-        q_bdy = q_bdy - w * (bdy_sLs - bdy_s0);
+        ExtractSlice(bdy_s0,  tmp, 0,    0);
+        ExtractSlice(bdy_sLs, tmp, Ls-1, 0);
+        LatticeComplexD bdy_diff = bdy_sLs - bdy_s0;
+        for(int t = 0; t < ntracks; t++)
+          q_bdy_all[t] = q_bdy_all[t] - track_w[t] * bdy_diff;
       }
 
-      // --- Formula A: midpoint density (m_gap/mu_n weighted) ---
-      // q_A(x) += -(m_gap/mu_n) * 0.5 * [rho_n(x,Ls/2) - rho_n(x,Ls/2-1)]
-      // Must use m_gap/mu_n, NOT sign(mu_n):
-      // The midpoint amplitude chi_n^A ~ e^{-alpha*Ls} is exponentially suppressed at large Ls.
-      // The exact weight m_f/mu_n ~ 1/m_res compensates exactly, giving O(1).
-      // sign(mu_n) = +-1 removes this compensation => q_A -> 0 for Ls=48.
-      // m_gap/mu_n restores it: topological modes |mu_n|~m_gap => m_gap/mu_n~+-1,
-      // bulk modes suppressed by m_gap/Lambda_bulk << 1.
+      // --- Formula A: midpoint density ---
+      // q_A(x) += -w * 0.5 * [rho_n(x,Ls/2) - rho_n(x,Ls/2-1)]
       if(Ls >= 2){
         LatticeComplexD mid_lo(grid), mid_hi(grid);
-        ExtractSlice(mid_lo, tmp, Ls/2-1, 0);   // below midpoint (eps_code=-1)
-        ExtractSlice(mid_hi, tmp, Ls/2,   0);   // above midpoint (eps_code=+1)
-        q_mid = q_mid - w * 0.5 * (mid_hi - mid_lo);
+        ExtractSlice(mid_lo, tmp, Ls/2-1, 0);
+        ExtractSlice(mid_hi, tmp, Ls/2,   0);
+        LatticeComplexD mid_diff = mid_hi - mid_lo;
+        for(int t = 0; t < ntracks; t++)
+          q_mid_all[t] = q_mid_all[t] - track_w[t] * 0.5 * mid_diff;
       }
 
-      std::cout << "TopoContrib evec=" << c
-                << " mu_n=" << mu_n << " w=" << w
-                << " Q_B="  << real(TensorRemove(sum(q_eps)))
-                << " Q_C="  << real(TensorRemove(sum(q_bdy)))
-                << " Q_A="  << real(TensorRemove(sum(q_mid))) << std::endl;
+      std::cout << "TopoContrib evec=" << c << " mu_n=" << mu_n;
+      for(int t = 0; t < ntracks; t++)
+        std::cout << " w_" << weight_specs[t].label << "=" << track_w[t];
+      for(int t = 0; t < ntracks; t++)
+        std::cout << " Q_B_" << weight_specs[t].label
+                  << "=" << real(TensorRemove(sum(q_eps_all[t])));
+      std::cout << std::endl;
     }
     // ==========================================================================
   }
@@ -552,7 +683,8 @@ int main(int argc, char* argv[])
   //   --topo_out /path/Top_dnsty_q_{def}_0_smr.702
   // C++ replaces {def} with A, B, Bp, C to produce the four output files.
   // q_A, q_B, q_C all use m_gap/mu_n weight (requires --evals for m_gap).
-  if(compute_topo && !evals.empty()){
+  bool have_evals = !evals.empty() || !evals_embedded.empty();
+  if(compute_topo && have_evals){
     // Lambda: substitute {def} placeholder in topo_out template string.
     auto fill_def = [](std::string tmpl, const std::string& d) -> std::string {
       auto pos = tmpl.find("{def}");
@@ -560,24 +692,27 @@ int main(int argc, char* argv[])
       return tmpl;
     };
 
-    // Formula B: eps_code(s)-chirality density  [sign(mu_n) weight, bulk form]
-    //   q_B(x) = -sum_n (m_gap/mu_n) * sum_s eps_code(s) * rho_n(x,s)
-    writeFile(q_eps, fill_def(topo_out,"B"));
-    std::cout << "Wrote q_B   -> " << fill_def(topo_out,"B")
-              << "  Q_B=" << real(TensorRemove(sum(q_eps)))
-              << "  (m_gap=" << m_gap << ")" << std::endl;
+    for(int t = 0; t < ntracks; t++){
+      const std::string& lbl = weight_specs[t].label;
+      writeFile(q_eps_all[t], fill_def(topo_out,"B_"+lbl));
+      std::cout << "Wrote q_B_" << lbl << " -> " << fill_def(topo_out,"B_"+lbl)
+                << "  Q=" << real(TensorRemove(sum(q_eps_all[t])));
+      if(!weight_specs[t].is_sign){
+        if(weight_specs[t].mgap_val == 0.0) std::cout << "  m_gap_auto=" << m_gap_auto;
+        else                                std::cout << "  mgap=" << weight_specs[t].mgap_val;
+      }
+      std::cout << std::endl;
 
-    // Formula C: boundary projection density
-    //   q_C(x) = -sum_n (m_gap/mu_n) * [rho_n(x,Ls-1) - rho_n(x,0)]
-    writeFile(q_bdy, fill_def(topo_out,"C"));
-    std::cout << "Wrote q_C   -> " << fill_def(topo_out,"C")
-              << "  Q_C=" << real(TensorRemove(sum(q_bdy))) << std::endl;
+      writeFile(q_bdy_all[t], fill_def(topo_out,"C_"+lbl));
+      std::cout << "Wrote q_C_" << lbl << " -> " << fill_def(topo_out,"C_"+lbl)
+                << "  Q=" << real(TensorRemove(sum(q_bdy_all[t]))) << std::endl;
 
-    // Formula A: midpoint density  [Blum Eq. 9 analog]
-    //   q_A(x) = -sum_n (m_gap/mu_n) * 0.5 * [rho_n(x,Ls/2) - rho_n(x,Ls/2-1)]
-    writeFile(q_mid, fill_def(topo_out,"A"));
-    std::cout << "Wrote q_A   -> " << fill_def(topo_out,"A")
-              << "  Q_A=" << real(TensorRemove(sum(q_mid))) << std::endl;
+      writeFile(q_mid_all[t], fill_def(topo_out,"A_"+lbl));
+      std::cout << "Wrote q_A_" << lbl << " -> " << fill_def(topo_out,"A_"+lbl)
+                << "  Q=" << real(TensorRemove(sum(q_mid_all[t])));
+      if(weight_specs[t].is_sign)          std::cout << "  (note: q_A_sign ~ 0 for Ls=48)";
+      std::cout << std::endl;
+    }
   }
   /****** IP & Corr of each fermion TCD definition vs gluonic TCD (--topo_compare) *****/
   // Requires: --topo_out (so q_eps/q_bdy/q_mid are available),
@@ -595,11 +730,17 @@ int main(int argc, char* argv[])
     GridCmdOptionInt(arg, conf_id);
   }
   int topo_compare = GridCmdOptionExists(argv,argv+argc,"--topo_compare");
-  if(compute_topo && !evals.empty() && topo_compare && !data1.empty()){
+  if(compute_topo && have_evals && topo_compare && !data1.empty()){
     typedef typename PeriodicGimplR::ComplexField ComplexField;
     // data1[i] = gluonic TCD at flow time index i  (one file per TD_tau)
     struct QDef { std::string name; LatticeComplexD* field; };
-    std::vector<QDef> qdefs = {{"q_A",&q_mid},{"q_B",&q_eps},{"q_C",&q_bdy}};
+    std::vector<QDef> qdefs;
+    for(int t = 0; t < ntracks; t++){
+      const std::string& lbl = weight_specs[t].label;
+      qdefs.push_back({"q_A_"+lbl, &q_mid_all[t]});
+      qdefs.push_back({"q_B_"+lbl, &q_eps_all[t]});
+      qdefs.push_back({"q_C_"+lbl, &q_bdy_all[t]});
+    }
     for(auto& qd : qdefs){
       std::cout << "# " << qd.name << std::endl;  // shell uses this to split output
       for(int i=0; i<(int)data1.size(); i++){
@@ -627,7 +768,7 @@ int main(int argc, char* argv[])
   //
   //   Output per line: "CompRef: def comp_idx conf Q_evec Q_ref Corr IP rms_diff"
   std::vector<LatticeComplexD> comp_fields;   // populated below; appended to data1 at end
-  if(compute_topo && !evals.empty() && GridCmdOptionExists(argv,argv+argc,"--comp_file")){
+  if(compute_topo && have_evals && GridCmdOptionExists(argv,argv+argc,"--comp_file")){
     arg = GridCmdOptionPayload(argv,argv+argc,"--comp_file");
     std::vector<std::string> comp_fnames;
     GridCmdOptionCSL(arg, comp_fnames);
@@ -636,7 +777,13 @@ int main(int argc, char* argv[])
     LatticeComplexD one(grid); one = ComplexField::scalar_type(1.0, 0.0);
 
     struct QDef { std::string name; LatticeComplexD* field; };
-    std::vector<QDef> qdefs = {{"q_A",&q_mid},{"q_B",&q_eps},{"q_C",&q_bdy}};
+    std::vector<QDef> qdefs;
+    for(int t = 0; t < ntracks; t++){
+      const std::string& lbl = weight_specs[t].label;
+      qdefs.push_back({"q_A_"+lbl, &q_mid_all[t]});
+      qdefs.push_back({"q_B_"+lbl, &q_eps_all[t]});
+      qdefs.push_back({"q_C_"+lbl, &q_bdy_all[t]});
+    }
 
     // Pre-load all comp files BEFORE printing the header so that LIME/IOobject
     // messages from readFile do not interleave with the table rows.
