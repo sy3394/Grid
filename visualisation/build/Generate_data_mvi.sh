@@ -827,11 +827,7 @@ for force in IwasakiGaugeAction JacobianAction; do
 	dpath=${HMC_DIR}/${fname}_${ext}.dat
 	dfile=${HMC}/${fname}_${ext}.dat
 	mfile=${HMC}/${fname}_${ext}.avi
-	if [[ "$ext" == *"update"* ]] ; then
-	    dfiles+=( $mfile )
-	else
-	    dfiles+=( $dfile $mfile )
-	fi
+	dfiles+=( $dfile )   # archive .dat only; .avi files are too large
 
 	if [[ "$dof" == "smr" ]] ; then iso=-0.45; else iso=-0.58; fi
 	if [[ "$force" == "JacobianAction" ]] ; then iso=-0.61; fi

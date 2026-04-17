@@ -638,23 +638,34 @@ int main(int argc, char* argv[])
     struct QDef { std::string name; LatticeComplexD* field; };
     std::vector<QDef> qdefs = {{"q_A",&q_mid},{"q_B",&q_eps},{"q_C",&q_bdy}};
 
-    // Header for human-readable table
+    // Pre-load all comp files BEFORE printing the header so that LIME/IOobject
+    // messages from readFile do not interleave with the table rows.
+    std::vector<LatticeComplexD> refs;
+    std::vector<double>          Q_refs;
+    std::vector<ComplexD>        avg_refs;
+    for(int ci = 0; ci < (int)comp_fnames.size(); ci++){
+      refs.emplace_back(grid);
+      readFile(refs.back(), comp_fnames[ci]);
+      Q_refs .push_back(real(TensorRemove(sum(refs.back()))));
+      avg_refs.push_back(TensorRemove(sum(refs.back())) / RealD(grid->gSites()));
+      std::cout << GridLogMessage << "comp_file[" << ci << "] " << comp_fnames[ci]
+                << "  Q=" << Q_refs.back() << std::endl;
+    }
+
+    // Header for human-readable table (setw=16: wide enough for e.g. -0.999999541)
     std::cout << GridLogMessage
               << std::left  << std::setw(5)  << "ci"
               << std::setw(6)  << "def"
-              << std::right << std::setw(12) << "Q_evec"
-                            << std::setw(12) << "Q_ref"
-                            << std::setw(12) << "Corr"
-                            << std::setw(12) << "IP"
-                            << std::setw(12) << "rms_diff" << std::endl;
+              << std::right << std::setw(16) << "Q_evec"
+                            << std::setw(16) << "Q_ref"
+                            << std::setw(16) << "Corr"
+                            << std::setw(16) << "IP"
+                            << std::setw(16) << "rms_diff" << std::endl;
 
     for(int ci = 0; ci < (int)comp_fnames.size(); ci++){
-      LatticeComplexD ref(grid);
-      readFile(ref, comp_fnames[ci]);
-      double   Q_ref   = real(TensorRemove(sum(ref)));
-      ComplexD avg_ref = TensorRemove(sum(ref)) / RealD(grid->gSites());
-      std::cout << GridLogMessage << "comp_file[" << ci << "] " << comp_fnames[ci]
-                << "  Q=" << Q_ref << std::endl;
+      LatticeComplexD& ref   = refs[ci];
+      double           Q_ref = Q_refs[ci];
+      ComplexD       avg_ref = avg_refs[ci];
 
       for(auto& qd : qdefs){
         double   Q_evec   = real(TensorRemove(sum(*qd.field)));
@@ -677,11 +688,11 @@ int main(int argc, char* argv[])
         std::cout << GridLogMessage
                   << std::left  << std::setw(5)  << ci
                   << std::setw(6)  << qd.name
-                  << std::right << std::setw(12) << Q_evec
-                                << std::setw(12) << Q_ref
-                                << std::setw(12) << corr
-                                << std::setw(12) << ip
-                                << std::setw(12) << rms_diff << std::endl;
+                  << std::right << std::setw(16) << Q_evec
+                                << std::setw(16) << Q_ref
+                                << std::setw(16) << corr
+                                << std::setw(16) << ip
+                                << std::setw(16) << rms_diff << std::endl;
 
         // Machine-readable for shell/notebook: "CompRef: def comp_idx conf Q_evec Q_ref Corr IP rms_diff"
         std::cout << "CompRef: " << qd.name << " " << ci << " " << conf_id << " "
@@ -706,7 +717,7 @@ int main(int argc, char* argv[])
       }
 
       // Stash for appending to data1 (visualisation frames) below
-      comp_fields.push_back(ref);
+      comp_fields.push_back(refs[ci]);
     }
   }
   /******************************************************************************/
