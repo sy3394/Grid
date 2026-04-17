@@ -316,17 +316,30 @@ for i_conf in "${!CONFS[@]}"; do
                 dfiles+=( ${HMC}/eigen/${conf}/Top_dnsty_q_${q_def}_${tau}_smr.${conf} )
             done
 
-            ### Step 3: T-animated movie (FieldDensityAnimateMultiFiles --animate T)
-            ### Shows q_A | q_B | q_C side-by-side (3 files × --animate T = exactly 3 display dims).
-            ### qlat scidac files are intentionally excluded: each extra file adds a "configs"
-            ### dimension, giving 4 unresolved dims (X,Y,Z,configs) and triggering
-            ###   "ERROR: 4 display dims inferred (need exactly 3)".
-            ### Stochastic vs gluonic comparisons are captured by TopoCompRef output in Steps 1+2.
-            Fs_all=${pfx}_A_${tau}_smr.${conf},${pfx}_B_${tau}_smr.${conf},${pfx}_C_${tau}_smr.${conf}
-            mpeg_all=${HMC_DIR}/Top_dnsty_all_defs_${conf}_tau${tau}.avi
+            ### Step 3a: T-animated movie of fermion TCD estimators — q_A | q_B | q_C (3 panels)
+            ### Exactly 3 files → after --animate T assigns T, the tool has exactly 3 display
+            ### dims (X, Y, Z) with the 3 files shown as side-by-side panels.  Adding more files
+            ### would raise the "configs" axis to 4 unresolved display dims (X,Y,Z,configs).
+            Fs_evec=${pfx}_A_${tau}_smr.${conf},${pfx}_B_${tau}_smr.${conf},${pfx}_C_${tau}_smr.${conf}
+            mpeg_evec=${HMC_DIR}/Top_dnsty_q_ABC_${conf}_tau${tau}.avi
             if [[ -f ${pfx}_A_${tau}_smr.${conf} ]]; then
-                ${CDIR}/FieldDensityAnimateMultiFiles --files $Fs_all --grid $vol --animate T \
-                       --mpeg $mpeg_all --isosurface -0.01
+                ${CDIR}/FieldDensityAnimateMultiFiles --files $Fs_evec --grid $vol --animate T \
+                       --mpeg $mpeg_evec --isosurface -0.01
+            fi
+
+            ### Step 3b: T-animated movie of qlat stochastic TCD reference fields
+            ### Run as a separate call so the "configs" axis is again ≤ 3 (one file per scidac).
+            ### Only produced when at least one topo_field_*.scidac is present.
+            comp_vis=""
+            for idx in 0 1; do
+                f=${COMP_DIR}/topo_field_${idx}.scidac
+                [[ -f $f ]] && comp_vis+=$f,
+            done
+            comp_vis=${comp_vis%?}
+            if [[ -n "$comp_vis" ]]; then
+                mpeg_stoch=${HMC_DIR}/Top_dnsty_stoch_${conf}_tau${tau}.avi
+                ${CDIR}/FieldDensityAnimateMultiFiles --files $comp_vis --grid $vol --animate T \
+                       --mpeg $mpeg_stoch --isosurface -0.01
             fi
 
         done   # tau
