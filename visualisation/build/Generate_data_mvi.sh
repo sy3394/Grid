@@ -301,48 +301,21 @@ for i_conf in "${!CONFS[@]}"; do
             comp_files=${comp_files%?}   # strip trailing comma
             [[ -n "$comp_files" ]] && comp_opt="--comp_file $comp_files"
 
-            ### Steps 1+2: compute topo fields + IP/corr vs gluonic TCD in one call
+            ### Steps 1+2: compute topo fields + IP/corr vs gluonic TCD in one call.
+            ### FieldDensityEigen writes corr_ip_q_*.dat, comp_ref_q_*.dat, corr_ip_stoch.dat
+            ### directly to --data_dir in append mode — no scratch file, no awk needed.
             ### --topo_out template: C++ substitutes {def} with A_mgap, B_mgap, C_mgap,
             ###                      A_sign, B_sign, C_sign  (6 output files per conf/tau)
-            ### --comp_file (if present): compares each qlat field vs all 6 defs
-            ### Output lines starting with "Topo PCF" and "CompRef" parsed below
-            scratch=${HMC_DIR}/tmp_topo_pcf_${conf}_${tau}
+            ### --tau_wf: Wilson flow time written as the 'tau' column in output rows.
+            ### --td_taus: actual gluonic flow times for files1[0,1,2] (0,4,16).
             FDE \
                 --grid $vol \
                 --files2 $F2s --Ls 48 $eval_opt $weights_opt \
                 --topo_out ${DATA_DIR_topo}/Top_dnsty_q_{def}_${tau}_smr.${conf} \
                 --files1 $F1s --topo_compare --conf_id $conf \
-                --topo_log $scratch \
+                --tau_wf $tau --td_taus 0,4,16 \
+                --data_dir ${HMC_DIR}/data \
                 $comp_opt
-
-            # Split PCF output into per-def files; active set matches WEIGHTS token list
-            # Each block is preceded by "# q_X_wmode"; lines are "Topo PCF Corr/IP: TD_i conf val"
-            # Reformat to: TD_tau  tau  conf  value  (matching notebook MultiIndex schema)
-            for q_def in $_q_defs_all; do
-                awk -v q=$q_def -v tau=$tau -v tds="0 4 16" '
-                    /^# / { active=($2==q) }
-                    active && /^Topo PCF Corr:/ { split(tds,td," "); print td[$3+1], tau, $4, $5 }
-                    active && /^Topo PCF IP:/   { split(tds,td," "); print td[$3+1], tau, $4, $5 }
-                ' $scratch >> ${HMC_DIR}/data/corr_ip_${q_def}.dat
-            done
-
-            # Parse CompRef lines (present only when --comp_file fired)
-            # Line format: "CompRef: def comp_idx conf Q_evec Q_ref Corr IP rms_diff"
-            # Output: comp_idx  tau  conf  Q_evec  Q_ref  Corr  IP  rms_diff
-            for q_def in $_q_defs_all; do
-                awk -v q=$q_def -v tau=$tau '
-                    /^CompRef:/ && $2==q { print $3, tau, $4, $5, $6, $7, $8, $9 }
-                ' $scratch >> ${HMC_DIR}/data/comp_ref_${q_def}.dat
-            done
-
-            # Parse TopoCompRef lines: stochastic qlat field vs gluonic TCD
-            # Line format: "TopoCompRef: comp_idx TD_tau_idx conf Q_ref Q_gluon Corr IP"
-            # Output: comp_idx  TD_tau  tau  conf  Q_ref  Q_gluon  Corr  IP
-            awk -v tau=$tau -v tds="0 4 16" '
-                /^TopoCompRef:/ { split(tds,td," "); print $2, td[$3+1], tau, $4, $5, $6, $7, $8 }
-            ' $scratch >> ${HMC_DIR}/data/corr_ip_stoch.dat
-
-            rm -f $scratch
 
             # Register topo density files for archiving
             pfx=${DATA_DIR_topo}/Top_dnsty_q

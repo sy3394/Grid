@@ -729,13 +729,11 @@ int main(int argc, char* argv[])
     arg = GridCmdOptionPayload(argv,argv+argc,"--conf_id");
     GridCmdOptionInt(arg, conf_id);
   }
-  // --topo_log <file>: write all machine-readable output lines (# q_X, Topo PCF,
-  // CompRef:, TopoCompRef:) to a dedicated file instead of stdout.  This avoids
-  // binary LIME payload data (leaked by Grid's I/O layer to the same stdout fd)
-  // corrupting the lines that the shell script needs to parse.
-  // When absent, falls back to stdout (original behaviour).
+  // --topo_log <file>: legacy scratch file for machine-readable lines (kept for
+  // backward compatibility).  Superseded by --data_dir which writes named output
+  // files directly.  When both are absent, falls back to stdout.
   std::ofstream topo_log_f;
-  std::ostream* topo_log = &std::cout;   // default: stdout
+  std::ostream* topo_log = &std::cout;
   if( GridCmdOptionExists(argv,argv+argc,"--topo_log") ){
     arg = GridCmdOptionPayload(argv,argv+argc,"--topo_log");
     topo_log_f.open(arg, std::ios::trunc);
@@ -745,6 +743,34 @@ int main(int argc, char* argv[])
     else
       topo_log = &topo_log_f;
   }
+  // --data_dir <dir>: write corr_ip_q_*.dat, comp_ref_q_*.dat, corr_ip_stoch.dat
+  // directly in append mode — no scratch file, no awk post-processing needed.
+  // --tau_wf  <val>: Wilson flow time written as the 'tau' column in output rows.
+  // --td_taus <v0,v1,...>: actual TD_tau values for data1[0], data1[1], ...
+  //   Default when absent: use the file index directly (0, 1, 2, ...).
+  std::string data_dir;
+  int tau_wf = -1;
+  std::vector<int> td_taus_vec;
+  if( GridCmdOptionExists(argv,argv+argc,"--data_dir") ){
+    data_dir = GridCmdOptionPayload(argv,argv+argc,"--data_dir");
+    std::cout << GridLogMessage << "--data_dir: " << data_dir << std::endl;
+  }
+  if( GridCmdOptionExists(argv,argv+argc,"--tau_wf") ){
+    arg = GridCmdOptionPayload(argv,argv+argc,"--tau_wf");
+    GridCmdOptionInt(arg, tau_wf);
+    std::cout << GridLogMessage << "--tau_wf: " << tau_wf << std::endl;
+  }
+  if( GridCmdOptionExists(argv,argv+argc,"--td_taus") ){
+    arg = GridCmdOptionPayload(argv,argv+argc,"--td_taus");
+    std::vector<std::string> td_strs;
+    GridCmdOptionCSL(arg, td_strs);
+    for(auto& s: td_strs) td_taus_vec.push_back(std::stoi(s));
+    std::cout << GridLogMessage << "--td_taus: " << td_taus_vec << std::endl;
+  }
+  // Map data1 index i -> actual TD_tau value
+  auto get_td_tau = [&](int i) -> int {
+    return (i < (int)td_taus_vec.size()) ? td_taus_vec[i] : i;
+  };
   int topo_compare = GridCmdOptionExists(argv,argv+argc,"--topo_compare");
   if(compute_topo && have_evals && topo_compare && !data1.empty()){
     typedef typename PeriodicGimplR::ComplexField ComplexField;
@@ -758,7 +784,7 @@ int main(int argc, char* argv[])
       qdefs.push_back({"q_C_"+lbl, &q_bdy_all[t]});
     }
     for(auto& qd : qdefs){
-      *topo_log << "# " << qd.name << std::endl;
+      if(data_dir.empty()) *topo_log << "# " << qd.name << std::endl;
       for(int i=0; i<(int)data1.size(); i++){
         LatticeComplex X(grid), Y(grid), one(grid); one = ComplexField::scalar_type(1.0,0.0);
         ComplexD avg1 = TensorRemove(sum(data1[i]))/RealD(grid->gSites());
@@ -768,8 +794,15 @@ int main(int argc, char* argv[])
         double corr = TensorRemove(sum(X*Y)).real()/sqrt(norm2(X)*norm2(Y));
         X = data1[i]; Y = *qd.field;
         double ip   = TensorRemove(innerProduct(X,Y)).real()/sqrt(norm2(X))/sqrt(norm2(Y));
-        *topo_log << "Topo PCF Corr: " << i << " " << conf_id << " " << corr << std::endl;
-        *topo_log << "Topo PCF IP:   " << i << " " << conf_id << " " << ip   << std::endl;
+        if(!data_dir.empty()){
+          // Direct append: TD_tau  tau_wf  conf  value
+          std::ofstream of(data_dir+"/corr_ip_"+qd.name+".dat", std::ios::app);
+          of << get_td_tau(i) << " " << tau_wf << " " << conf_id << " " << corr << "\n";
+          of << get_td_tau(i) << " " << tau_wf << " " << conf_id << " " << ip   << "\n";
+        } else {
+          *topo_log << "Topo PCF Corr: " << i << " " << conf_id << " " << corr << std::endl;
+          *topo_log << "Topo PCF IP:   " << i << " " << conf_id << " " << ip   << std::endl;
+        }
       }
     }
   }
@@ -856,9 +889,15 @@ int main(int argc, char* argv[])
                                 << std::setw(16) << ip
                                 << std::setw(16) << rms_diff << std::endl;
 
-        // Machine-readable for shell/notebook: "CompRef: def comp_idx conf Q_evec Q_ref Corr IP rms_diff"
-        *topo_log << "CompRef: " << qd.name << " " << ci << " " << conf_id << " "
-                  << Q_evec << " " << Q_ref << " " << corr << " " << ip << " " << rms_diff << std::endl;
+        // Write comparison result: comp_idx  tau_wf  conf  Q_evec  Q_ref  Corr  IP  rms_diff
+        if(!data_dir.empty()){
+          std::ofstream of(data_dir+"/comp_ref_"+qd.name+".dat", std::ios::app);
+          of << ci << " " << tau_wf << " " << conf_id << " "
+             << Q_evec << " " << Q_ref << " " << corr << " " << ip << " " << rms_diff << "\n";
+        } else {
+          *topo_log << "CompRef: " << qd.name << " " << ci << " " << conf_id << " "
+                    << Q_evec << " " << Q_ref << " " << corr << " " << ip << " " << rms_diff << std::endl;
+        }
       }
 
       // --- Compare qlat stochastic field vs gluonic TCD (when --topo_compare also active) ---
@@ -873,8 +912,15 @@ int main(int argc, char* argv[])
           double corr_sg = real(TensorRemove(sum(X*Y))) / std::sqrt(norm2(X) * norm2(Y));
           X = ref;  Y = data1[i];
           double ip_sg = real(TensorRemove(innerProduct(X,Y))) / std::sqrt(norm2(X)) / std::sqrt(norm2(Y));
-          *topo_log << "TopoCompRef: " << ci << " " << i << " " << conf_id << " "
-                    << Q_ref << " " << Q_gluon << " " << corr_sg << " " << ip_sg << std::endl;
+          // Write stoch-vs-gluon result: comp_idx  TD_tau  tau_wf  conf  Q_ref  Q_gluon  Corr  IP
+          if(!data_dir.empty()){
+            std::ofstream of(data_dir+"/corr_ip_stoch.dat", std::ios::app);
+            of << ci << " " << get_td_tau(i) << " " << tau_wf << " " << conf_id << " "
+               << Q_ref << " " << Q_gluon << " " << corr_sg << " " << ip_sg << "\n";
+          } else {
+            *topo_log << "TopoCompRef: " << ci << " " << i << " " << conf_id << " "
+                      << Q_ref << " " << Q_gluon << " " << corr_sg << " " << ip_sg << std::endl;
+          }
         }
       }
 
