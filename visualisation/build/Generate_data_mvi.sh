@@ -305,13 +305,16 @@ for i_conf in "${!CONFS[@]}"; do
             # TopoCompRef) directly to a clean file from inside C++, bypassing stdout.
             # This avoids binary LIME payload data (which Grid leaks to the same stdout
             # fd as its log messages on Frontier) from corrupting the parsed output.
+            # stdout → /dev/null: binary LIME payload leaks there via Cray MPI-IO;
+            # all machine-readable output goes to --topo_log, all log messages to stderr.
             ${CDIR}/FieldDensityEigen \
                 --grid $vol \
                 --files2 $F2s --Ls 48 $eval_opt $weights_opt \
                 --topo_out ${DATA_DIR_topo}/Top_dnsty_q_{def}_${tau}_smr.${conf} \
                 --files1 $F1s --topo_compare --conf_id $conf \
                 --topo_log $scratch \
-                $comp_opt
+                $comp_opt \
+                > /dev/null
 
             # Split PCF output into per-def files; active set matches WEIGHTS token list
             # Each block is preceded by "# q_X_wmode"; lines are "Topo PCF Corr/IP: TD_i conf val"
