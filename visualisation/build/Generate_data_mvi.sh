@@ -301,10 +301,10 @@ for i_conf in "${!CONFS[@]}"; do
             ### --comp_file (if present): compares each qlat field vs all 6 defs
             ### Output lines starting with "Topo PCF" and "CompRef" parsed below
             scratch=${HMC_DIR}/tmp_topo_pcf_${conf}_${tau}
-            # Redirect stdout to /dev/null: the LIME library writes raw binary bytes
-            # to fd 1 via write() syscalls that bypass any C-level FILE* redirect.
-            # The shell redirect > /dev/null sets fd 1 before the process starts,
-            # which is the only level at which it can be intercepted.
+            # Redirect both stdout and stderr to /dev/null: the LIME/Cray library
+            # writes raw binary bytes to both fd 1 and fd 2 via write() syscalls
+            # that bypass any C-level FILE* redirect.  Shell redirects set those
+            # fds before the process starts -- the only level that intercepts them.
             # All machine-readable output goes to --topo_log $scratch instead.
             ${CDIR}/FieldDensityEigen \
                 --grid $vol \
@@ -312,7 +312,7 @@ for i_conf in "${!CONFS[@]}"; do
                 --topo_out ${DATA_DIR_topo}/Top_dnsty_q_{def}_${tau}_smr.${conf} \
                 --files1 $F1s --topo_compare --conf_id $conf \
                 --topo_log $scratch \
-                $comp_opt > /dev/null
+                $comp_opt > /dev/null 2>&1
 
             # Split PCF output into per-def files; active set matches WEIGHTS token list
             # Each block is preceded by "# q_X_wmode"; lines are "Topo PCF Corr/IP: TD_i conf val"
