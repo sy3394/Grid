@@ -41,11 +41,10 @@ dfiles=()
 
 CDIR=$(pwd)
 
-# Wrapper functions: LIME/Cray writes raw binary bytes to both fd 1 and fd 2
-# via write() syscalls that bypass any C-level redirect.  Discard both here
-# so log_G stays clean.  All data output goes to files or --topo_log scratch.
-FDE()  { ${CDIR}/FieldDensityEigen            "$@" > /dev/null 2>&1; }
-FDAM() { ${CDIR}/FieldDensityAnimateMultiFiles "$@" > /dev/null 2>&1; }
+# Convenience wrappers — no redirect; text output goes to log_G for monitoring.
+# SCIDAC-writing calls use their own inline redirects (see §2.5 Step 2).
+FDE()  { ${CDIR}/FieldDensityEigen            "$@"; }
+FDAM() { ${CDIR}/FieldDensityAnimateMultiFiles "$@"; }
 PDIR=/ccs/home/syamamoto/tmp/src/Grid_cleanedup_for_pullrequest/systems/Frontier/HMC
 LDIR=/lustre/orion/phy157/proj-shared/phy157_dwf/syamamoto
 HMC=32cube-rho0.124-tau4
