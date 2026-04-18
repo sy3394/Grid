@@ -174,12 +174,6 @@ int main(int argc, char* argv[])
   Grid_init(&argc, &argv);
   GridLogLayout();
 
-  // Silence fd 1 (C-level stdout).  On Frontier/Cray the LIME library writes
-  // raw binary bytes directly to fd 1 when processing large SCIDAC records.
-  // All machine-readable output goes to --topo_log instead; nothing is lost.
-  ::fflush(stdout);
-  ::freopen("/dev/null", "w", stdout);
-
   auto latt_size   = GridDefaultLatt();
   auto simd_layout = GridDefaultSimd(Nd, vComplex::Nsimd());
   auto mpi_layout  = GridDefaultMpi();
