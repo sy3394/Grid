@@ -36,7 +36,6 @@
 #include <string>
 #include <fstream>
 #include <sstream>
-#include <unistd.h>   // dup2, STDERR_FILENO, STDOUT_FILENO
 
 #include <Grid/Grid.h>
 #if defined(HAVE_HDF5)
@@ -174,18 +173,6 @@ int main(int argc, char* argv[])
 
   Grid_init(&argc, &argv);
   GridLogLayout();
-
-  // Redirect C-level stdout (fd 1) to stderr (fd 2) so that:
-  //   - Grid library messages (std::cout << GridLogMessage) appear in log_G
-  //   - Binary garbage written directly to fd 1 by the LIME C library also
-  //     goes to stderr but is harmless noise compared to silent data loss.
-  // Root cause: Grid_quiesce_nodes() sets std::cout.badbit on non-rank-0
-  // nodes to silence the C++ stream, but LIME writes to C-level FILE* stdout
-  // which bypasses the C++ badbit and goes straight to fd 1.
-  // After this dup2, ALL fd-1 writes go to the same place as fd-2 (stderr).
-  // The C++ std::cout stream continues to work via the same fd.
-  ::fflush(stdout);
-  ::dup2(STDERR_FILENO, STDOUT_FILENO);
 
   auto latt_size   = GridDefaultLatt();
   auto simd_layout = GridDefaultSimd(Nd, vComplex::Nsimd());
