@@ -301,21 +301,24 @@ for i_conf in "${!CONFS[@]}"; do
             comp_files=${comp_files%?}   # strip trailing comma
             [[ -n "$comp_files" ]] && comp_opt="--comp_file $comp_files"
 
-            ### Steps 1+2: compute topo fields + IP/corr vs gluonic TCD in one call.
-            ### FieldDensityEigen writes corr_ip_q_*.dat, comp_ref_q_*.dat, corr_ip_stoch.dat
-            ### directly to --data_dir in append mode — no scratch file, no awk needed.
-            ### --topo_out template: C++ substitutes {def} with A_mgap, B_mgap, C_mgap,
-            ###                      A_sign, B_sign, C_sign  (6 output files per conf/tau)
-            ### --tau_wf: Wilson flow time written as the 'tau' column in output rows.
-            ### --td_taus: actual gluonic flow times for files1[0,1,2] (0,4,16).
+            ### Step 1: IP/corr stats — text only, no SCIDAC writes, no LIME binary.
+            ### Writes corr_ip_q_*.dat, comp_ref_q_*.dat, corr_ip_stoch.dat directly.
             FDE \
                 --grid $vol \
                 --files2 $F2s --Ls 48 $eval_opt $weights_opt \
-                --topo_out ${DATA_DIR_topo}/Top_dnsty_q_{def}_${tau}_smr.${conf} \
                 --files1 $F1s --topo_compare --conf_id $conf \
                 --tau_wf $tau --td_taus 0,4,16 \
                 --data_dir ${HMC_DIR}/data \
                 $comp_opt
+
+            ### Step 2: write topo density SCIDAC fields — binary LIME output.
+            ### Redirected to a dedicated per-conf/tau log to keep log_G clean.
+            topo_write_log=${HMC_DIR}/tmp_topo_write_${conf}_${tau}.log
+            ${CDIR}/FieldDensityEigen \
+                --grid $vol \
+                --files2 $F2s --Ls 48 $eval_opt $weights_opt \
+                --topo_out ${DATA_DIR_topo}/Top_dnsty_q_{def}_${tau}_smr.${conf} \
+                > $topo_write_log 2>&1
 
             # Register topo density files for archiving
             pfx=${DATA_DIR_topo}/Top_dnsty_q
