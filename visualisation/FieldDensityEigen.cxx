@@ -36,6 +36,8 @@
 #include <string>
 #include <fstream>
 #include <sstream>
+#include <unistd.h>          // dup, STDOUT_FILENO
+#include <ext/stdio_filebuf.h>  // __gnu_cxx::stdio_filebuf (GCC)
 
 #include <Grid/Grid.h>
 #if defined(HAVE_HDF5)
@@ -174,14 +176,23 @@ int main(int argc, char* argv[])
   Grid_init(&argc, &argv);
   GridLogLayout();
 
-  // Discard anything written directly to C-level stdout (fd 1).
-  // On Frontier (Cray), the LIME C library writes raw binary field data to
-  // fd 1 when seeking past large (>16MB) records on Lustre — this is a Cray
-  // I/O runtime behaviour that cannot be suppressed from application code.
-  // All Grid diagnostic output (GridLogMessage etc.) has been moved to
-  // std::cerr in BinaryIO.h and IldgIO.h, so nothing useful is lost.
-  ::fflush(stdout);
-  ::freopen("/dev/null", "w", stdout);
+  // On Frontier (Cray), the LIME C library writes raw binary field data
+  // directly to C-level FILE* stdout (fd 1) when seeking past large records
+  // on Lustre.  Grid's std::cout<<GridLogMessage messages also go to fd 1.
+  // We want both in log_G when running as:
+  //   nohup bash Generate_data_mvi.sh > log_G &
+  // but the binary must be discarded.
+  //
+  // Solution: save fd 1 to a new fd, reroute std::cout to the saved fd
+  // (so Grid log messages still reach log_G), then replace C-level fd 1
+  // with /dev/null (so LIME's raw writes are silently discarded).
+  {
+    int saved_fd = ::dup(STDOUT_FILENO);       // save original log_G fd
+    ::fflush(stdout);
+    ::freopen("/dev/null", "w", stdout);       // fd 1 → /dev/null (LIME writes discarded)
+    static __gnu_cxx::stdio_filebuf<char> cout_buf(saved_fd, std::ios::out);
+    std::cout.rdbuf(&cout_buf);                // std::cout → saved fd → log_G
+  }
 
   auto latt_size   = GridDefaultLatt();
   auto simd_layout = GridDefaultSimd(Nd, vComplex::Nsimd());
