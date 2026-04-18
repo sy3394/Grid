@@ -301,13 +301,16 @@ for i_conf in "${!CONFS[@]}"; do
             ### --comp_file (if present): compares each qlat field vs all 6 defs
             ### Output lines starting with "Topo PCF" and "CompRef" parsed below
             scratch=${HMC_DIR}/tmp_topo_pcf_${conf}_${tau}
+            # tr -d '\0': strip null bytes that Grid's LIME reader leaks into stdout
+            # on Frontier (raw binary field data interleaved with log messages);
+            # without this the scratch file is corrupted and awk parsing fails.
             ${CDIR}/FieldDensityEigen \
                 --grid $vol \
                 --files2 $F2s --Ls 48 $eval_opt $weights_opt \
                 --topo_out ${DATA_DIR_topo}/Top_dnsty_q_{def}_${tau}_smr.${conf} \
                 --files1 $F1s --topo_compare --conf_id $conf \
                 $comp_opt \
-                | tee $scratch
+                | tr -d '\0' | tee $scratch
 
             # Split PCF output into per-def files; active set matches WEIGHTS token list
             # Each block is preceded by "# q_X_wmode"; lines are "Topo PCF Corr/IP: TD_i conf val"
