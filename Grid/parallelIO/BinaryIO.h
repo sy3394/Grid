@@ -360,7 +360,7 @@ class BinaryIO {
 
       if ( (control & BINARYIO_LEXICOGRAPHIC) && (nrank > 1) ) {
 #ifdef USE_MPI_IO
-	std::cout<< GridLogMessage<<"IOobject: MPI read I/O "<< file<< std::endl;
+	std::cerr<< GridLogMessage<<"IOobject: MPI read I/O "<< file<< std::endl;
 	ierr=MPI_File_open(grid->communicator,(char *) file.c_str(), MPI_MODE_RDONLY, MPI_INFO_NULL, &fh);    assert(ierr==0);
 	ierr=MPI_File_set_view(fh, disp, mpiObject, fileArray, "native", MPI_INFO_NULL);    assert(ierr==0);
 	ierr=MPI_File_read_all(fh, &iodata[0], 1, localArray, &status);    assert(ierr==0);
@@ -371,7 +371,7 @@ class BinaryIO {
 	assert(0);
 #endif
       } else {
-	std::cout << GridLogMessage <<"IOobject: C++ read I/O " << file << " : "
+	std::cerr << GridLogMessage <<"IOobject: C++ read I/O " << file << " : "
                   << iodata.size() * sizeof(fobj) << " bytes and offset " << offset << std::endl;
         std::ifstream fin;
 	fin.open(file, std::ios::binary | std::ios::in);
@@ -417,9 +417,9 @@ class BinaryIO {
       timer.Start();
       if ( (control & BINARYIO_LEXICOGRAPHIC) && (nrank > 1) ) {
 #ifdef USE_MPI_IO
-        std::cout << GridLogMessage <<"IOobject: MPI write I/O " << file << std::endl;
+        std::cerr << GridLogMessage <<"IOobject: MPI write I/O " << file << std::endl;
         ierr = MPI_File_open(grid->communicator, (char *)file.c_str(), MPI_MODE_RDWR | MPI_MODE_CREATE, MPI_INFO_NULL, &fh);
-	//        std::cout << GridLogMessage << "Checking for errors" << std::endl;
+	//        std::cerr << GridLogMessage << "Checking for errors" << std::endl;
         if (ierr != MPI_SUCCESS)
         {
           char error_string[BUFSIZ];
@@ -433,11 +433,11 @@ class BinaryIO {
           MPI_Abort(MPI_COMM_WORLD, 1); //assert(ierr == 0);
         }
 
-        std::cout << GridLogDebug << "MPI write I/O set view " << file << std::endl;
+        std::cerr << GridLogDebug << "MPI write I/O set view " << file << std::endl;
         ierr = MPI_File_set_view(fh, disp, mpiObject, fileArray, "native", MPI_INFO_NULL);
         assert(ierr == 0);
 
-        std::cout << GridLogDebug << "MPI write I/O write all " << file << std::endl;
+        std::cerr << GridLogDebug << "MPI write I/O write all " << file << std::endl;
         ierr = MPI_File_write_all(fh, &iodata[0], 1, localArray, &status);
         assert(ierr == 0);
 
@@ -455,7 +455,7 @@ class BinaryIO {
 #endif
       } else { 
 
-        std::cout << GridLogMessage << "IOobject: C++ write I/O " << file << " : "
+        std::cerr << GridLogMessage << "IOobject: C++ write I/O " << file << " : "
                   << iodata.size() * sizeof(fobj) << " bytes and offset " << offset << std::endl;
         
 	std::ofstream fout; 
@@ -467,9 +467,9 @@ class BinaryIO {
 	    fout.open(file,std::ios::binary|std::ios::out);
 	  }
 	} catch (const std::fstream::failure& exc) {
-	  std::cout << GridLogError << "Error in opening the file " << file << " for output" <<std::endl;
-	  std::cout << GridLogError << "Exception description: " << exc.what() << std::endl;
-	  //	  std::cout << GridLogError << "Probable cause: wrong path, inaccessible location "<< std::endl;
+	  std::cerr << GridLogError << "Error in opening the file " << file << " for output" <<std::endl;
+	  std::cerr << GridLogError << "Exception description: " << exc.what() << std::endl;
+	  //	  std::cerr << GridLogError << "Probable cause: wrong path, inaccessible location "<< std::endl;
 #ifdef USE_MPI_IO
 	  MPI_Abort(MPI_COMM_WORLD,1);
 #else
@@ -481,13 +481,13 @@ class BinaryIO {
 	  try {
 	    fout.seekp(0,fout.end);
 	  } catch (const std::fstream::failure& exc) {
-	    std::cout << "Exception in seeking file end " << file << std::endl;
+	    std::cerr << "Exception in seeking file end " << file << std::endl;
 	  }
 	} else {
 	  try { 
 	    fout.seekp(offset+myrank*lsites*sizeof(fobj));
 	  } catch (const std::fstream::failure& exc) {
-	    std::cout << "Exception in seeking file " << file <<" offset "<< offset << std::endl;
+	    std::cerr << "Exception in seeking file " << file <<" offset "<< offset << std::endl;
 	  }
 	}
 
@@ -495,8 +495,8 @@ class BinaryIO {
 	  fout.write((char *)&iodata[0],iodata.size()*sizeof(fobj));//assert( fout.fail()==0);
 	}
 	catch (const std::fstream::failure& exc) {
-	  std::cout << "Exception in writing file " << file << std::endl;
-	  std::cout << GridLogError << "Exception description: "<< exc.what() << std::endl;
+	  std::cerr << "Exception in writing file " << file << std::endl;
+	  std::cerr << GridLogError << "Exception description: "<< exc.what() << std::endl;
 #ifdef USE_MPI_IO
 	  MPI_Abort(MPI_COMM_WORLD,1);
 #else
@@ -512,14 +512,14 @@ class BinaryIO {
     lastPerf.size            = sizeof(fobj)*iodata.size()*nrank;
     lastPerf.time            = timer.useconds();
     lastPerf.mbytesPerSecond = lastPerf.size/1024./1024./(lastPerf.time/1.0e6);
-    std::cout<<GridLogMessage<<"IOobject: ";
-    if ( control & BINARYIO_READ) std::cout << " read  ";
-    else                          std::cout << " write ";
+    std::cerr<<GridLogMessage<<"IOobject: ";
+    if ( control & BINARYIO_READ) std::cerr << " read  ";
+    else                          std::cerr << " write ";
     uint64_t bytes = sizeof(fobj)*iodata.size()*nrank;
-    std::cout<< lastPerf.size <<" bytes in "<< timer.Elapsed() <<" "
+    std::cerr<< lastPerf.size <<" bytes in "<< timer.Elapsed() <<" "
 	     << lastPerf.mbytesPerSecond <<" MB/s "<<std::endl;
 
-    std::cout<<GridLogMessage<<"IOobject: endian and checksum overhead "<<bstimer.Elapsed()  <<std::endl;
+    std::cerr<<GridLogMessage<<"IOobject: endian and checksum overhead "<<bstimer.Elapsed()  <<std::endl;
 
     //////////////////////////////////////////////////////////////////////////////
     // Safety check
@@ -570,7 +570,7 @@ class BinaryIO {
     grid->Barrier();
 
     timer.Stop();
-    std::cout<<GridLogMessage<<"readLatticeObject: vectorize overhead "<<timer.Elapsed()  <<std::endl;
+    std::cerr<<GridLogMessage<<"readLatticeObject: vectorize overhead "<<timer.Elapsed()  <<std::endl;
   }
 
   /////////////////////////////////////////////////////////////////////////////
@@ -618,19 +618,19 @@ class BinaryIO {
         uint32_t          cknersc_csum, ckscidac_csuma, ckscidac_csumb;
         uint64_t          ckoffset = offsetCopy;
 
-        std::cout << GridLogMessage << "writeLatticeObject: read back object" << std::endl;
+        std::cerr << GridLogMessage << "writeLatticeObject: read back object" << std::endl;
         grid->Barrier();
         IOobject(w,grid,ckiodata,file,ckoffset,format,BINARYIO_READ|control,
 	               cknersc_csum,ckscidac_csuma,ckscidac_csumb);
         if ((cknersc_csum != nersc_csum) or (ckscidac_csuma != scidac_csuma) or (ckscidac_csumb != scidac_csumb))
         {
-          std::cout << GridLogMessage << "writeLatticeObject: read test checksum failure, re-writing (" << attemptsLeft << " attempt(s) remaining)" << std::endl;
+          std::cerr << GridLogMessage << "writeLatticeObject: read test checksum failure, re-writing (" << attemptsLeft << " attempt(s) remaining)" << std::endl;
           offset = offsetCopy;
           thread_for(x,lsites, { munge(scalardata[x],iodata[x]); });
         }
         else
         {
-          std::cout << GridLogMessage << "writeLatticeObject: read test checksum correct" << std::endl;
+          std::cerr << GridLogMessage << "writeLatticeObject: read test checksum correct" << std::endl;
           break;
         }
       }
@@ -638,7 +638,7 @@ class BinaryIO {
     }
     
 
-    std::cout<<GridLogMessage<<"writeLatticeObject: unvectorize overhead "<<timer.Elapsed()  <<std::endl;
+    std::cerr<<GridLogMessage<<"writeLatticeObject: unvectorize overhead "<<timer.Elapsed()  <<std::endl;
   }
   
   /////////////////////////////////////////////////////////////////////////////
@@ -669,7 +669,7 @@ class BinaryIO {
 
     GridStopWatch timer;
 
-    std::cout << GridLogMessage << "RNG read I/O on file " << file << std::endl;
+    std::cerr << GridLogMessage << "RNG read I/O on file " << file << std::endl;
 
     std::vector<RNGstate> iodata(lsites);
     IOobject(w,grid,iodata,file,offset,format,BINARYIO_READ|BINARYIO_LEXICOGRAPHIC,
@@ -702,11 +702,11 @@ class BinaryIO {
     scidac_csuma = scidac_csuma ^ scidac_csuma_tmp;
     scidac_csumb = scidac_csumb ^ scidac_csumb_tmp;
 
-    std::cout << GridLogMessage << "RNG file nersc_checksum   " << std::hex << nersc_csum << std::dec << std::endl;
-    std::cout << GridLogMessage << "RNG file scidac_checksuma " << std::hex << scidac_csuma << std::dec << std::endl;
-    std::cout << GridLogMessage << "RNG file scidac_checksumb " << std::hex << scidac_csumb << std::dec << std::endl;
+    std::cerr << GridLogMessage << "RNG file nersc_checksum   " << std::hex << nersc_csum << std::dec << std::endl;
+    std::cerr << GridLogMessage << "RNG file scidac_checksuma " << std::hex << scidac_csuma << std::dec << std::endl;
+    std::cerr << GridLogMessage << "RNG file scidac_checksumb " << std::hex << scidac_csumb << std::dec << std::endl;
 
-    std::cout << GridLogMessage << "RNG state overhead " << timer.Elapsed() << std::endl;
+    std::cerr << GridLogMessage << "RNG state overhead " << timer.Elapsed() << std::endl;
   }
   /////////////////////////////////////////////////////////////////////////////
   // Write a RNG; lexico map to an array of state and use IOobject
@@ -735,7 +735,7 @@ class BinaryIO {
     GridStopWatch timer;
     std::string format = "IEEE32BIG";
 
-    std::cout << GridLogMessage << "RNG write I/O on file " << file << std::endl;
+    std::cerr << GridLogMessage << "RNG write I/O on file " << file << std::endl;
 
     timer.Start();
     std::vector<RNGstate> iodata(lsites);
@@ -766,10 +766,10 @@ class BinaryIO {
     scidac_csuma = scidac_csuma ^ scidac_csuma_tmp;
     scidac_csumb = scidac_csumb ^ scidac_csumb_tmp;
     
-    std::cout << GridLogMessage << "RNG file checksum " << std::hex << nersc_csum    << std::dec << std::endl;
-    std::cout << GridLogMessage << "RNG file checksuma " << std::hex << scidac_csuma << std::dec << std::endl;
-    std::cout << GridLogMessage << "RNG file checksumb " << std::hex << scidac_csumb << std::dec << std::endl;
-    std::cout << GridLogMessage << "RNG state overhead " << timer.Elapsed() << std::endl;
+    std::cerr << GridLogMessage << "RNG file checksum " << std::hex << nersc_csum    << std::dec << std::endl;
+    std::cerr << GridLogMessage << "RNG file checksuma " << std::hex << scidac_csuma << std::dec << std::endl;
+    std::cerr << GridLogMessage << "RNG file checksumb " << std::hex << scidac_csumb << std::dec << std::endl;
+    std::cerr << GridLogMessage << "RNG state overhead " << timer.Elapsed() << std::endl;
   }
 };
 

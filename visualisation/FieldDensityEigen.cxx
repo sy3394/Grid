@@ -174,6 +174,15 @@ int main(int argc, char* argv[])
   Grid_init(&argc, &argv);
   GridLogLayout();
 
+  // Discard anything written directly to C-level stdout (fd 1).
+  // On Frontier (Cray), the LIME C library writes raw binary field data to
+  // fd 1 when seeking past large (>16MB) records on Lustre — this is a Cray
+  // I/O runtime behaviour that cannot be suppressed from application code.
+  // All Grid diagnostic output (GridLogMessage etc.) has been moved to
+  // std::cerr in BinaryIO.h and IldgIO.h, so nothing useful is lost.
+  ::fflush(stdout);
+  ::freopen("/dev/null", "w", stdout);
+
   auto latt_size   = GridDefaultLatt();
   auto simd_layout = GridDefaultSimd(Nd, vComplex::Nsimd());
   auto mpi_layout  = GridDefaultMpi();
