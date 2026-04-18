@@ -40,6 +40,12 @@
 dfiles=()
 
 CDIR=$(pwd)
+
+# Wrapper functions: LIME/Cray writes raw binary bytes to both fd 1 and fd 2
+# via write() syscalls that bypass any C-level redirect.  Discard both here
+# so log_G stays clean.  All data output goes to files or --topo_log scratch.
+FDE()  { ${CDIR}/FieldDensityEigen            "$@" > /dev/null 2>&1; }
+FDAM() { ${CDIR}/FieldDensityAnimateMultiFiles "$@" > /dev/null 2>&1; }
 PDIR=/ccs/home/syamamoto/tmp/src/Grid_cleanedup_for_pullrequest/systems/Frontier/HMC
 LDIR=/lustre/orion/phy157/proj-shared/phy157_dwf/syamamoto
 HMC=32cube-rho0.124-tau4
@@ -100,7 +106,7 @@ for tau in 0 4; do
 	    Fs=${F%?}
 	    seq -f "%03g" $((CONF_S)) 1 $CONF_F > foo_ind
 
-	    ${CDIR}/FieldDensityAnimateMultiFiles --files $Fs --grid $vol --animate configs --sum T \
+	    FDAM --files $Fs --grid $vol --animate configs --sum T \
 		   --mpeg $mpeg --isosurface -0.75 --save_data_to $dpath --index_file foo_ind
 	fi
 
@@ -134,7 +140,7 @@ for tau in 0 4; do
 	    seq -f "%03g" $((CONF_S)) 1 $CONF_F > foo_ind
 
 	    sf=`awk -v t=$tau -v n=$i_evec -v N=$nconv 'BEGIN{print -1*( 0.3 + 0.4*t/4 + 0.9*n/N)}'`
-	    ${CDIR}/FieldDensityAnimateMultiFiles --files $Fs --grid $vol --Ls 48 --animate configs --sum Ls --sum T \
+	    FDAM --files $Fs --grid $vol --Ls 48 --animate configs --sum Ls --sum T \
 		   --mpeg $mpeg --isosurface $sf --save_data_to $dpath --index_file foo_ind
 	fi
 
@@ -165,7 +171,7 @@ for tau in 0 4; do
 	    Fs=${F%?}
 	    seq -f "%03g" $((CONF_S)) 1 $CONF_F > foo_ind
 
-	    ${CDIR}/FieldDensityAnimateMultiFiles --files $Fs --grid $vol --Ls 48 --animate configs --sum Z --sum T \
+	    FDAM --files $Fs --grid $vol --Ls 48 --animate configs --sum Z --sum T \
 		   --mpeg $mpeg --isosurface -0.7 --save_data_to $dpath --index_file foo_ind
 	fi
 
@@ -301,18 +307,13 @@ for i_conf in "${!CONFS[@]}"; do
             ### --comp_file (if present): compares each qlat field vs all 6 defs
             ### Output lines starting with "Topo PCF" and "CompRef" parsed below
             scratch=${HMC_DIR}/tmp_topo_pcf_${conf}_${tau}
-            # Redirect both stdout and stderr to /dev/null: the LIME/Cray library
-            # writes raw binary bytes to both fd 1 and fd 2 via write() syscalls
-            # that bypass any C-level FILE* redirect.  Shell redirects set those
-            # fds before the process starts -- the only level that intercepts them.
-            # All machine-readable output goes to --topo_log $scratch instead.
-            ${CDIR}/FieldDensityEigen \
+            FDE \
                 --grid $vol \
                 --files2 $F2s --Ls 48 $eval_opt $weights_opt \
                 --topo_out ${DATA_DIR_topo}/Top_dnsty_q_{def}_${tau}_smr.${conf} \
                 --files1 $F1s --topo_compare --conf_id $conf \
                 --topo_log $scratch \
-                $comp_opt > /dev/null 2>&1
+                $comp_opt
 
             # Split PCF output into per-def files; active set matches WEIGHTS token list
             # Each block is preceded by "# q_X_wmode"; lines are "Topo PCF Corr/IP: TD_i conf val"
@@ -366,7 +367,7 @@ for i_conf in "${!CONFS[@]}"; do
             mpeg_all=${HMC_DIR}/Top_dnsty_all_defs_${conf}_tau${tau}.avi
             _first_lbl="${_weight_labels[0]}"
             if [[ -f ${pfx}_A_${_first_lbl}_${tau}_smr.${conf} ]]; then
-                ${CDIR}/FieldDensityAnimateMultiFiles --files $Fs_all --grid $vol --animate T \
+                FDAM --files $Fs_all --grid $vol --animate T \
                        --mpeg $mpeg_all --isosurface -0.01
             fi
 
@@ -429,7 +430,7 @@ for dof in smr lat; do
 		#eigen/702/evec_density_sorted_0_tau_0_smr_702_3.345833
 		iso="-0.01" #`awk -v t=$tau -v n=$i_evec -v N=$nconv 'BEGIN{print -1*( 0.3 + 0.4*t/4 + 0.9*n/N)}'`
 		sep=${conf}_
-		${CDIR}/FieldDensityAnimateMultiFiles --files $Fs --grid $vol --Ls 48 --animate configs --sum Z --sum T \
+		FDAM --files $Fs --grid $vol --Ls 48 --animate configs --sum Z --sum T \
 		       --mpeg $mpeg --isosurface $iso --use_fname_as_frame_counter $sep
             fi
 
@@ -450,7 +451,7 @@ for dof in smr lat; do
 
                 iso="-0.01"
                 sep=${conf}_
-                ${CDIR}/FieldDensityAnimateMultiFiles --files $Fs --grid $vol --Ls 48 --animate configs --cycle Z=0 --cycle T=0 \
+                FDAM --files $Fs --grid $vol --Ls 48 --animate configs --cycle Z=0 --cycle T=0 \
                        --mpeg $mpeg --isosurface $iso --use_fname_as_frame_counter $sep
             fi
 
@@ -471,7 +472,7 @@ for dof in smr lat; do
 
                 iso="-0.01"
                 sep=${conf}_
-                ${CDIR}/FieldDensityAnimateMultiFiles --files $Fs --grid $vol --Ls 48 --animate configs --cycle Z=0 --fix T=23 \
+                FDAM --files $Fs --grid $vol --Ls 48 --animate configs --cycle Z=0 --fix T=23 \
                        --mpeg $mpeg --isosurface $iso --use_fname_as_frame_counter $sep
             fi
 
@@ -492,7 +493,7 @@ for dof in smr lat; do
 
 		iso="-0.05" #`awk -v t=$tau -v n=$i_evec -v N=$nconv 'BEGIN{print -1*( 0.3 + 0.4*t/4 + 0.9*n/N)}'`
                 sep=${conf}_
-                ${CDIR}/FieldDensityAnimateMultiFiles --files $Fs --grid $vol --Ls 48 --animate configs --sum Ls --cycle T=0 \
+                FDAM --files $Fs --grid $vol --Ls 48 --animate configs --sum Ls --cycle T=0 \
 		       --mpeg $mpeg --isosurface $iso --use_fname_as_frame_counter $sep
 	    fi
 
@@ -511,7 +512,7 @@ for dof in smr lat; do
 		Fs=${F%?}
 
 		save_fname=$DATA_DIR/summed_evec_density_sorted_tau_${tau}_${dof}_${conf}_${t}
-		${CDIR}/FieldDensityEigen --grid $vol --files2 $Fs --Ls 48 --sum_all_files $save_fname
+		FDE --grid $vol --files2 $Fs --Ls 48 --sum_all_files $save_fname
 	    done
 	fi
 
@@ -536,7 +537,7 @@ for dof in smr lat; do
 
 	    iso="-0.05"
 	    sep=${conf}_
-	    ${CDIR}/FieldDensityAnimateMultiFiles --files $Fs --grid $vol --animate configs --cycle T=0 \
+	    FDAM --files $Fs --grid $vol --animate configs --cycle T=0 \
 		   --mpeg $mpeg --isosurface $iso --use_fname_as_frame_counter $sep
 	fi
     done
@@ -570,7 +571,7 @@ if [[ $REGEN == 0 ]] ; then
 	    Fs=${F%?}
 
 	    save_fname=$d/evec_sum_${m5}_${CONF}
-	    ${CDIR}/FieldDensityEigen --files1 $Fs --grid $vol --sum_all_files $save_fname
+	    FDE --files1 $Fs --grid $vol --sum_all_files $save_fname
 
 	done
     done
@@ -602,7 +603,7 @@ if [[ $REGEN == 0 ]] ; then
 
     ls $DATA_DIR/U_smr_${t_MD}/evec_sum_* | awk -F _ '{print $NF}' | sort -n > foo_ind
     iso="-0.01"
-    ${CDIR}/FieldDensityAnimateMultiFiles --files $Fs --grid $vol --animate configs --cycle T=0 \
+    FDAM --files $Fs --grid $vol --animate configs --cycle T=0 \
 	   --mpeg $mpeg --isosurface $iso --index_file foo_ind
 fi
 
@@ -624,7 +625,7 @@ if [[ $REGEN == 0 ]] ; then
 
     ls $DATA_DIR/U_smr_*/evec_sum_-1.800000 | awk -F _ '{print $(NF-2)}' | awk -F '/' '{print $1}' | sort -n > foo_ind
     iso="-0.01"
-    ${CDIR}/FieldDensityAnimateMultiFiles --files $Fs --grid $vol --animate configs --cycle T=0 \
+    FDAM --files $Fs --grid $vol --animate configs --cycle T=0 \
 	   --mpeg $mpeg --isosurface $iso --index_file foo_ind
 fi
 
@@ -663,7 +664,7 @@ for((i_conf=0; i_conf<${#CONFS[@]}; i_conf++)); do
 
 	ls $DATA_DIR/U_smr_${t_MD}/evec_*_0 | awk -F _ '{print $(NF-1)}' | sort -n > foo_ind
 	iso="-0.01"
-	${CDIR}/FieldDensityAnimateMultiFiles --files $Fs --grid $vol --animate configs --cycle T=0 \
+	FDAM --files $Fs --grid $vol --animate configs --cycle T=0 \
 	       --mpeg $mpeg --isosurface $iso --index_file foo_ind
     fi
 
@@ -686,7 +687,7 @@ for((i_conf=0; i_conf<${#CONFS[@]}; i_conf++)); do
 
     ls $DATA_DIR/U_smr_*/evec_-1.800000_0 | awk -F _ '{print $(NF-2)}' | awk -F '/' '{print $1}' | sort -n > foo_ind
     iso="-0.01"
-    ${CDIR}/FieldDensityAnimateMultiFiles --files $Fs --grid $vol --animate configs --sum T \
+    FDAM --files $Fs --grid $vol --animate configs --sum T \
 	   --mpeg $mpeg --isosurface $iso --save_data_to $dpath --index_file foo_ind
     fi
 
@@ -710,7 +711,7 @@ for((i_conf=0; i_conf<${#CONFS[@]}; i_conf++)); do
 
 	ls $DATA_DIR/U_smr_*/evec_-1.800000_0 | awk -F _ '{print $(NF-2)}' | awk -F '/' '{print $1}' | sort -n > foo_ind
 	iso="-0.01"
-	${CDIR}/FieldDensityAnimateMultiFiles --files $Fs --grid $vol --animate configs --cycle T=0 \
+	FDAM --files $Fs --grid $vol --animate configs --cycle T=0 \
 	       --mpeg $mpeg --isosurface $iso --save_data_to $dpath --index_file foo_ind
     fi
 
@@ -779,11 +780,11 @@ for((i_conf=0; i_conf<${#CONFS[@]}; i_conf++)); do
 
 		if [[ "${ext}" == *"summed"* ]] ; then
 		    sep="${dof}."
-		    ${CDIR}/FieldDensityAnimateMultiFiles --files $Fs --grid $vol --animate configs --sum T --use_fname_as_frame_counter $sep \
+		    FDAM --files $Fs --grid $vol --animate configs --sum T --use_fname_as_frame_counter $sep \
 			   --isosurface $iso --mpeg $mpeg --save_data_to $dpath #$(( (tau+1)*5 ))
 		else
 		    sep="${dof}."
-		    ${CDIR}/FieldDensityAnimateMultiFiles --files $Fs --grid $vol --animate configs --cycle T=0 --isosurface $iso \
+		    FDAM --files $Fs --grid $vol --animate configs --cycle T=0 --isosurface $iso \
 			   --mpeg $mpeg --use_fname_as_frame_counter $sep
 		fi
 	    fi
@@ -840,7 +841,7 @@ for((i_conf=0; i_conf<${#CONFS[@]}; i_conf++)); do
 		Fs=${F%?}
 		tail -$N_frames traj_times_top_${conf} > foo_ind
 
-		${CDIR}/FieldDensityAnimateMultiFiles --files $Fs --grid $vol --animate configs --cycle T=0 --isosurface $iso \
+		FDAM --files $Fs --grid $vol --animate configs --cycle T=0 --isosurface $iso \
 		       --mpeg $mpeg --save_data_to $dpath --index_file foo_ind
 	    fi
 	done
@@ -874,7 +875,7 @@ for force in IwasakiGaugeAction JacobianAction; do
             for f in `ls $DATA_DIR/${conf}/${fname}.*|awk -F . '{print $NF, $0}' | sort  -nk1| cut -f2- -d' ' | tail -375 |head -100`; do F+=$f,;done
             Fs=${F%?}
 	    tail -376 traj_times|head -100 > foo_ind #traj_times includes 4.00, at which force is not computed
-	    ${CDIR}/FieldDensityAnimateMultiFiles --files $Fs --grid $vol --animate configs --cycle T=0 --isosurface $iso \
+	    FDAM --files $Fs --grid $vol --animate configs --cycle T=0 --isosurface $iso \
 		   --mpeg $mpeg --save_data_to $dpath --index_file foo_ind
 	fi
     done
