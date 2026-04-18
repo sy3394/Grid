@@ -301,11 +301,10 @@ for i_conf in "${!CONFS[@]}"; do
             ### --comp_file (if present): compares each qlat field vs all 6 defs
             ### Output lines starting with "Topo PCF" and "CompRef" parsed below
             scratch=${HMC_DIR}/tmp_topo_pcf_${conf}_${tau}
-            # FieldDensityEigen redirects its own fd 1 → fd 2 via dup2() at startup,
-            # so all output (Grid log messages + any LIME binary garbage) goes to
-            # stderr.  Machine-readable lines go separately to --topo_log $scratch.
-            # The shell's 2>&1 in nohup merges stderr into log_G automatically;
-            # no special redirect needed here.
+            # FieldDensityEigen remaps std::cout → stderr at startup and silences fd 1
+            # (freopen /dev/null).  Grid log messages therefore reach log_G via the
+            # caller's 2>&1 redirect; LIME binary on fd 1 is discarded.
+            # Machine-readable lines go to --topo_log $scratch (parsed + deleted below).
             ${CDIR}/FieldDensityEigen \
                 --grid $vol \
                 --files2 $F2s --Ls 48 $eval_opt $weights_opt \

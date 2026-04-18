@@ -36,8 +36,6 @@
 #include <string>
 #include <fstream>
 #include <sstream>
-#include <unistd.h>          // dup, STDOUT_FILENO
-#include <ext/stdio_filebuf.h>  // __gnu_cxx::stdio_filebuf (GCC)
 
 #include <Grid/Grid.h>
 #if defined(HAVE_HDF5)
@@ -176,23 +174,14 @@ int main(int argc, char* argv[])
   Grid_init(&argc, &argv);
   GridLogLayout();
 
-  // On Frontier (Cray), the LIME C library writes raw binary field data
-  // directly to C-level FILE* stdout (fd 1) when seeking past large records
-  // on Lustre.  Grid's std::cout<<GridLogMessage messages also go to fd 1.
-  // We want both in log_G when running as:
-  //   nohup bash Generate_data_mvi.sh > log_G &
-  // but the binary must be discarded.
+  // The Cray/Frontier LIME C library writes raw binary bytes directly to C-level
+  // stdout (fd 1) when processing large SCIDAC records.  Grid log messages go through
+  // C++ std::cout, which shares that fd by default.  Both end up in log_G together.
   //
-  // Solution: save fd 1 to a new fd, reroute std::cout to the saved fd
-  // (so Grid log messages still reach log_G), then replace C-level fd 1
-  // with /dev/null (so LIME's raw writes are silently discarded).
-  {
-    int saved_fd = ::dup(STDOUT_FILENO);       // save original log_G fd
-    ::fflush(stdout);
-    ::freopen("/dev/null", "w", stdout);       // fd 1 → /dev/null (LIME writes discarded)
-    static __gnu_cxx::stdio_filebuf<char> cout_buf(saved_fd, std::ios::out);
-    std::cout.rdbuf(&cout_buf);                // std::cout → saved fd → log_G
-  }
+  // Fix: remap std::cout → stderr so Grid messages survive in log_G (the caller runs
+  // `nohup bash ... > log_G 2>&1`), then silence fd 1 so LIME binary is discarded.
+  std::cout.rdbuf(std::cerr.rdbuf());   // Grid log messages → stderr (→ log_G via 2>&1)
+  ::freopen("/dev/null", "w", stdout);  // LIME binary on fd 1 → /dev/null
 
   auto latt_size   = GridDefaultLatt();
   auto simd_layout = GridDefaultSimd(Nd, vComplex::Nsimd());
