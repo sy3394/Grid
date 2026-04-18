@@ -374,7 +374,8 @@ int main(int argc, char* argv[])
       std::cout << "Loaded " << evals.size() << " eigenvalues (inline)" << std::endl;
     }
   }
-  if( GridCmdOptionExists(argv,argv+argc,"--topo_out") ){
+  bool do_topo_out = GridCmdOptionExists(argv,argv+argc,"--topo_out");
+  if( do_topo_out ){
     topo_out = GridCmdOptionPayload(argv,argv+argc,"--topo_out");
   }
   // --weights: override the set of active weight tracks
@@ -684,7 +685,7 @@ int main(int argc, char* argv[])
   // C++ replaces {def} with A, B, Bp, C to produce the four output files.
   // q_A, q_B, q_C all use m_gap/mu_n weight (requires --evals for m_gap).
   bool have_evals = !evals.empty() || !evals_embedded.empty();
-  if(compute_topo && have_evals){
+  if(compute_topo && have_evals && do_topo_out){
     // Lambda: substitute {def} placeholder in topo_out template string.
     auto fill_def = [](std::string tmpl, const std::string& d) -> std::string {
       auto pos = tmpl.find("{def}");
