@@ -162,6 +162,8 @@ template<class vobj> void ScidacMetaData(Lattice<vobj> & field,
  {
    uint32_t scidac_checksuma = stoull(scidacChecksum_.suma,0,16);
    uint32_t scidac_checksumb = stoull(scidacChecksum_.sumb,0,16);
+   std::cout << GridLogMessage << " scidacChecksumVerify computed "<<scidac_csuma<<" expected "<<scidac_checksuma <<std::endl;
+   std::cout << GridLogMessage << " scidacChecksumVerify computed "<<scidac_csumb<<" expected "<<scidac_checksumb <<std::endl;
    if ( scidac_csuma !=scidac_checksuma) {
      return 0;
    };
@@ -219,21 +221,44 @@ class GridLimeReader : public BinaryIO {
 
     std::string format = getFormatString<vobj>();
 
-    while ( limeReaderNextRecord(LimeR) == LIME_SUCCESS ) { 
+    while ( limeReaderNextRecord(LimeR) == LIME_SUCCESS ) {
 
       uint64_t file_bytes =limeReaderBytes(LimeR);
 
+      //      std::cout << GridLogMessage << limeReaderType(LimeR) << " "<< file_bytes <<" bytes "<<std::endl;
+      //      std::cout << GridLogMessage<< " readLimeObject seeking "<<  record_name <<" found record :" <<limeReaderType(LimeR) <<std::endl;
+
       if ( !strncmp(limeReaderType(LimeR), record_name.c_str(),strlen(record_name.c_str()) )  ) {
 
+	//	std::cout << GridLogMessage<< " readLimeLatticeBinaryObject matches ! " <<std::endl;
+
 	uint64_t PayloadSize = sizeof(sobj) * field.Grid()->_gsites;
+
+	//	std::cout << "R sizeof(sobj)= " <<sizeof(sobj)<<std::endl;
+	//	std::cout << "R Gsites " <<field.Grid()->_gsites<<std::endl;
+	//	std::cout << "R Payload expected " <<PayloadSize<<std::endl;
+	//	std::cout << "R file size " <<file_bytes <<std::endl;
+
 	assert(PayloadSize == file_bytes);// Must match or user error
 
 	uint64_t offset= ftello(File);
+	//	std::cout << " ReadLatticeObject from offset "<<offset << std::endl;
 	BinarySimpleMunger<sobj,sobj> munge;
 	BinaryIO::readLatticeObject< vobj, sobj >(field, filename, munge, offset, format,nersc_csum,scidac_csuma,scidac_csumb,control);
+	std::cout << GridLogMessage << "SciDAC checksum A " << std::hex << scidac_csuma << std::dec << std::endl;
+	std::cout << GridLogMessage << "SciDAC checksum B " << std::hex << scidac_csumb << std::dec << std::endl;
+	/////////////////////////////////////////////
+	// Insist checksum is next record
+	/////////////////////////////////////////////
 	readScidacChecksum(scidacChecksum_,FieldNormMetaData_);
+	/////////////////////////////////////////////
+	// Verify checksums
+	/////////////////////////////////////////////
 	if(FieldNormMetaData_.norm2 != 0.0){
-	  GRID_FIELD_NORM_CHECK(FieldNormMetaData_,norm2(field));
+	  RealD n2ck = norm2(field);
+	  std::cout << GridLogMessage << "Field norm: metadata= " << FieldNormMetaData_.norm2
+              << " / field= " << n2ck << " / rdiff= " << GRID_FIELD_NORM_CALC(FieldNormMetaData_,n2ck) << std::endl;
+	  GRID_FIELD_NORM_CHECK(FieldNormMetaData_,n2ck);
 	}
 	assert(scidacChecksumVerify(scidacChecksum_,scidac_csuma,scidac_csumb)==1);
 
