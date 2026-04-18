@@ -174,15 +174,6 @@ int main(int argc, char* argv[])
   Grid_init(&argc, &argv);
   GridLogLayout();
 
-  // The Cray/Frontier LIME C library writes raw binary bytes directly to C-level
-  // stdout (fd 1) when processing large SCIDAC records.  Grid log messages go through
-  // C++ std::cout, which shares that fd by default.  Both end up in log_G together.
-  //
-  // Fix: remap std::cout → stderr so Grid messages survive in log_G (the caller runs
-  // `nohup bash ... > log_G 2>&1`), then silence fd 1 so LIME binary is discarded.
-  std::cout.rdbuf(std::cerr.rdbuf());   // Grid log messages → stderr (→ log_G via 2>&1)
-  ::freopen("/dev/null", "w", stdout);  // LIME binary on fd 1 → /dev/null
-
   auto latt_size   = GridDefaultLatt();
   auto simd_layout = GridDefaultSimd(Nd, vComplex::Nsimd());
   auto mpi_layout  = GridDefaultMpi();

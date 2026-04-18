@@ -301,17 +301,19 @@ for i_conf in "${!CONFS[@]}"; do
             ### --comp_file (if present): compares each qlat field vs all 6 defs
             ### Output lines starting with "Topo PCF" and "CompRef" parsed below
             scratch=${HMC_DIR}/tmp_topo_pcf_${conf}_${tau}
-            # FieldDensityEigen remaps std::cout → stderr at startup and silences fd 1
-            # (freopen /dev/null).  Grid log messages therefore reach log_G via the
-            # caller's 2>&1 redirect; LIME binary on fd 1 is discarded.
-            # Machine-readable lines go to --topo_log $scratch (parsed + deleted below).
+            # --topo_log writes machine-readable lines (Topo PCF / CompRef) to $scratch
+            # so awk below can parse them cleanly.  The rest of stdout (Grid log
+            # messages + any raw binary bytes the LIME library writes to fd 1) is piped
+            # through `tr` which strips non-printable bytes; printable Grid log text
+            # passes through and reaches log_G.
             ${CDIR}/FieldDensityEigen \
                 --grid $vol \
                 --files2 $F2s --Ls 48 $eval_opt $weights_opt \
                 --topo_out ${DATA_DIR_topo}/Top_dnsty_q_{def}_${tau}_smr.${conf} \
                 --files1 $F1s --topo_compare --conf_id $conf \
                 --topo_log $scratch \
-                $comp_opt
+                $comp_opt \
+                | LC_ALL=C tr -cd '\11\12\15\40-\176'
 
             # Split PCF output into per-def files; active set matches WEIGHTS token list
             # Each block is preceded by "# q_X_wmode"; lines are "Topo PCF Corr/IP: TD_i conf val"
