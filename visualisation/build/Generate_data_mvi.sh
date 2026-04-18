@@ -301,22 +301,17 @@ for i_conf in "${!CONFS[@]}"; do
             ### --comp_file (if present): compares each qlat field vs all 6 defs
             ### Output lines starting with "Topo PCF" and "CompRef" parsed below
             scratch=${HMC_DIR}/tmp_topo_pcf_${conf}_${tau}
-            # MPI ranks write directly to fd 1, bypassing any shell pipe, so
-            # piping through tr is ineffective.  Instead: redirect stdout to a
-            # raw scratch file, then strip null bytes in a second pass.
-            # Null bytes appear mid-line when Grid's LIME reader flushes a binary
-            # read buffer to the same fd as GridLogMessage on Frontier.
-            scratch_raw=${scratch}.raw
+            # --topo_log writes all machine-readable lines (# q_X, Topo PCF, CompRef,
+            # TopoCompRef) directly to a clean file from inside C++, bypassing stdout.
+            # This avoids binary LIME payload data (which Grid leaks to the same stdout
+            # fd as its log messages on Frontier) from corrupting the parsed output.
             ${CDIR}/FieldDensityEigen \
                 --grid $vol \
                 --files2 $F2s --Ls 48 $eval_opt $weights_opt \
                 --topo_out ${DATA_DIR_topo}/Top_dnsty_q_{def}_${tau}_smr.${conf} \
                 --files1 $F1s --topo_compare --conf_id $conf \
-                $comp_opt \
-                > $scratch_raw 2>&1
-            tr -d '\000' < $scratch_raw > $scratch
-            cat $scratch          # echo cleaned output to terminal/batch log
-            rm -f $scratch_raw
+                --topo_log $scratch \
+                $comp_opt
 
             # Split PCF output into per-def files; active set matches WEIGHTS token list
             # Each block is preceded by "# q_X_wmode"; lines are "Topo PCF Corr/IP: TD_i conf val"

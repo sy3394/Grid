@@ -729,6 +729,22 @@ int main(int argc, char* argv[])
     arg = GridCmdOptionPayload(argv,argv+argc,"--conf_id");
     GridCmdOptionInt(arg, conf_id);
   }
+  // --topo_log <file>: write all machine-readable output lines (# q_X, Topo PCF,
+  // CompRef:, TopoCompRef:) to a dedicated file instead of stdout.  This avoids
+  // binary LIME payload data (leaked by Grid's I/O layer to the same stdout fd)
+  // corrupting the lines that the shell script needs to parse.
+  // When absent, falls back to stdout (original behaviour).
+  std::ofstream topo_log_f;
+  std::ostream* topo_log = &std::cout;   // default: stdout
+  if( GridCmdOptionExists(argv,argv+argc,"--topo_log") ){
+    arg = GridCmdOptionPayload(argv,argv+argc,"--topo_log");
+    topo_log_f.open(arg, std::ios::trunc);
+    if(!topo_log_f)
+      std::cerr << "WARNING: cannot open --topo_log file: " << arg
+                << " — falling back to stdout" << std::endl;
+    else
+      topo_log = &topo_log_f;
+  }
   int topo_compare = GridCmdOptionExists(argv,argv+argc,"--topo_compare");
   if(compute_topo && have_evals && topo_compare && !data1.empty()){
     typedef typename PeriodicGimplR::ComplexField ComplexField;
@@ -742,7 +758,7 @@ int main(int argc, char* argv[])
       qdefs.push_back({"q_C_"+lbl, &q_bdy_all[t]});
     }
     for(auto& qd : qdefs){
-      std::cout << "# " << qd.name << std::endl;  // shell uses this to split output
+      *topo_log << "# " << qd.name << std::endl;
       for(int i=0; i<(int)data1.size(); i++){
         LatticeComplex X(grid), Y(grid), one(grid); one = ComplexField::scalar_type(1.0,0.0);
         ComplexD avg1 = TensorRemove(sum(data1[i]))/RealD(grid->gSites());
@@ -752,9 +768,8 @@ int main(int argc, char* argv[])
         double corr = TensorRemove(sum(X*Y)).real()/sqrt(norm2(X)*norm2(Y));
         X = data1[i]; Y = *qd.field;
         double ip   = TensorRemove(innerProduct(X,Y)).real()/sqrt(norm2(X))/sqrt(norm2(Y));
-        // format: TD_tau_index  conf  corr   (one Corr line + one IP line, matching old format)
-        std::cout << "Topo PCF Corr: " << i << " " << conf_id << " " << corr << std::endl;
-        std::cout << "Topo PCF IP:   " << i << " " << conf_id << " " << ip   << std::endl;
+        *topo_log << "Topo PCF Corr: " << i << " " << conf_id << " " << corr << std::endl;
+        *topo_log << "Topo PCF IP:   " << i << " " << conf_id << " " << ip   << std::endl;
       }
     }
   }
@@ -842,7 +857,7 @@ int main(int argc, char* argv[])
                                 << std::setw(16) << rms_diff << std::endl;
 
         // Machine-readable for shell/notebook: "CompRef: def comp_idx conf Q_evec Q_ref Corr IP rms_diff"
-        std::cout << "CompRef: " << qd.name << " " << ci << " " << conf_id << " "
+        *topo_log << "CompRef: " << qd.name << " " << ci << " " << conf_id << " "
                   << Q_evec << " " << Q_ref << " " << corr << " " << ip << " " << rms_diff << std::endl;
       }
 
@@ -858,7 +873,7 @@ int main(int argc, char* argv[])
           double corr_sg = real(TensorRemove(sum(X*Y))) / std::sqrt(norm2(X) * norm2(Y));
           X = ref;  Y = data1[i];
           double ip_sg = real(TensorRemove(innerProduct(X,Y))) / std::sqrt(norm2(X)) / std::sqrt(norm2(Y));
-          std::cout << "TopoCompRef: " << ci << " " << i << " " << conf_id << " "
+          *topo_log << "TopoCompRef: " << ci << " " << i << " " << conf_id << " "
                     << Q_ref << " " << Q_gluon << " " << corr_sg << " " << ip_sg << std::endl;
         }
       }
