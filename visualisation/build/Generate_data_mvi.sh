@@ -270,7 +270,6 @@ for i_conf in "${!CONFS[@]}"; do
                 [[ -f $f ]] && F2+=$f,
             done
             F2s=${F2%?}
-            [[ -z "$F2s" ]] && { echo "No evec files for conf=$conf tau=$tau, skipping"; continue; }
 
             ### Gluonic TCD files at TD_tau = 0, 4, 16  (smr hardcoded: actual Frontier naming)
             F1=""
@@ -279,16 +278,6 @@ for i_conf in "${!CONFS[@]}"; do
                 [[ -f $f ]] && F1+=$f, || echo "Warning: gluonic TCD not found: $f"
             done
             F1s=${F1%?}
-
-            ### Eigenvalue file (enables m_gap/mu_n weighting; written by Compute_DWF_G5R5)
-            EVALS_FILE=${DATA_DIR_eigen}/eigenvalues_tau_${tau}.${conf}
-            eval_opt=""
-            [[ -f "$EVALS_FILE" ]] && eval_opt="--evals $EVALS_FILE"
-
-            ### Weight tracks: controlled by WEIGHTS env var (parsed above into _weight_labels).
-            ### Pass the full token list to --weights so FieldDensityEigen knows which
-            ### tracks to activate (sign, mgap, and/or any literal-value tracks).
-            weights_opt="--weights $WEIGHTS"
 
             ### qlat reference SCIDAC files (optional; requires comp_file data + ordered evecs)
             comp_opt=""
@@ -300,8 +289,49 @@ for i_conf in "${!CONFS[@]}"; do
             comp_files=${comp_files%?}   # strip trailing comma
             [[ -n "$comp_files" ]] && comp_opt="--comp_file $comp_files"
 
+            ### Step 1b (tau=0 only, no evec files): pure qlat-vs-gluonic comparison.
+            ### When no evec density files exist for tau=0 (F2s empty), provide the
+            ### τ_FW=0 baseline: Luchang reference vs gluonic TCD without any eigenvector
+            ### smearing.  This is the diagnostic from the analysis document — comparing
+            ### the qlat stochastic field against Wilson-flowed gluonic TCD at tau_WF=0
+            ### to separate resolution mismatch from operator-definition disagreement.
+            ### Writes to corr_ip_stoch.dat only (no fermion-q fields available).
+            ### (When F2s is non-empty, Step 1 handles this comparison via do_gluon_comp.)
+            if [[ "$tau" == "0" && -z "$F2s" && -n "$comp_opt" && -n "$F1s" ]]; then
+                echo "Step 1b: tau=0 qlat-vs-gluonic (no evec files): conf=$conf"
+                FDE \
+                    --grid $vol \
+                    --files1 $F1s --topo_compare --conf_id $conf \
+                    --tau_wf $tau --td_taus 0,4,16 \
+                    --data_dir ${HMC_DIR}/data \
+                    $comp_opt
+            fi
+
+            ### Skip eigenvector-dependent steps if no evec files found
+            [[ -z "$F2s" ]] && { echo "No evec files for conf=$conf tau=$tau, skipping eigenvec steps"; continue; }
+
+            ### Eigenvalue file (enables m_gap/mu_n weighting; written by Compute_DWF_G5R5)
+            ### For tau=0: if eigenvalues_tau_0 is absent but eigenvalues_tau_4 exists,
+            ### fall back to tau=4 evals as a proxy (eigenvalues shift <1% with tau_WF).
+            EVALS_FILE=${DATA_DIR_eigen}/eigenvalues_tau_${tau}.${conf}
+            eval_opt=""
+            if [[ -f "$EVALS_FILE" ]]; then
+                eval_opt="--evals $EVALS_FILE"
+            elif [[ "$tau" == "0" && -f "${DATA_DIR_eigen}/eigenvalues_tau_4.${conf}" ]]; then
+                echo "Note: conf=$conf eigenvalues_tau_0 absent — using tau=4 evals as proxy"
+                eval_opt="--evals ${DATA_DIR_eigen}/eigenvalues_tau_4.${conf}"
+            fi
+
+            ### Weight tracks: controlled by WEIGHTS env var (parsed above into _weight_labels).
+            ### Pass the full token list to --weights so FieldDensityEigen knows which
+            ### tracks to activate (sign, mgap, and/or any literal-value tracks).
+            weights_opt="--weights $WEIGHTS"
+
             ### Step 1: IP/corr stats — text only, no SCIDAC writes, no LIME binary.
             ### Writes corr_ip_q_*.dat, comp_ref_q_*.dat, corr_ip_stoch.dat directly.
+            ### When eval_opt is empty (old evec files without embedded eigenvalues and
+            ### no tau=4 fallback), the fermion-q comparisons are skipped with a warning,
+            ### but the qlat-vs-gluonic comparison (TopoCompRef) still runs via do_gluon_comp.
             FDE \
                 --grid $vol \
                 --files2 $F2s --Ls 48 $eval_opt $weights_opt \

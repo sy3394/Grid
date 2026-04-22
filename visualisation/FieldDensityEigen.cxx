@@ -716,7 +716,7 @@ int main(int argc, char* argv[])
     }
   }
   /****** IP & Corr of each fermion TCD definition vs gluonic TCD (--topo_compare) *****/
-  // Requires: --topo_out (so q_eps/q_bdy/q_mid are available),
+  // Requires: --files2 + Ls (so q_eps/q_bdy/q_mid accumulate), have_evals (for weights),
   //           --files1   (one file per gluonic flow time, e.g. TD_tau=0,4,16),
   //           --conf_id  (integer config number, written to output for notebook parsing).
   // Output per line (pure numeric): TD_tau  tau  conf  Corr  IP
@@ -816,13 +816,20 @@ int main(int argc, char* argv[])
   // --comp_file <file>[,<file2>,...]
   //   SCIDAC files from qlat: each is a separate stochastic DWF TCD estimate
   //   (e.g. topo_field_0.scidac, topo_field_1.scidac from pickle_to_scidac.ipynb).
-  //   Each file is compared individually against ALL 4 fermion TCD definitions.
-  //   After comparison, every comp field is appended to data1 so it appears as
-  //   an additional frame in the visualisation pipeline (FieldDensityAnimateMultiFiles).
   //
-  //   Output per line: "CompRef: def comp_idx conf Q_evec Q_ref Corr IP rms_diff"
+  //   Two independent comparisons are attempted (each gated separately):
+  //   (a) Fermion TCD (q_A/B/C) vs qlat reference — requires compute_topo && have_evals.
+  //       Output: "CompRef: def comp_idx conf Q_evec Q_ref Corr IP rms_diff"
+  //       Written to comp_ref_<def>.dat.
+  //   (b) Qlat reference vs gluonic TCD — requires --topo_compare && --files1.
+  //       Output: "TopoCompRef: comp TD_tau conf Corr IP" → corr_ip_stoch.dat.
+  //       Runs even without eigenvector data (τ_FW=0 diagnostic).
+  //
+  //   Comp fields are appended to data1 for the visualisation pipeline only when (a) runs.
+  bool do_fermion_comp = compute_topo && have_evals;
+  bool do_gluon_comp   = (bool)topo_compare && !data1.empty();
   std::vector<LatticeComplexD> comp_fields;   // populated below; appended to data1 at end
-  if(compute_topo && have_evals && GridCmdOptionExists(argv,argv+argc,"--comp_file")){
+  if(GridCmdOptionExists(argv,argv+argc,"--comp_file") && (do_fermion_comp || do_gluon_comp)){
     arg = GridCmdOptionPayload(argv,argv+argc,"--comp_file");
     std::vector<std::string> comp_fnames;
     GridCmdOptionCSL(arg, comp_fnames);
@@ -830,13 +837,17 @@ int main(int argc, char* argv[])
     typedef typename PeriodicGimplR::ComplexField ComplexField;
     LatticeComplexD one(grid); one = ComplexField::scalar_type(1.0, 0.0);
 
+    // Build qdef list — only used when do_fermion_comp is true, but defined here
+    // so it is in scope for the table header block below.
     struct QDef { std::string name; LatticeComplexD* field; };
     std::vector<QDef> qdefs;
-    for(int t = 0; t < ntracks; t++){
-      const std::string& lbl = weight_specs[t].label;
-      qdefs.push_back({"q_A_"+lbl, &q_mid_all[t]});
-      qdefs.push_back({"q_B_"+lbl, &q_eps_all[t]});
-      qdefs.push_back({"q_C_"+lbl, &q_bdy_all[t]});
+    if(do_fermion_comp){
+      for(int t = 0; t < ntracks; t++){
+        const std::string& lbl = weight_specs[t].label;
+        qdefs.push_back({"q_A_"+lbl, &q_mid_all[t]});
+        qdefs.push_back({"q_B_"+lbl, &q_eps_all[t]});
+        qdefs.push_back({"q_C_"+lbl, &q_bdy_all[t]});
+      }
     }
 
     // Pre-load all comp files BEFORE printing the header so that LIME/IOobject
@@ -853,62 +864,69 @@ int main(int argc, char* argv[])
                 << "  Q=" << Q_refs.back() << std::endl;
     }
 
-    // Header for human-readable table (setw=16: wide enough for e.g. -0.999999541)
-    std::cout << GridLogMessage
-              << std::left  << std::setw(5)  << "ci"
-              << std::setw(6)  << "def"
-              << std::right << std::setw(16) << "Q_evec"
-                            << std::setw(16) << "Q_ref"
-                            << std::setw(16) << "Corr"
-                            << std::setw(16) << "IP"
-                            << std::setw(16) << "rms_diff" << std::endl;
+    // Header for human-readable fermion-q-vs-qlat table (only when fermion comparison runs)
+    if(do_fermion_comp){
+      std::cout << GridLogMessage
+                << std::left  << std::setw(5)  << "ci"
+                << std::setw(6)  << "def"
+                << std::right << std::setw(16) << "Q_evec"
+                              << std::setw(16) << "Q_ref"
+                              << std::setw(16) << "Corr"
+                              << std::setw(16) << "IP"
+                              << std::setw(16) << "rms_diff" << std::endl;
+    }
 
     for(int ci = 0; ci < (int)comp_fnames.size(); ci++){
       LatticeComplexD& ref   = refs[ci];
       double           Q_ref = Q_refs[ci];
       ComplexD       avg_ref = avg_refs[ci];
 
-      for(auto& qd : qdefs){
-        double   Q_evec   = real(TensorRemove(sum(*qd.field)));
-        ComplexD avg_evec = TensorRemove(sum(*qd.field)) / RealD(grid->gSites());
+      // (a) Compare fermion TCD definitions (q_A/B/C) vs qlat reference
+      if(do_fermion_comp){
+        for(auto& qd : qdefs){
+          double   Q_evec   = real(TensorRemove(sum(*qd.field)));
+          ComplexD avg_evec = TensorRemove(sum(*qd.field)) / RealD(grid->gSites());
 
-        // Pearson correlation (mean-subtracted)
-        LatticeComplexD X(grid), Y(grid);
-        X = *qd.field - avg_evec * one;
-        Y = ref       - avg_ref  * one;
-        double corr = real(TensorRemove(sum(X*Y))) / std::sqrt(norm2(X) * norm2(Y));
+          // Pearson correlation (mean-subtracted)
+          LatticeComplexD X(grid), Y(grid);
+          X = *qd.field - avg_evec * one;
+          Y = ref       - avg_ref  * one;
+          double corr = real(TensorRemove(sum(X*Y))) / std::sqrt(norm2(X) * norm2(Y));
 
-        // Normalised inner product
-        X = *qd.field;  Y = ref;
-        double ip = real(TensorRemove(innerProduct(X,Y))) / std::sqrt(norm2(X)) / std::sqrt(norm2(Y));
+          // Normalised inner product
+          X = *qd.field;  Y = ref;
+          double ip = real(TensorRemove(innerProduct(X,Y))) / std::sqrt(norm2(X)) / std::sqrt(norm2(Y));
 
-        // RMS pointwise difference
-        LatticeComplexD diff(grid); diff = *qd.field - ref;
-        double rms_diff = std::sqrt(norm2(diff) / RealD(grid->gSites()));
+          // RMS pointwise difference
+          LatticeComplexD diff(grid); diff = *qd.field - ref;
+          double rms_diff = std::sqrt(norm2(diff) / RealD(grid->gSites()));
 
-        std::cout << GridLogMessage
-                  << std::left  << std::setw(5)  << ci
-                  << std::setw(6)  << qd.name
-                  << std::right << std::setw(16) << Q_evec
-                                << std::setw(16) << Q_ref
-                                << std::setw(16) << corr
-                                << std::setw(16) << ip
-                                << std::setw(16) << rms_diff << std::endl;
+          std::cout << GridLogMessage
+                    << std::left  << std::setw(5)  << ci
+                    << std::setw(6)  << qd.name
+                    << std::right << std::setw(16) << Q_evec
+                                  << std::setw(16) << Q_ref
+                                  << std::setw(16) << corr
+                                  << std::setw(16) << ip
+                                  << std::setw(16) << rms_diff << std::endl;
 
-        // Write comparison result: comp_idx  tau_wf  conf  Q_evec  Q_ref  Corr  IP  rms_diff
-        if(!data_dir.empty()){
-          std::ofstream of(data_dir+"/comp_ref_"+qd.name+".dat", std::ios::app);
-          of << ci << " " << tau_wf << " " << conf_id << " "
-             << Q_evec << " " << Q_ref << " " << corr << " " << ip << " " << rms_diff << "\n";
-        } else {
-          *topo_log << "CompRef: " << qd.name << " " << ci << " " << conf_id << " "
-                    << Q_evec << " " << Q_ref << " " << corr << " " << ip << " " << rms_diff << std::endl;
+          // Write comparison result: comp_idx  tau_wf  conf  Q_evec  Q_ref  Corr  IP  rms_diff
+          if(!data_dir.empty()){
+            std::ofstream of(data_dir+"/comp_ref_"+qd.name+".dat", std::ios::app);
+            of << ci << " " << tau_wf << " " << conf_id << " "
+               << Q_evec << " " << Q_ref << " " << corr << " " << ip << " " << rms_diff << "\n";
+          } else {
+            *topo_log << "CompRef: " << qd.name << " " << ci << " " << conf_id << " "
+                      << Q_evec << " " << Q_ref << " " << corr << " " << ip << " " << rms_diff << std::endl;
+          }
         }
       }
 
-      // --- Compare qlat stochastic field vs gluonic TCD (when --topo_compare also active) ---
-      // Output: "TopoCompRef: comp_idx TD_tau_idx conf Q_ref Q_gluon Corr IP"
-      if(topo_compare && !data1.empty()){
+      // (b) Compare qlat stochastic field vs gluonic TCD.
+      // Gated on do_gluon_comp (--topo_compare + --files1) rather than have_evals:
+      // this comparison is purely field-vs-field and does not require eigenvectors.
+      // Runs even at τ_FW=0 when eigenvalue data is unavailable.
+      if(do_gluon_comp){
         for(int i = 0; i < (int)data1.size(); i++){
           double   Q_gluon   = real(TensorRemove(sum(data1[i])));
           ComplexD avg_gluon = TensorRemove(sum(data1[i])) / RealD(grid->gSites());
@@ -933,8 +951,11 @@ int main(int argc, char* argv[])
         }
       }
 
-      // Stash for appending to data1 (visualisation frames) below
-      comp_fields.push_back(refs[ci]);
+      // Stash for appending to data1 (visualisation frames) below.
+      // Only needed when fermion fields were computed (do_fermion_comp); otherwise
+      // no q_A/B/C data exists to display alongside the reference.
+      if(do_fermion_comp)
+        comp_fields.push_back(refs[ci]);
     }
   }
   /******************************************************************************/
