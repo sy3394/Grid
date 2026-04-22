@@ -868,7 +868,7 @@ int main(int argc, char* argv[])
     if(do_fermion_comp){
       std::cout << GridLogMessage
                 << std::left  << std::setw(5)  << "ci"
-                << std::setw(6)  << "def"
+                << std::setw(10) << "def"
                 << std::setw(8)  << "tau_wf"
                 << std::right << std::setw(16) << "Q_evec"
                               << std::setw(16) << "Q_ref"
@@ -904,7 +904,7 @@ int main(int argc, char* argv[])
 
           std::cout << GridLogMessage
                     << std::left  << std::setw(5)  << ci
-                    << std::setw(6)  << qd.name
+                    << std::setw(10) << qd.name
                     << std::setw(8)  << tau_wf
                     << std::right << std::setw(16) << Q_evec
                                   << std::setw(16) << Q_ref
