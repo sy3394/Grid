@@ -795,11 +795,11 @@ int main(int argc, char* argv[])
         double corr = TensorRemove(sum(X*Y)).real()/sqrt(norm2(X)*norm2(Y));
         X = data1[i]; Y = *qd.field;
         double ip   = TensorRemove(innerProduct(X,Y)).real()/sqrt(norm2(X))/sqrt(norm2(Y));
-        // Always print to stdout for monitoring
-        std::cout << "Topo PCF Corr: " << qd.name << " TD_tau=" << get_td_tau(i)
-                  << " conf=" << conf_id << " " << corr << std::endl;
-        std::cout << "Topo PCF IP:   " << qd.name << " TD_tau=" << get_td_tau(i)
-                  << " conf=" << conf_id << " " << ip   << std::endl;
+        // Always print to stdout for monitoring (tau_wf identifies which eigenvector smearing)
+        std::cout << "Topo PCF Corr: " << qd.name << " tau_wf=" << tau_wf
+                  << " TD_tau=" << get_td_tau(i) << " conf=" << conf_id << " " << corr << std::endl;
+        std::cout << "Topo PCF IP:   " << qd.name << " tau_wf=" << tau_wf
+                  << " TD_tau=" << get_td_tau(i) << " conf=" << conf_id << " " << ip   << std::endl;
         if(!data_dir.empty()){
           // Direct append: TD_tau  tau_wf  conf  value
           std::ofstream of(data_dir+"/corr_ip_"+qd.name+".dat", std::ios::app);
@@ -869,6 +869,7 @@ int main(int argc, char* argv[])
       std::cout << GridLogMessage
                 << std::left  << std::setw(5)  << "ci"
                 << std::setw(6)  << "def"
+                << std::setw(8)  << "tau_wf"
                 << std::right << std::setw(16) << "Q_evec"
                               << std::setw(16) << "Q_ref"
                               << std::setw(16) << "Corr"
@@ -904,6 +905,7 @@ int main(int argc, char* argv[])
           std::cout << GridLogMessage
                     << std::left  << std::setw(5)  << ci
                     << std::setw(6)  << qd.name
+                    << std::setw(8)  << tau_wf
                     << std::right << std::setw(16) << Q_evec
                                   << std::setw(16) << Q_ref
                                   << std::setw(16) << corr
@@ -936,9 +938,10 @@ int main(int argc, char* argv[])
           double corr_sg = real(TensorRemove(sum(X*Y))) / std::sqrt(norm2(X) * norm2(Y));
           X = ref;  Y = data1[i];
           double ip_sg = real(TensorRemove(innerProduct(X,Y))) / std::sqrt(norm2(X)) / std::sqrt(norm2(Y));
-          // Always print to stdout for monitoring
-          std::cout << "TopoCompRef: comp=" << ci << " TD_tau=" << get_td_tau(i)
-                    << " conf=" << conf_id << " Corr=" << corr_sg << " IP=" << ip_sg << std::endl;
+          // Always print to stdout for monitoring (tau_wf identifies eigenvector smearing)
+          std::cout << "TopoCompRef: comp=" << ci << " tau_wf=" << tau_wf
+                    << " TD_tau=" << get_td_tau(i) << " conf=" << conf_id
+                    << " Corr=" << corr_sg << " IP=" << ip_sg << std::endl;
           // Write stoch-vs-gluon result: comp_idx  TD_tau  tau_wf  conf  Q_ref  Q_gluon  Corr  IP
           if(!data_dir.empty()){
             std::ofstream of(data_dir+"/corr_ip_stoch.dat", std::ios::app);
