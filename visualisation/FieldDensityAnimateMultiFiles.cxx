@@ -341,6 +341,7 @@ int main(int argc, char* argv[])
   double default_contour = 1.0;
   bool use_fname_as_frame_counter = false;
   std::ifstream index_list;
+  int panel_px = 1024;   // per-panel pixel size; set via --panel_size
   
   std::string arg;
   
@@ -526,6 +527,11 @@ int main(int argc, char* argv[])
     arg = GridCmdOptionPayload(argv,argv+argc,"--save_data_to");
     if(!arg.empty()) data_f.open(arg,std::ios::trunc);
   }
+  if( GridCmdOptionExists(argv,argv+argc,"--panel_size") ){
+    arg = GridCmdOptionPayload(argv,argv+argc,"--panel_size");
+    GridCmdOptionInt(arg, panel_px);
+    std::cout << "panel_px=" << panel_px << std::endl;
+  }
 
   /***************************************************************/
   /********   Preprocess Data   **********************************/
@@ -648,6 +654,26 @@ int main(int argc, char* argv[])
   int fc = (dynm_dir == configs_idx) ? 1 : (int)data.size();
   std::vector<FrameUpdater *> fu_list;
   double max_cntr = 0; // max slider value; used in interactive slider widget
+
+  // Grid layout: arrange fc panels in the closest square/rectangle
+  int ncols = (int)std::ceil(std::sqrt((double)fc));
+  int nrows = (int)std::ceil((double)fc / ncols);
+  std::cout << "Panel grid: " << nrows << " rows x " << ncols << " cols for " << fc << " panels" << std::endl;
+
+  // Short label extractor: strip directory prefix and trailing ".DIGITS" config suffix
+  auto short_label = [](const std::string& fpath) -> std::string {
+    auto slash = fpath.rfind('/');
+    std::string base = (slash != std::string::npos) ? fpath.substr(slash+1) : fpath;
+    auto dot = base.rfind('.');
+    if(dot != std::string::npos){
+      bool all_dig = true;
+      for(size_t i = dot+1; i < base.size(); i++)
+        if(!std::isdigit((unsigned char)base[i])){ all_dig = false; break; }
+      if(all_dig && dot+1 < base.size()) base = base.substr(0, dot);
+    }
+    return base;
+  };
+
   for (int f=0;f<fc;f++){
 
     // It is convenient to create an initial view of the data. The FocalPoint
@@ -737,8 +763,8 @@ int main(int argc, char* argv[])
     outline->SetMapper(mapOutline);
     outline->GetProperty()->SetColor(colors->GetColor3d("Black").GetData());
 
-    ////////// create a label of the frame
-    std::string txt = omit_dirs.back()<latt_size.size()?"All Files: "+display_info : file_list[f];
+    ////////// create a label of the frame — use short basename (no dir, no conf suffix)
+    std::string txt = omit_dirs.back()<(int)latt_size.size()?"All Files: "+display_info : short_label(file_list[f]);
     if(take_diff) txt = "Diff: Next File - "+txt;
     if(mpeg) txt += " cntr="+std::to_string(contour);
     vtkNew<vtkTextActor> Text;
@@ -836,9 +862,12 @@ int main(int argc, char* argv[])
     aRenderer->SetBackground(colors->GetColor3d("BkgColor").GetData());
     aCamera->Dolly(1.0);
 
-    double nf = fc;//file_list.size();
-    std::cout << " Adding renderer " <<f<<" of "<<nf<<std::endl;
-    aRenderer->SetViewport((1.0/nf)*f, 0.0,(1.0/nf)*(f+1) , 1.0);
+    {
+      int col = f % ncols, row = f / ncols;
+      std::cout << " Adding renderer " <<f<<" of "<<fc<<" (row="<<row<<" col="<<col<<")"<<std::endl;
+      aRenderer->SetViewport((double)col/ncols,        (double)(nrows-1-row)/nrows,
+                             (double)(col+1)/ncols,    (double)(nrows-row)/nrows);
+    }
 
     // Note that when camera movement occurs (as it does in the Dolly()
     // method), the clipping planes often need adjusting. Clipping planes
@@ -854,13 +883,12 @@ int main(int argc, char* argv[])
   // Set a background color for the renderer and set the size of the
   // render window (expressed in pixels).
   // Initialize the event loop and then start it.
-  renWin->SetSize(1024*fc, 1024);
+  renWin->SetSize(panel_px*ncols, panel_px*nrows);
   renWin->SetWindowName("FieldDensity");
   renWin->Render();
 
   iren->Initialize();
 
-  double nf = fc;
   if ( mpeg ) {
 #ifdef MPEG
     vtkWindowToImageFilter *imageFilter = vtkWindowToImageFilter::New();
@@ -913,7 +941,7 @@ int main(int argc, char* argv[])
     sliderRep->GetPoint1Coordinate()->SetCoordinateSystemToNormalizedDisplay();
     sliderRep->GetPoint1Coordinate()->SetValue(0.1, 0.1);
     sliderRep->GetPoint2Coordinate()->SetCoordinateSystemToNormalizedDisplay();
-    sliderRep->GetPoint2Coordinate()->SetValue(0.9/nf, 0.1);
+    sliderRep->GetPoint2Coordinate()->SetValue(0.9/ncols, 0.1);
   
     vtkSmartPointer<vtkSliderWidget> sliderWidget = vtkSmartPointer<vtkSliderWidget>::New();
     sliderWidget->SetInteractor(iren);

@@ -51,6 +51,7 @@ HMC=32cube-rho0.124-tau4
 HMC_DIR=$PDIR/$HMC
 vol=32.32.32.32
 REGEN=1
+PANEL_PX=1536   # per-panel pixel size for FDAM movies (total = PANEL_PX * ncols × PANEL_PX * nrows)
 
 
 ########################################################################################################################
@@ -373,7 +374,8 @@ for i_conf in "${!CONFS[@]}"; do
             _first_lbl="${_weight_labels[0]}"
             if [[ -f ${pfx}_A_${_first_lbl}_${tau}_smr.${conf} ]]; then
                 FDAM --files $Fs_all --grid $vol --animate T \
-                       --mpeg $mpeg_all --isosurface -0.01
+                       --mpeg $mpeg_all --isosurface -0.01 \
+                       --panel_size ${PANEL_PX}
             fi
 
         done   # tau
@@ -388,7 +390,7 @@ done       # i_conf
 
 ###########   INPUT   ###########################
 CONFS=(  702  719  71902 )
-REGENS=(   0    1      1 )   # set 0 to skip a config
+REGENS=(   0    0      0 )   # set 0 to skip a config
 NCUT=4
 #################################################
 
