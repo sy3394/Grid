@@ -536,7 +536,8 @@ int main(int argc, char* argv[])
     //   Bulk (+/-mu) pairs: contributions cancel in the sum.
     //
     // Both weight modes (sign and mgap) are accumulated simultaneously — see loop body.
-    // q_A midpoint always uses the mgap weight (exponential midpoint amplitude compensation).
+    // q_A midpoint is computed with BOTH weight tracks (see Formula A note below:
+    // q_A is empirically a bulk-mode midpoint residue, not an index estimator).
     //
     // -----------------------------------------------------------------------
     // FORMULA B:  eps_code(s)-chirality density   (Bulk form)
@@ -569,16 +570,31 @@ int main(int argc, char* argv[])
     //   convention (eps(Ls-1)=+1, eps(0)=-1).
     //
     // -----------------------------------------------------------------------
-    // FORMULA A:  midpoint density  (m_gap/mu_n weighted, Midpoint form)
+    // FORMULA A:  midpoint density  (Midpoint form; BOTH weight tracks computed)
     // -----------------------------------------------------------------------
-    //   q_A(x) = -sum_n (m_gap/mu_n) * 0.5 * [rho_n(x,Ls/2) - rho_n(x,Ls/2-1)]
+    //   q_A(x) = -sum_n w(mu_n) * 0.5 * [rho_n(x,Ls/2) - rho_n(x,Ls/2-1)]
     //
-    //   WHY m_gap/mu_n is essential here:
-    //     The midpoint amplitude chi_n^A ~ e^{-alpha*Ls} is exponentially suppressed
-    //     for large Ls.  The exact weight m_f/mu_n ~ m_f/m_res ~ e^{+alpha*Ls}
-    //     compensates exactly; m_gap/mu_n preserves this cancellation.
-    //     Using sign(mu_n)=+-1 removes the factor => q_A -> 0 for Ls=48.
-    //     NOTE: q_A is unreliable under low-mode truncation (severed 5D current).
+    //   Empirical behaviour (conf 702, Ls=12, low-mode truncation N_conv=16):
+    //     - Q_evec = integral of q_A over all x is ~ 1e-8 for BOTH weight tracks.
+    //       I.e. q_A carries NO index content: topological near-zero modes have
+    //       amplitude ~ e^{-alpha*Ls/2} at the midplane and are invisible to
+    //       this estimator under truncation.
+    //     - The UV bulk modes that would normally dominate J_5q at the midplane
+    //       (anomaly inflow carriers) are NOT in the retained low-mode set, so
+    //       the midplane current is "severed" under deflation.
+    //     - What remains is a bulk-pair midpoint RESIDUE: local-chirality-driven
+    //       asymmetry between s=Ls/2 and s=Ls/2-1 from retained bulk modes.  This
+    //       residue has nontrivial spatial structure (can correlate with
+    //       Wilson-flowed q_gluon when the gauge is smoothed) but integrates to
+    //       zero. See topo_charge.tex App. B.3 (bulk modes vs near-zero modes
+    //       in J_5q vs j_5).
+    //
+    //   Historical note: an earlier version of this comment claimed
+    //     m_f/mu_n ~ e^{+alpha*Ls} compensates the midpoint suppression.
+    //   That claim is WRONG at finite Ls with physical m_f: near-zero
+    //   |mu_n| ~= m_gap = m_f + m_res (not m_res), so m_gap/mu_n ~= +-1,
+    //   not e^{+alpha*Ls}.  Numerical check: Q_evec(q_A_sign) = Q_evec(q_A_mgap)
+    //   ~ 1e-8 (identical up to rounding), confirming no compensation occurs.
     // ===========================================================================
     if(compute_topo) {
       // Eigenvalue of H_DWF = gamma5*R5*D_DWF (includes m_f).
@@ -598,8 +614,11 @@ int main(int argc, char* argv[])
       //   is_sign = true  => w = sign(mu_n)                            (exact ±1 or 0)
       //   is_sign = false, mgap_val = 0 => w = m_gap_auto / mu_n      (auto = min|mu_n|)
       //   is_sign = false, mgap_val ≠ 0 => w = mgap_val / mu_n        (user-supplied literal)
-      // q_A midpoint note: sign(mu_n) weight gives q_A -> 0 for large Ls
-      //   because the midpoint amplitude ~ exp(-alpha*Ls) requires m_f/mu_n compensation.
+      // q_A midpoint note: both weight tracks give integral Q_evec(q_A) ~ 0
+      //   because topological modes have e^{-alpha*Ls/2}-suppressed midplane
+      //   amplitude AND the UV bulk modes that dominate J_5q at the midplane
+      //   are excluded by truncation.  q_A carries only a bulk-pair residue.
+      //   (See FORMULA A header comment above.)
       std::vector<double> track_w(ntracks, 0.0);
       for(int t = 0; t < ntracks; t++){
         const WeightSpec& ws = weight_specs[t];
@@ -810,6 +829,75 @@ int main(int argc, char* argv[])
           *topo_log << "Topo PCF IP:   " << i << " " << conf_id << " " << ip   << std::endl;
         }
       }
+    }
+  }
+  /****** Compare fermion TCD definitions against each other (FermFerm) ************/
+  // Computes Pearson Corr and normalised IP for every (i,j) pair with i<j.
+  // Gated on compute_topo && have_evals (same as topo-charge accumulation).
+  //
+  // stdout: one greppable line per pair:
+  //   "FermFerm: q_X vs q_Y tau_wf=N conf=M Corr=Z IP=W"
+  // stdout: compact N×N Corr matrix for visual inspection
+  // file:   data_dir/fermferm.dat  (append) — columns: def1 def2 tau_wf conf Corr IP
+  if(compute_topo && have_evals){
+    typedef typename PeriodicGimplR::ComplexField ComplexField;
+    struct FFQDef { std::string name; LatticeComplexD* field; };
+    std::vector<FFQDef> fqd;
+    for(int t = 0; t < ntracks; t++){
+      const std::string& lbl = weight_specs[t].label;
+      fqd.push_back({"q_A_"+lbl, &q_mid_all[t]});
+      fqd.push_back({"q_B_"+lbl, &q_eps_all[t]});
+      fqd.push_back({"q_C_"+lbl, &q_bdy_all[t]});
+    }
+    int nd = (int)fqd.size();
+    LatticeComplexD one(grid); one = ComplexField::scalar_type(1.0, 0.0);
+
+    // Pre-compute mean-subtracted fields (one pass through each field)
+    std::vector<LatticeComplexD> qcen;
+    qcen.reserve(nd);
+    for(int i = 0; i < nd; i++){
+      ComplexD avg = TensorRemove(sum(*fqd[i].field)) / RealD(grid->gSites());
+      qcen.push_back(LatticeComplexD(grid));
+      qcen.back() = *fqd[i].field - avg * one;
+    }
+
+    // Symmetric Corr/IP matrices (upper-triangle computed, rest filled by symmetry)
+    std::vector<std::vector<double>> Cmat(nd, std::vector<double>(nd, 1.0));
+    std::vector<std::vector<double>> Imat(nd, std::vector<double>(nd, 1.0));
+
+    std::ofstream ff_of;
+    if(!data_dir.empty()) ff_of.open(data_dir+"/fermferm.dat", std::ios::app);
+
+    for(int i = 0; i < nd; i++){
+      for(int j = i+1; j < nd; j++){
+        double corr = real(TensorRemove(sum(qcen[i] * qcen[j])))
+                      / std::sqrt(norm2(qcen[i]) * norm2(qcen[j]));
+        double ip   = real(TensorRemove(innerProduct(*fqd[i].field, *fqd[j].field)))
+                      / std::sqrt(norm2(*fqd[i].field)) / std::sqrt(norm2(*fqd[j].field));
+        Cmat[i][j] = Cmat[j][i] = corr;
+        Imat[i][j] = Imat[j][i] = ip;
+        std::cout << "FermFerm: " << fqd[i].name << " vs " << fqd[j].name
+                  << " tau_wf=" << tau_wf << " conf=" << conf_id
+                  << " Corr=" << corr << " IP=" << ip << std::endl;
+        if(ff_of.is_open())
+          ff_of << fqd[i].name << " " << fqd[j].name << " "
+                << tau_wf << " " << conf_id << " " << corr << " " << ip << "\n";
+      }
+    }
+
+    // Compact Corr matrix (column-width adapts to longest name)
+    int cw = 9;
+    for(auto& q : fqd) cw = std::max(cw, (int)q.name.size() + 1);
+    std::cout << GridLogMessage << "FermFerm Corr (tau_wf=" << tau_wf
+              << " conf=" << conf_id << "):" << std::endl;
+    std::cout << GridLogMessage << std::left << std::setw(cw) << "";
+    for(int j = 0; j < nd; j++) std::cout << std::right << std::setw(cw) << fqd[j].name;
+    std::cout << std::endl;
+    for(int i = 0; i < nd; i++){
+      std::cout << GridLogMessage << std::left << std::setw(cw) << fqd[i].name;
+      for(int j = 0; j < nd; j++)
+        std::cout << std::right << std::fixed << std::setprecision(4) << std::setw(cw) << Cmat[i][j];
+      std::cout << std::defaultfloat << std::endl;
     }
   }
   /****** Compare fermion TCD definitions vs qlat reference fields (--comp_file) ***/
