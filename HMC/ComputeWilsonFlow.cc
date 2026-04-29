@@ -191,6 +191,27 @@ int main(int argc, char **argv) {
     
   });
   
+  ////////////////////////////////////////////////////////////////////////////
+  // Per-site plaquette at tau=0 (unflowed) — for plaquette MFACF analysis.
+  // Written under data_name=plaq, tau=0, matching the file-naming convention
+  // {path}{data_name}_{tau}_{conf_prefix}.{conf} used by autocovariance_*.cc.
+  // Plaquette is normalized to 1/3 Re tr P_munu averaged over the 6 distinct
+  // (mu,nu) pairs, so the volume average matches the standard <P>.
+  ////////////////////////////////////////////////////////////////////////////
+  {
+    typedef typename PeriodicGimplR::ComplexField ComplexField;
+    ComplexField Plq(Umu.Grid());
+    WilsonLoops<PeriodicGimplR>::sitePlaquette(Plq, Umu);
+    double pcoeff = 2.0 / (1.0 * Nd * (Nd - 1)) / 3.0;
+    Plq = pcoeff * Plq;
+    std::string pfile = WFPar.path + "plaq_0_" + CPar.conf_prefix + "." + std::to_string(conf);
+    writeFile(Plq, pfile);
+    RealD P_avg = real(sum(Plq)) / RealD(Umu.Grid()->gSites());
+    std::cout << GridLogMessage
+              << "[Plaquette tau=0] conf " << conf
+              << "  <P> = " << P_avg << std::endl;
+  }
+
   int t=WFPar.maxTau;
   WF.smear(Uflow, Umu);
   //  NerscIO::writeConfiguration(Uflow,filesmr);

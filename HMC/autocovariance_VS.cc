@@ -180,7 +180,12 @@ int main(int argc, char **argv) {
       }
 
       // Master-Field approximation
-      MF_approx(&Coarse, G_B, T, APar.R, bs, tau, "Blocked " + tag, "LVS");
+      // Both G (centered, ACC) and G2 (connected, ACC2) are run for blocked spatial coarsening.
+      // Sparse-MF is intentionally omitted: sparse sampling discards the sub-l_B spatial
+      // covariance information that the MF spatial-sum formula is built to integrate, so
+      // sparse-MF is strictly noisier than blocked-MF with no diagnostic upside.
+      MF_approx(&Coarse, G_B,  T, APar.R, bs, tau, "Blocked " + tag,  "LVS");
+      MF_approx(&Coarse, G2_B, T, APar.R, bs, tau, "Blocked " + tag2, "LVS");
 
     } else {
       // Binning over MD-time bins
