@@ -365,6 +365,12 @@ for i_conf in "${!CONFS[@]}"; do
                     Fs_all+="${pfx}_${_def}_${_lbl}_${tau}_smr.${conf},"
                 done
             done
+            # q_naive (legacy sp_sum, sign-correct) and Sigma_low (Banks-Casher locality):
+            # single fields, no weight-track loop. Added once per tau.
+            for _name in naive Sigma; do
+                f="${pfx}_${_name}_${tau}_smr.${conf}"
+                [[ -f $f ]] && Fs_all+="${f},"
+            done
             for idx in 0 1; do
                 f=${COMP_DIR}/topo_field_${idx}.scidac
                 [[ -f $f ]] && Fs_all+="${f},"

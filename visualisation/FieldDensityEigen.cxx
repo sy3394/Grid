@@ -478,6 +478,18 @@ int main(int argc, char* argv[])
   // q_eps = formula B (eps_code chirality), q_bdy = formula C (boundary), q_mid = formula A (midpoint).
   int ntracks = (int)weight_specs.size();
   std::vector<LatticeComplexD> q_eps_all, q_bdy_all, q_mid_all;
+  // Sign-correct legacy estimator and Banks-Casher locality density.
+  // q_naive   : reconstruction of legacy sp_sum (Compute_DWF_SpectralFlow.cc archive),
+  //             with cleanly-named per-mode pieces — see §1.3 of
+  //             sp_sum_vs_qB_bulk_analysis.tex for the derivation.
+  // Sigma_low : low-mode contribution to local scalar condensate density,
+  //             sum_n [m_f / (lambda^(0)_n)^2 + m_f^2] rho_n(x). Banks–Casher
+  //             collapses the Lorentzian to pi*delta(lambda^(0)) as m_f -> 0,
+  //             yielding the "where does Sigma live" map (cf. §4.1 of the doc).
+  // Both use the same eps_s = (s>=Ls/2)?+1:-1 convention as q_eps_all/q_bdy_all
+  // for sign-consistency with the master-table PCFs of q_B/q_C.
+  LatticeComplexD q_naive(grid);   q_naive   = Zero();
+  LatticeComplexD Sigma_low(grid); Sigma_low = Zero();
   if(compute_topo){
     q_eps_all.reserve(ntracks); q_bdy_all.reserve(ntracks); q_mid_all.reserve(ntracks);
     for(int t = 0; t < ntracks; t++){
@@ -664,6 +676,51 @@ int main(int argc, char* argv[])
           q_mid_all[t] = q_mid_all[t] - track_w[t] * 0.5 * mid_diff;
       }
 
+      // --- q_naive (legacy sp_sum) and Sigma_low (Banks-Casher locality) ---
+      //   q_naive(x)   = -sum_n chi_n^B(x)
+      //                  + (1/2) sum_n sgn(lambda^H_n) * lambda^(0)_n * rho_n(x)
+      //   Sigma_low(x) = sum_n [m_f / ((lambda^(0)_n)^2 + m_f^2)] * rho_n(x)
+      // with lambda^(0)_n = sqrt((lambda^H_n)^2 - m_f^2) the kinetic eigenvalue
+      // (App. B.4). No --weights track loop: q_naive and Sigma_low are
+      // single fields, accumulated unconditionally for every mode.
+      {
+        double lambda_H     = mu_n;
+        double lambda_0_sq  = lambda_H*lambda_H - mass_f*mass_f;
+        double lambda_0     = (lambda_0_sq > 0.0) ? std::sqrt(lambda_0_sq) : 0.0;
+        double sgn_lambda   = (lambda_H > 0.0) ? 1.0
+                            : (lambda_H < 0.0) ? -1.0 : 0.0;
+        double bc_weight    = mass_f / (lambda_0_sq + mass_f*mass_f); // m_f safe >0
+
+        // rho_n(x) = sum_s |u_n(x,s)|^2  (scalar 4D density)
+        LatticeComplexD rho_n(grid); rho_n = Zero();
+        {
+          LatticeComplexD slice(grid);
+          for(int s = 0; s < Ls; s++){
+            ExtractSlice(slice, tmp, s, 0);
+            rho_n = rho_n + slice;
+          }
+        }
+
+        // q_naive first sum: same eps_s convention as q_B/q_C above.
+        // q_eps_all uses "-(track_w * eps_s)" pattern; for q_naive the
+        // per-mode coefficient is unity (no track weight), so it picks up
+        // "-eps_s * |u(x,s)|^2" summed over s = +chi^B_doc per mode (eps_s
+        // is -Gamma_5_doc). Net: q_naive's first sum has the same sign
+        // convention as q_B^sign in this codebase.
+        {
+          LatticeComplexD eps_slice(grid);
+          for(int s = 0; s < Ls; s++){
+            ExtractSlice(eps_slice, tmp, s, 0);
+            double eps_s = (s >= Ls/2) ? 1.0 : -1.0;
+            q_naive = q_naive - eps_s * eps_slice;
+          }
+          q_naive = q_naive + (0.5 * sgn_lambda * lambda_0) * rho_n;
+        }
+
+        // Sigma_low: Banks-Casher Lorentzian-weighted scalar density.
+        Sigma_low = Sigma_low + bc_weight * rho_n;
+      }
+
       std::cout << "TopoContrib evec=" << c << " mu_n=" << mu_n;
       for(int t = 0; t < ntracks; t++)
         std::cout << " w_" << weight_specs[t].label << "=" << track_w[t];
@@ -733,6 +790,15 @@ int main(int argc, char* argv[])
       if(weight_specs[t].is_sign)          std::cout << "  (note: q_A_sign ~ 0 for Ls=48)";
       std::cout << std::endl;
     }
+
+    // q_naive (legacy sp_sum, sign-correct) and Sigma_low (Banks-Casher locality).
+    // Single fields, no weight-track loop.
+    writeFile(q_naive,   fill_def(topo_out,"naive"));
+    std::cout << "Wrote q_naive   -> " << fill_def(topo_out,"naive")
+              << "  Q=" << real(TensorRemove(sum(q_naive))) << std::endl;
+    writeFile(Sigma_low, fill_def(topo_out,"Sigma"));
+    std::cout << "Wrote Sigma_low -> " << fill_def(topo_out,"Sigma")
+              << "  S=" << real(TensorRemove(sum(Sigma_low))) << std::endl;
   }
   /****** IP & Corr of each fermion TCD definition vs gluonic TCD (--topo_compare) *****/
   // Requires: --files2 + Ls (so q_eps/q_bdy/q_mid accumulate), have_evals (for weights),
@@ -803,6 +869,8 @@ int main(int argc, char* argv[])
       qdefs.push_back({"q_B_"+lbl, &q_eps_all[t]});
       qdefs.push_back({"q_C_"+lbl, &q_bdy_all[t]});
     }
+    qdefs.push_back({"q_naive",   &q_naive});
+    qdefs.push_back({"Sigma_low", &Sigma_low});
     for(auto& qd : qdefs){
       if(data_dir.empty()) *topo_log << "# " << qd.name << std::endl;
       for(int i=0; i<(int)data1.size(); i++){
@@ -849,6 +917,8 @@ int main(int argc, char* argv[])
       fqd.push_back({"q_B_"+lbl, &q_eps_all[t]});
       fqd.push_back({"q_C_"+lbl, &q_bdy_all[t]});
     }
+    fqd.push_back({"q_naive",   &q_naive});
+    fqd.push_back({"Sigma_low", &Sigma_low});
     int nd = (int)fqd.size();
     LatticeComplexD one(grid); one = ComplexField::scalar_type(1.0, 0.0);
 
@@ -936,6 +1006,8 @@ int main(int argc, char* argv[])
         qdefs.push_back({"q_B_"+lbl, &q_eps_all[t]});
         qdefs.push_back({"q_C_"+lbl, &q_bdy_all[t]});
       }
+      qdefs.push_back({"q_naive",   &q_naive});
+      qdefs.push_back({"Sigma_low", &Sigma_low});
     }
 
     // Pre-load all comp files BEFORE printing the header so that LIME/IOobject

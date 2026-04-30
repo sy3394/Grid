@@ -309,7 +309,14 @@ int main(int argc, char** argv) {
 	axpby_ssp(G5evec[i], 1., finalevec[i], 0., G5evec[i], j, j);
       }
       }
-      // Compute spectral reconstruction of topological charge density
+      // Compute spectral reconstruction of topological charge density (q_naive / sp_sum).
+      // NOTE: this archived block has a sign-convention bug — G5evec[i] is built (above)
+      // with eps_code(s) = -Gamma_5(s) (i.e. -1 for s<Ls/2, +1 for s>=Ls/2), so the
+      // per-mode "-localInnerProduct(u, G5evec)" actually evaluates to +chi^B(x),
+      // opposite to what the variable name suggests. The corrected reconstruction
+      // (with cleanly-named accumulators) lives in
+      // visualisation/FieldDensityEigen.cxx (q_naive accumulator); see
+      // sp_sum_vs_qB_bulk_analysis.tex §1.3 for the derivation.
       /*
       std::string sp_file = LanParams.outpath + "/" + std::to_string(i_conf) + "/sp_sum_tau_"+tau+"."+std::to_string(i_conf);
       LatticeComplexD sp_sum(FGrid); sp_sum = Zero();
