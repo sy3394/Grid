@@ -199,9 +199,15 @@ int main(int argc, char **argv) {
   // (mu,nu) pairs, so the volume average matches the standard <P>.
   ////////////////////////////////////////////////////////////////////////////
   {
-    typedef typename PeriodicGimplR::ComplexField ComplexField;
+    typedef typename PeriodicGimplR::ComplexField   ComplexField;
+    typedef typename PeriodicGimplR::GaugeLinkField GaugeMat;
+
+    // sitePlaquette() takes std::vector<GaugeMat>, so peel U_mu off Umu first.
+    std::vector<GaugeMat> U(Nd, Umu.Grid());
+    for (int mu = 0; mu < Nd; mu++) U[mu] = PeekIndex<LorentzIndex>(Umu, mu);
+
     ComplexField Plq(Umu.Grid());
-    WilsonLoops<PeriodicGimplR>::sitePlaquette(Plq, Umu);
+    WilsonLoops<PeriodicGimplR>::sitePlaquette(Plq, U);
     double pcoeff = 2.0 / (1.0 * Nd * (Nd - 1)) / 3.0;
     Plq = pcoeff * Plq;
     std::string pfile = WFPar.path + "plaq_0_" + CPar.conf_prefix + "." + std::to_string(conf);
