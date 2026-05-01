@@ -898,6 +898,62 @@ int main(int argc, char* argv[])
         }
       }
     }
+
+    /****** Alpha-sweep: PCF/IP of q_B^mgap + alpha*B vs gluonic q_top ************/
+    // Implements the §sec:alpha_sweep diagnostic of sp_sum_vs_qB_bulk_analysis.tex:
+    // sweep alpha to identify the alpha^* that best matches each gluonic
+    // reference (one alpha^* per TD_tau).  Since ∫B = 0, the integrated charge
+    // ∫q_mix = Q_top is preserved exactly for every alpha.
+    // Computes once per (alpha, TD_tau) and appends to alpha_sweep.dat.
+    int sign_idx = -1, mgap_idx = -1;
+    for(int t = 0; t < ntracks; t++){
+      if(weight_specs[t].is_sign)            sign_idx = t;
+      else if(weight_specs[t].label == "mgap") mgap_idx = t;
+    }
+    if(sign_idx >= 0 && mgap_idx >= 0){
+      // B(x) = q_naive(x) - q_B^sign(x) per the eq:Btrunc operational definition
+      LatticeComplexD B_field(grid);
+      B_field = q_naive - q_eps_all[sign_idx];
+      // Alpha grid (default; --alpha_sweep "0,0.1,..." overrides)
+      std::vector<double> alphas = {0.0, 0.1, 0.2, 0.3, 0.5, 0.7, 1.0, 1.5, 2.0};
+      if(GridCmdOptionExists(argv,argv+argc,"--alpha_sweep")){
+        std::string a_arg = GridCmdOptionPayload(argv,argv+argc,"--alpha_sweep");
+        std::vector<std::string> a_strs;
+        GridCmdOptionCSL(a_arg, a_strs);
+        alphas.clear();
+        for(auto& s : a_strs) alphas.push_back(std::stod(s));
+      }
+      std::cout << GridLogMessage << "Alpha sweep: " << alphas.size() << " values" << std::endl;
+      LatticeComplexD q_mix(grid), one_alpha(grid);
+      one_alpha = ComplexField::scalar_type(1.0, 0.0);
+      for(double alpha : alphas){
+        q_mix = q_eps_all[mgap_idx] + alpha * B_field;
+        for(int i = 0; i < (int)data1.size(); i++){
+          ComplexD avg1 = TensorRemove(sum(data1[i]))/RealD(grid->gSites());
+          ComplexD avg2 = TensorRemove(sum(q_mix))   /RealD(grid->gSites());
+          LatticeComplexD X(grid), Y(grid);
+          X = data1[i] - avg1*one_alpha;
+          Y = q_mix    - avg2*one_alpha;
+          double corr = real(TensorRemove(sum(X*Y))) / std::sqrt(norm2(X)*norm2(Y));
+          double ip   = real(TensorRemove(innerProduct(data1[i], q_mix)))
+                      / std::sqrt(norm2(data1[i])) / std::sqrt(norm2(q_mix));
+          std::cout << "AlphaSweep: alpha=" << alpha
+                    << " tau_wf=" << tau_wf
+                    << " TD_tau=" << get_td_tau(i)
+                    << " conf=" << conf_id
+                    << " Corr=" << corr << " IP=" << ip << std::endl;
+          if(!data_dir.empty()){
+            std::ofstream of(data_dir+"/alpha_sweep.dat", std::ios::app);
+            of << alpha << " " << tau_wf << " " << get_td_tau(i) << " "
+               << conf_id << " " << corr << " " << ip << "\n";
+          }
+        }
+      }
+    } else {
+      std::cout << GridLogMessage
+                << "Alpha sweep: skipped (need both sign and mgap weight tracks)"
+                << std::endl;
+    }
   }
   /****** Compare fermion TCD definitions against each other (FermFerm) ************/
   // Computes Pearson Corr and normalised IP for every (i,j) pair with i<j.
