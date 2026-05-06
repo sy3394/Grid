@@ -157,7 +157,7 @@ The mode is determined by the combination of `MDtime_div_fac` and `R`:
 | Mode | Condition | VS output | NVS output | Notes |
 |---|---|---|---|---|
 | **Master-Field (MF)** | `MDtime_div_fac=1`, `R ≥ 0` | `auto2_VS_MF.dat` | — | VS only; uses spatial covariance sum out to radius `R` (in units of `l_B` blocks on the coarsened lattice) |
-| **Madras–Sokal (MS)** | `MDtime_div_fac=1`, `R < 0` | `auto2_VS_MS.dat` | `auto2_NVS_MS.dat` | Uses ACF truncation at lag `W = MScut`. **Currently considered unreliable** — see [Method limitations](#method-limitations) |
+| **Madras–Sokal (MS)** | `MDtime_div_fac=1`, `R < 0` | `auto2_VS_MS.dat` | `auto2_NVS_MS.dat` | Uses four-point variance with inner cutoff `W = MScut` (≥ 100). **Cross-check only** — combining per-site MS into a spatial-average error needs an unverifiable site-independence assumption; see [Method limitations](#method-limitations) |
 | **MD-chain binning** | `MDtime_div_fac > 1` | `auto2_VS.dat` | `auto2_NVS.dat` | Splits chain into `n_bin` segments; error from sample variance across bins |
 
 > **VS MF mode** (`R ≥ 0`, `MDtime_div_fac=1`): the assertion `R < 0 || MScut ≥ 100`
@@ -165,7 +165,10 @@ The mode is determined by the combination of `MDtime_div_fac` and `R`:
 > (it is unused but must pass the guard).
 
 > **NVS MS mode** (`MDtime_div_fac=1`): NVS has no MF implementation; it always
-> falls back to the (currently unreliable) Madras–Sokal approximation.
+> falls back to the local Madras–Sokal approximation (sparse spatial input only;
+> retained as a per-site cross-check rather than as the primary error estimator,
+> since combining per-site results into a spatial-average error requires an
+> unverifiable site-independence assumption).
 
 ### Choosing `R` for MF mode
 
@@ -431,9 +434,13 @@ retained as a placeholder (see below).
   `G_conn`: multiply-then-subtract-product-of-means). They agree at `O(1/V)`.
   `connected=False` (default) selects `G_cent`.
 - **Sparse vs blocked** (spatial-lattice coarsening): block-averaging
-  reduces per-cell variance by `√(l_B^d)` at the cost of mixing spatial
-  scales within a block. Sparse sampling preserves resolution but is
-  noisier. Block-averaged is the primary variant; sparse is a cross-check.
+  preserves all long-wavelength information `k < 1/l_B` and is the safer
+  default. Sparse sampling at the same `l_B` keeps only `V/l_B^d` sites
+  and discards information between sample points, so it can run out of
+  statistics if `l_B` exceeds the correlation length. Block-averaged is
+  the primary variant; sparse is a cross-check (and the only acceptable
+  spatial input for the local-MS path, where block-averaged input would
+  require the unknown intra-block cross-site covariance).
 - **`isFullTimeAvg=1`** is strongly recommended: it averages the product
   `A(x,i)·A(x,i+t)` over all valid source times `i`, significantly reducing
   statistical noise at large `t`.
@@ -451,55 +458,89 @@ Both run when `MDtime_div_fac > 1` and write to the same `auto2_VS.dat` /
 | `binning_avg_cov` | 0 | `ρ(t) = ⟨G(t)⟩_b / ⟨G(0)⟩_b` (average covariance, then ratio) | Variance via delta-method linearization using inter-bin `Cov(G_b(t), G_b(0))` |
 | `binning_avg_rho` | 1 | `ρ(t) = ⟨G(t)/G(0)⟩_b` (per-bin ratio, then average) | **Preferred.** Variance computed directly from inter-bin sample variance of ρ_b — no linearization, no covariance estimate needed |
 
-Both are unbiased to leading order and equivalent in the large-n_bin limit
-(delta method ↔ direct sample variance). They differ at `O(1/n_bin)`.
-**`binning_avg_rho` is the recommended reported number** because:
-1. The variance is computed directly from a sample of ρ_b values, with no
-   reliance on the linearization (delta method) being a good approximation.
+These are two distinct point estimators of the population ACC. They agree
+at leading order in the delta-method linearisation — expanding `G_b(0)`
+around its bin-mean and dropping `O(1/n_bin)` corrections gives identical
+leading-order variances — but are **not** mathematically equivalent at
+finite `n_bin`. **`binning_avg_rho` is the recommended reported number**
+because:
+1. The variance is computed directly from a sample of `ρ_b` values, with no
+   reliance on linearisation.
 2. Each MD-chain bin is treated as an independent replicate of the ACC
    estimate — the standard interpretation, justified by the LLN when bin
    width > τ_int.
-3. Spatial blocking vs sparsening within each bin is essentially a
-   **non-choice** for binning: the bin-to-bin variance is what gives the
-   error, not the within-bin spatial coarsening.
+3. Within-bin spatial coarsening (block-avg vs sparse) only changes
+   within-bin precision, not the inter-bin variance that supplies the
+   reported error. Block-averaging is the safer default — sparse-sampling
+   at large `l_B` discards information between sample points and can run
+   out of statistics if `l_B` exceeds the correlation length.
 
-`binning_avg_cov` is run alongside as a cross-check on the linearization;
-the two should agree once `n_bin` is large enough (≳ 20–50 in practice).
+`binning_avg_cov` is run alongside as a cross-check on the linearisation;
+disagreement between the two at the working `n_bin` is itself an empirical
+diagnostic on the validity of the linearisation.
 
 ### Method limitations
 
-- **`MS_approx` (Madras–Sokal)** — *currently unreliable; retained as a
-  placeholder pending a non-circular variance estimator.* The `1/√N` scaling
-  underlying the variance formula implicitly assumes statistical independence,
-  which is exactly the property the autocorrelation analysis is trying to
-  measure. The choice of truncation window `W` is data-dependent in a way
-  that cannot be validated from within the same chain — a structural
-  circularity discussed in §4.3 of `Master_Field_Type_Autocorrelation/main.tex`.
-  Spatial blocking or sparsening of the input field does not cure this:
-  estimating the variance of a spatial average requires the cross-site
-  covariance structure, which is not available from a single configuration.
-  **Do not treat MS error bars as trustworthy.** The implementation is left
-  in the codebase only against the possibility of a future improvement
-  (e.g. an independent estimator for `W` or for the cross-site covariance).
+The four error estimators implemented here split along two independent axes
+— spatial input (full lattice / block-averaged / sparse-sampled) and MD-time
+partition (single chain / multi-bin) — plus a prior design choice to use the
+autocovariance `G_x(t)` rather than the per-site ACC `ρ_x(t) = G_x(t)/G_x(0)`
+as the basic statistical variable (the latter has poor signal-to-noise at
+single sites because `G_x(0)` is a small, fluctuating denominator). See §4.2
+of `Master_Field_Type_Autocorrelation/main.tex` for the full discussion.
 
-- **`MF_approx`** — requires direct observation of σ_ρ vs R/l_B saturation;
-  if no plateau is reached within `R < L/2`, the error is unbounded. With
+- **(1) `MF_approx` (Master-Field, single chain)** — directly estimates the
+  spatial covariance density `Cov[G(x,t), G(x+y,t)]` from a single configuration
+  (averaging over `x` via translation invariance) and integrates it over
+  `|y| ≤ R`. Saturation at `R_sat` is empirically observable provided
+  `R_sat < L/2`; if no plateau is reached the error is unbounded. The block
+  size `l_B` is a data-compression / variance-reduction parameter only
+  (cf. Bruno 2023), not part of the asymptotic formula. Caveats: with
   `l_B < √(8τ_W)` (Wilson-flow smearing radius), adjacent blocks share
-  smeared field, biasing σ_ρ low. Always compare blocked-MF for several
-  `l_B` values (`<space_block_sizes>2 4 8</space_block_sizes>`) and use
-  `plot_sigma_vs_R` to confirm saturation. As emphasised above, `l_B` is
-  a data-compression / variance-reduction parameter; the actual error
-  estimate comes from integrating the spatial covariance density out to R.
+  smeared field and `σ_ρ` is biased low. Always compare blocked-MF for
+  several `l_B` (`<space_block_sizes>2 4 8</space_block_sizes>`) and use
+  `plot_sigma_vs_R` to confirm saturation.
 
-- **`binning_avg_cov` / `binning_avg_rho`** — viable when each MD-chain bin
-  produces one spatial-average ACC estimate and the inter-bin sample variance
-  is the error. The validity rests on the LLN: bin width > τ_int (so bins
-  are approximately independent) and enough bins (≳ 20–50) for the sample
-  variance to converge. Within a bin, the choice of spatial coarsening
-  (blocked vs sparse) only affects within-bin precision, not the legitimacy
-  of the inter-bin variance estimate. Use `binning_avg_rho` as the reported
-  number; cross-check with `binning_avg_cov`.
+- **(2) `MS_approx` + sparse (Local Madras–Sokal)** — the MS variance
+  formula is the standard, theoretically clean estimator both for the
+  volume-summed scalar observable and for `G_x(t)` at any single fixed
+  site `x`, provided `T ≫ W` (we use `W ≥ 100`, the four-point inner
+  cutoff `Λ` of Lüscher 2005 Eq. E.11; this is *not* the τ_int summation
+  window of Madras–Sokal/Wolff automatic windowing, which scales with τ_int).
+  The complication arises in combining per-site MS estimates into an error
+  on the spatial average: this requires a site-independence assumption not
+  ensured by the data. Validating it via `σ_ρ ∝ l_B^{d/2}` Bienaymé scaling
+  is circular. **Sparse spatial input is the only acceptable choice** here
+  — block-averaged MS would require the unknown intra-block cross-site
+  covariance and cannot be obtained from a single configuration.
+  Sparse-sampled local MS is retained as a cross-check rather than as a
+  primary estimator.
+
+- **(3) Block-first per-block binning ("Block-First")** — multi-bin
+  estimator that bins each spatial cell's time series and combines per-cell
+  errors under an inter-cell independence assumption. Both block-averaged
+  and sparse-sampled inputs are technically permissible at the binning step
+  (no intra-block covariance is needed), but the inter-cell independence
+  assumption suffers from the same Bienaymé-scaling circularity as method (2).
+  Validity reduces to verifying `R_sat ≪ L/2` via the same diagnostic that
+  underpins MF, making this method redundant with MF in practice.
+  *Currently produced by neither `binning_avg_cov` nor `binning_avg_rho` as
+  written* — both apply method (4) below.
+
+- **(4) `binning_avg_cov` / `binning_avg_rho` (preferred)** — bin-first
+  per-bin spatial average. The chain is partitioned into `n_bin ≥ 2` bins
+  of length `L_bin ≫ τ_int`; within each bin the spatially averaged
+  autocovariance `G̃(t)|_b` is computed; inter-bin sample variance of
+  `G̃(t)|_b` supplies `Var[G̃(t)]`. The only assumption is the LLN on the
+  temporal axis (testable by varying `L_bin`); no spatial-independence
+  assumption enters at any stage. Within each bin, **block-averaged spatial
+  input is the safer default**: sparse-sampling at the same `l_B` discards
+  information between sample points and runs out of statistics if `l_B`
+  exceeds the correlation length, whereas block-averaging preserves all
+  long-wavelength modes `k < 1/l_B`. Requires `n_bin ≳ 20–50` for the
+  sample variance to converge; with smaller `n_bin` the variance estimator
+  itself carries `O(1/√n_bin)` fractional uncertainty.
 
 For a single long chain: use `MF_approx` with the saturation check.
 For multiple short chains: use `binning_avg_rho` (with `binning_avg_cov` as a
-linearization cross-check).
+linearisation cross-check).

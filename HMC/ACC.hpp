@@ -11,19 +11,58 @@
 //     the choice is made in the driver, not here. Routines below are
 //     agnostic and apply to either form.
 //
-// Two binning routines are exposed (preferred routine listed second):
+// Four error estimators are exposed; for the full discussion see §4.2 of
+// Master_Field_Type_Autocorrelation/main.tex.
+//
+//   (1) MF_approx          — Master-Field, single chain. Direct integration of
+//                            the spatial covariance density Cov[G(x,t),G(y,t)]
+//                            over |x−y| ≤ R. Saturation at R_sat is empirically
+//                            observable; l_B is data compression only.
+//
+//   (2) MS_approx          — Local Madras-Sokal, single chain. Per-site MS
+//                            variance from a four-point sum truncated at
+//                            inner cutoff W (Lüscher 2005 Eq. E.11; W ≥ 100).
+//                            Combining per-site estimates into a spatial-
+//                            average error requires assumed site independence,
+//                            which is data-circular. Sparse spatial input
+//                            only — block-avg MS would need the unknown
+//                            intra-block cross-site covariance.
+//
+//   (3) Block-first per-block binning ("Block-First") — multi-bin estimator
+//                            that combines per-cell errors under inter-cell
+//                            independence. Same circularity as (2) at the
+//                            combination step. Not implemented as a separate
+//                            routine here; legacy concept retained for context.
+//
+//   (4) binning_avg_cov / binning_avg_rho — bin-first per-bin spatial avg.
+//                            PREFERRED. Spatial average inside each bin
+//                            before inter-bin variance — no spatial-
+//                            independence assumption anywhere. Block-avg
+//                            spatial input is the safer default within each
+//                            bin (sparse loses statistics at large l_B).
+//
+// The two binning sub-variants of method (4) are:
 //
 //   binning_avg_cov  — pool covariances first: G_pool(t) = ⟨G_b(t)⟩_b.
-//                      Then ρ̂ = G_pool(t)/G_pool(0); variance via error
-//                      propagation using inter-bin Cov(G_b(t), G_b(0)).
+//                      Then ρ̂ = G_pool(t)/G_pool(0); variance via delta-
+//                      method error propagation using inter-bin
+//                      Cov(G_b(t), G_b(0)).
 //
 //   binning_avg_rho  — per-bin ratio first: ρ_b = G_b(t)/G_b(0).
-//                      Then ρ̂ = ⟨ρ_b⟩_b; variance from inter-bin
-//                      sample variance of ρ_b. PREFERRED — more transparent,
-//                      doesn't require linearization, and the variance is
-//                      computed directly from a sample rather than via
-//                      delta-method propagation. Both are equivalent in
-//                      the large-n_bin limit.
+//                      Then ρ̂ = ⟨ρ_b⟩_b; variance from inter-bin sample
+//                      variance of ρ_b. PREFERRED — variance computed
+//                      directly from a sample, no linearisation. The two
+//                      sub-variants agree at leading order in the delta-
+//                      method linearisation but are NOT mathematically
+//                      equivalent at finite n_bin; disagreement at the
+//                      working n_bin is itself a diagnostic on the
+//                      linearisation.
+//
+// A separate, prior design choice operative throughout: we use the
+// autocovariance G_x(t) as the basic statistical variable, not the per-site
+// ACC ρ_x = G_x(t)/G_x(0) — at single sites, G_x(0) is a small, fluctuating
+// denominator that ruins the signal-to-noise of ρ_x. Spatial averages are
+// always taken on G first ("ratio of averages" at the spatial level).
 
 namespace Grid{
   struct WFParameters: Serializable {
@@ -56,7 +95,7 @@ namespace Grid{
   struct ACFParameters: Serializable {
     GRID_SERIALIZABLE_CLASS_MEMBERS(ACFParameters,
 	   int, MDtime_div_fac,
-	   int, MScut,	          // Cutoff time for Madras-Sokal approx. (currently unreliable, see note)
+	   int, MScut,	          // Four-point inner cutoff W (= Λ in Lüscher 2005 Eq. E.11) for MS_approx; W ≥ 100
 	   std::vector<int>, space_block_sizes,
 	   int, R,                // Summation radius of Master field tecnnique
 	   int, isFullTimeAvg);
@@ -77,12 +116,15 @@ template <class T> void readFile(T& out, std::string const fname){
   RD.close();
 }
 
-// MS_approx — Madras-Sokal variance formula applied to the spatially-summed
-// covariance. See limitations note in autocova_usage.md: the 1/√N scaling
-// implicitly assumes statistical independence, which is exactly what the
-// autocorrelation analysis is trying to measure (structural circularity).
-// Retained as a placeholder pending a non-circular variance estimator;
-// not currently considered a trustworthy error bar.
+// MS_approx — Madras-Sokal variance formula at fixed lag t, applied per-site.
+// Implements the four-point variance estimator with inner cutoff W (= Λ in
+// Lüscher 2005 Eq. E.11; W ≥ 100 throughout). For the volume-summed scalar
+// or for G_x(t) at any single fixed site this is the standard, theoretically
+// clean estimator. Combining per-site results into an error on the spatial
+// average requires an assumption of site independence not ensured by the
+// data — validating it via Bienaymé scaling σ_ρ ∝ l_B^{d/2} is circular.
+// Sparse spatial input is the only acceptable choice (block-avg would need
+// the unknown intra-block cross-site covariance). Retained as a cross-check.
 template <class L, typename A> void MS_approx(Grid::GridBase *Coarse, std::vector<L,A>  const& in, int T, int W, int block_size, int tau,
 					      std::string const e_name, std::string ACC_Type ){
   using namespace Grid;
@@ -114,12 +156,14 @@ template <class L, typename A> void MS_approx(Grid::GridBase *Coarse, std::vecto
 }
 
 // binning_avg_cov  (formerly "binning") — average G across MD-time bins,
-// then take the ratio.  Variance of the ratio via error propagation using
-// inter-bin Cov(G_b(t), G_b(0)).
+// then take the ratio.  Variance of the ratio via delta-method error
+// propagation using inter-bin Cov(G_b(t), G_b(0)).
 //
-// Equivalent to binning_avg_rho in the large-n_bin limit (delta method),
-// but relies on linearization being a good approximation.  See the file
-// header for the recommended choice (binning_avg_rho is preferred).
+// Two distinct point estimators of ρ(t).  binning_avg_cov and binning_avg_rho
+// agree at leading order in the delta-method linearisation but are NOT
+// mathematically equivalent at finite n_bin.  Used as a cross-check on the
+// linearisation; disagreement at the working n_bin is itself a diagnostic.
+// See the file header for the recommended choice (binning_avg_rho preferred).
 template <class L, typename A> void binning_avg_cov(Grid::GridBase *Coarse, std::vector<L,A>  const& in, int T, int n_bin, int block_size, int tau,
 						    std::string const e_name, std::string ACC_Type){
   using namespace Grid;
