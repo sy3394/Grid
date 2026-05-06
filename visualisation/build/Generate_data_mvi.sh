@@ -41,10 +41,18 @@ dfiles=()
 
 CDIR=$(pwd)
 
-# Convenience wrappers — no redirect; text output goes to log_G for monitoring.
-# SCIDAC-writing calls use their own inline redirects (see §2.5 Step 2).
-FDE()  { ${CDIR}/FieldDensityEigen            "$@"; }
-FDAM() { ${CDIR}/FieldDensityAnimateMultiFiles "$@"; }
+# Convenience wrappers — strip stdout null bytes only, pass everything else
+# through.  c-lime / Grid SCIDAC I/O emits NUL bytes via direct write()
+# syscalls that bypass C-level redirects (a known issue on Cray/HPE — see
+# git history of "Fix binary garbage" / "Eliminate binary garbage" commits).
+# `tr -d '\0'` drops the NULs and keeps all printable text intact, so log_G
+# remains greppable while Topo PCF / FermFerm / AlphaSweep diagnostics still
+# reach the operator.
+# §2.5 Step 2 (SCIDAC-write call) uses ${CDIR}/FieldDensityEigen directly
+# with its own > $topo_write_log redirect, so it bypasses this filter; its
+# binary lands in topo_write_log, never in log_G.
+FDE()  { ${CDIR}/FieldDensityEigen            "$@" 2> >(tr -d '\0' >&2) | tr -d '\0'; }
+FDAM() { ${CDIR}/FieldDensityAnimateMultiFiles "$@" 2> >(tr -d '\0' >&2) | tr -d '\0'; }
 PDIR=/ccs/home/syamamoto/tmp/src/Grid_cleanedup_for_pullrequest/systems/Frontier/HMC
 LDIR=/lustre/orion/phy157/proj-shared/phy157_dwf/syamamoto
 HMC=32cube-rho0.124-tau4
