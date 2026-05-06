@@ -329,7 +329,16 @@ int main(int argc, char* argv[])
     bool        is_sign;   // true  => w = sign(mu_n)
     double      mgap_val;  // false => w = mgap_val/mu_n  (0 = auto: min|mu_n|, >0 = literal)
   };
-  double mass_f = 0.0;
+  // Two distinct fermion masses are needed (see comment above on q_naive vs Sigma_low):
+  //   mass_f  : MUST match the m_f used in Compute_DWF_G5R5 to generate the
+  //             eigenvectors.  Used to recover the kinetic eigenvalue
+  //             lambda^(0) = sqrt((lambda^H)^2 - m_f^2).  For zero-mass evecs
+  //             (lambda^H already kinetic), set --mass 0.
+  //   bc_mass : independent Banks–Casher Lorentzian regulator for Sigma_low(x).
+  //             Defaults to mass_f if --bc_mass is absent (legacy behaviour).
+  //             Must be non-zero to get a non-trivial Sigma_low.
+  double mass_f  = 0.0;
+  double bc_mass = -1.0;  // sentinel: -1 -> fall back to mass_f below
   std::vector<double> evals;
   std::string topo_out = "topo_evec";
   // Default: both sign and mgap tracks always active
@@ -338,6 +347,17 @@ int main(int argc, char* argv[])
   if( GridCmdOptionExists(argv,argv+argc,"--mass") ){
     arg = GridCmdOptionPayload(argv,argv+argc,"--mass");
     GridCmdOptionFloat(arg, mass_f);
+  }
+  if( GridCmdOptionExists(argv,argv+argc,"--bc_mass") ){
+    arg = GridCmdOptionPayload(argv,argv+argc,"--bc_mass");
+    GridCmdOptionFloat(arg, bc_mass);
+  }
+  if(bc_mass < 0.0) bc_mass = mass_f;  // legacy fallback
+  if(bc_mass == 0.0){
+    std::cerr << "WARNING: bc_mass=0 (no --bc_mass and --mass=0).  Sigma_low(x) "
+              << "will be identically zero and all PCFs involving it will be "
+              << "NaN.  Pass --bc_mass <m_f> for a non-trivial Banks–Casher "
+              << "Lorentzian regulator." << std::endl;
   }
   if( GridCmdOptionExists(argv,argv+argc,"--evals") ){
     arg = GridCmdOptionPayload(argv,argv+argc,"--evals");
@@ -677,8 +697,13 @@ int main(int argc, char* argv[])
       }
 
       // --- q_naive (legacy sp_sum) and Sigma_low (Banks-Casher locality) ---
-      //   q_naive(x)   = -sum_n chi_n^B(x)
+      //   q_naive(x)   = +sum_n chi_n^B(x)
       //                  + (1/2) sum_n sgn(lambda^H_n) * lambda^(0)_n * rho_n(x)
+      // where chi_n^B(x) = sum_s Gamma_5(s) |u_n(x,s)|^2  (Gamma_5 convention,
+      // matching eq:qnaive_split in sp_sum_vs_qB_bulk_analysis.tex).
+      // The code achieves the + sign via "-eps_s * |u|^2" with eps_s = eps_code(s)
+      // = -Gamma_5(s), i.e. the same double-negative as the archived sp_sum block
+      // in Compute_DWF_SpectralFlow.cc.
       //   Sigma_low(x) = sum_n [m_f / ((lambda^(0)_n)^2 + m_f^2)] * rho_n(x)
       // with lambda^(0)_n = sqrt((lambda^H_n)^2 - m_f^2) the kinetic eigenvalue
       // (App. B.4). No --weights track loop: q_naive and Sigma_low are
@@ -689,7 +714,9 @@ int main(int argc, char* argv[])
         double lambda_0     = (lambda_0_sq > 0.0) ? std::sqrt(lambda_0_sq) : 0.0;
         double sgn_lambda   = (lambda_H > 0.0) ? 1.0
                             : (lambda_H < 0.0) ? -1.0 : 0.0;
-        double bc_weight    = mass_f / (lambda_0_sq + mass_f*mass_f); // m_f safe >0
+        // Banks–Casher Lorentzian uses bc_mass (independent of mass_f) so the
+        // §4.1 scalar-foil diagnostic remains well-defined for zero-mass evecs.
+        double bc_weight    = bc_mass / (lambda_0_sq + bc_mass*bc_mass);
 
         // rho_n(x) = sum_s |u_n(x,s)|^2  (scalar 4D density)
         LatticeComplexD rho_n(grid); rho_n = Zero();
