@@ -67,13 +67,17 @@ int main(int argc, char **argv) {
   ComplexField one(&Grid); one = ComplexField::scalar_type(1.0, 0.0);
   ComplexField A0(&Grid), A1(&Grid);
 
-  // F[i]:   raw observable field for configuration i
-  // G[it]:  VS autocovariance — subtracts per-config spatial mean from each field:
-  //           G[it](x) = avg_i (A(x,i) - <A>_i)(A(x,i+t) - <A>_{i+t})
-  // G2[it]: VS alternative — uses the cross term directly:
-  //           G2[it](x) = avg_i  A(x,i)*A(x,i+t) - <A>_i * <A>_{i+t}
+  // F[i]:        raw observable field for configuration i
+  // G_cent[it]:  VS autocovariance — CENTERED form
+  //                (subtract per-config spatial mean BEFORE the product)
+  //                G_cent[it](x) = avg_i (A(x,i) - <A>_i)(A(x,i+t) - <A>_{i+t})
+  // G_conn[it]:  VS autocovariance — CONNECTED form
+  //                (form the product, THEN subtract product of means)
+  //                G_conn[it](x) = avg_i A(x,i)*A(x,i+t) - <A>_i * <A>_{i+t}
+  // The two differ at O(1/V); cross-checking is a finite-V bias diagnostic.
+  // (See sec.~4.1 of Master_Field_Type_Autocorrelation/main.tex.)
   std::vector<ComplexField> F(total_configs, &Grid);
-  std::vector<ComplexField> G(arr_size, &Grid), G2(arr_size, &Grid);
+  std::vector<ComplexField> G_cent(arr_size, &Grid), G_conn(arr_size, &Grid);
 
   std::cout << std::setprecision(15);
 
@@ -98,12 +102,12 @@ int main(int argc, char **argv) {
   ////////////////////////////////////////////////////////////////////////////////////////////////
   // VS: subtract the per-config spatial mean <A>_i = sum_x A(x,i)/V from each configuration.
   // Two estimators are computed:
-  //   G[it](x)  = avg over i of  (A(x,i) - <A>_i)(A(x,i+t) - <A>_{i+t})
-  //   G2[it](x) = avg over i of  A(x,i)*A(x,i+t) - <A>_i * <A>_{i+t} * 1
+  //   G_cent[it](x) = avg over i of  (A(x,i) - <A>_i)(A(x,i+t) - <A>_{i+t})    centered
+  //   G_conn[it](x) = avg over i of  A(x,i)*A(x,i+t) - <A>_i * <A>_{i+t} * 1   connected
   for (int i_bin = 0; i_bin < n_bin; i_bin++) {
     for (int t = 0; t < T; t++) {
       int it = i_bin * T + t;
-      G[it] = Zero();  G2[it] = Zero();
+      G_cent[it] = Zero();  G_conn[it] = Zero();
 
       // n_src: number of source times used (full time average or single source)
       int n_src = APar.isFullTimeAvg ? T - t : 1;
@@ -115,15 +119,15 @@ int main(int argc, char **argv) {
         ComplexD mean0 = TensorRemove(sum(A0)) / RealD(Grid.gSites());
         ComplexD mean1 = TensorRemove(sum(A1)) / RealD(Grid.gSites());
 
-        G2[it] = G2[it] + A0 * A1 - (mean0 * mean1) * one;
+        G_conn[it] = G_conn[it] + A0 * A1 - (mean0 * mean1) * one;
 
         A0 = A0 - mean0 * one;
         A1 = A1 - mean1 * one;
-        G[it] = G[it] + A0 * A1;
+        G_cent[it] = G_cent[it] + A0 * A1;
       }
 
-      G[it]  = (1.0 / RealD(n_src)) * G[it];
-      G2[it] = (1.0 / RealD(n_src)) * G2[it];
+      G_cent[it] = (1.0 / RealD(n_src)) * G_cent[it];
+      G_conn[it] = (1.0 / RealD(n_src)) * G_conn[it];
     }
   }
 
@@ -137,16 +141,17 @@ int main(int argc, char **argv) {
     for (int i = 0; i < Nd; i++) clatt_size[i] = Grid.FullDimensions()[i] / bs;
     GridCartesian Coarse(clatt_size, simd_layout, mpi_layout);
 
-    ////////////////////// Block averaging //////////////////////
-    std::vector<ComplexField> G_B(arr_size, &Coarse), G2_B(arr_size, &Coarse);
+    ////////////////////// Block averaging (spatial-lattice coarsening) //////////////////////
+    std::vector<ComplexField> G_cent_B(arr_size, &Coarse), G_conn_B(arr_size, &Coarse);
     for (int i = 0; i < arr_size; i++) {
-      blockSum(G_B[i],  G[i]);   G_B[i]  = (1.0 / RealD(std::pow(bs, Nd))) * G_B[i];
-      blockSum(G2_B[i], G2[i]);  G2_B[i] = (1.0 / RealD(std::pow(bs, Nd))) * G2_B[i];
+      blockSum(G_cent_B[i], G_cent[i]);  G_cent_B[i] = (1.0 / RealD(std::pow(bs, Nd))) * G_cent_B[i];
+      blockSum(G_conn_B[i], G_conn[i]);  G_conn_B[i] = (1.0 / RealD(std::pow(bs, Nd))) * G_conn_B[i];
     }
 
-    ////////////////////// Sparse sampling //////////////////////
-    // Retain only sites where every coordinate is a multiple of bs
-    std::vector<ComplexField> G_s(arr_size, &Coarse), G2_s(arr_size, &Coarse);
+    ////////////////////// Sparse sampling (spatial-lattice coarsening) //////////////////////
+    // Retain only sites where every coordinate is a multiple of bs.
+    // (NOTE: "binning" is reserved for MD-chain partition — see ACC.hpp header.)
+    std::vector<ComplexField> G_cent_s(arr_size, &Coarse), G_conn_s(arr_size, &Coarse);
     {
       LatticeInteger coor(&Grid);
       ComplexField filter(&Grid), zero(&Grid); filter = one; zero = Zero();
@@ -156,48 +161,58 @@ int main(int argc, char **argv) {
       }
       ComplexField tmp(&Grid);
       for (int i = 0; i < arr_size; i++) {
-        tmp = filter * G[i];   blockSum(G_s[i],  tmp);
-        tmp = filter * G2[i];  blockSum(G2_s[i], tmp);
+        tmp = filter * G_cent[i];  blockSum(G_cent_s[i], tmp);
+        tmp = filter * G_conn[i];  blockSum(G_conn_s[i], tmp);
       }
     }
 
     /***********   Error estimation  ************************************************************
-      No binning  => Madras-Sokal approximation or Master-Field technique (valid when t << T)
-      With binning => sample variance over MD-time bins
+      No MD-time binning  =>  Madras-Sokal approximation OR Master-Field technique
+                              (MS retained as placeholder — see autocova_usage.md;
+                               its 1/√N variance scaling is structurally circular)
+      With MD-time binning =>  sample variance over MD-time bins (binning_avg_rho preferred)
     ********************************************************************************************/
-    std::string tag  = WFPar.data_name + " ACC";
-    std::string tag2 = WFPar.data_name + " ACC2";
+    std::string tag_cent = WFPar.data_name + " G_cent";
+    std::string tag_conn = WFPar.data_name + " G_conn";
 
     if (total_configs == T) {
 
       // Madras-Sokal approximation (APar.R < 0 signals MS rather than MF)
+      // Currently retained as a placeholder; do not treat as a trustworthy error bar.
       if (APar.R < 0) {
         assert(T > W);
-        MS_approx(&Coarse, G_B,  T, W, bs, tau, "Blocked " + tag,  "LVS");
-        MS_approx(&Coarse, G2_B, T, W, bs, tau, "Blocked " + tag2, "LVS");
-        MS_approx(&Coarse, G_s,  T, W, bs, tau, "Sparsed " + tag,  "LVS");
-        MS_approx(&Coarse, G2_s, T, W, bs, tau, "Sparsed " + tag2, "LVS");
+        MS_approx(&Coarse, G_cent_B, T, W, bs, tau, "Blocked " + tag_cent, "LVS");
+        MS_approx(&Coarse, G_conn_B, T, W, bs, tau, "Blocked " + tag_conn, "LVS");
+        MS_approx(&Coarse, G_cent_s, T, W, bs, tau, "Sparsed " + tag_cent, "LVS");
+        MS_approx(&Coarse, G_conn_s, T, W, bs, tau, "Sparsed " + tag_conn, "LVS");
       }
 
       // Master-Field approximation
-      // Both G (centered, ACC) and G2 (connected, ACC2) are run for blocked spatial coarsening.
+      // Both G_cent and G_conn are run for blocked spatial coarsening.
       // Sparse-MF is intentionally omitted: sparse sampling discards the sub-l_B spatial
       // covariance information that the MF spatial-sum formula is built to integrate, so
       // sparse-MF is strictly noisier than blocked-MF with no diagnostic upside.
-      MF_approx(&Coarse, G_B,  T, APar.R, bs, tau, "Blocked " + tag,  "LVS");
-      MF_approx(&Coarse, G2_B, T, APar.R, bs, tau, "Blocked " + tag2, "LVS");
+      // Block size l_B here is for data compression / variance reduction only;
+      // the MF error estimate comes from the exponential falloff of spatial correlations,
+      // not from l_B (cf. Bruno 2023).
+      MF_approx(&Coarse, G_cent_B, T, APar.R, bs, tau, "Blocked " + tag_cent, "LVS");
+      MF_approx(&Coarse, G_conn_B, T, APar.R, bs, tau, "Blocked " + tag_conn, "LVS");
 
     } else {
-      // Binning over MD-time bins
-      binning( &Coarse, G_B,  T, n_bin, bs, tau, "Blocked " + tag,  "LVS");
-      binning( &Coarse, G2_B, T, n_bin, bs, tau, "Blocked " + tag2, "LVS");
-      binning( &Coarse, G_s,  T, n_bin, bs, tau, "Sparsed " + tag,  "LVS");
-      binning( &Coarse, G2_s, T, n_bin, bs, tau, "Sparsed " + tag2, "LVS");
+      // MD-time binning.  binning_avg_rho is the preferred reported estimator
+      // (transparent variance from sample, no delta-method linearization);
+      // binning_avg_cov is run as a cross-check.  See ACC.hpp header.
+      // Spatial blocked vs sparse coarsening within each bin is essentially a
+      // non-choice for binning — the bin-to-bin variance is what gives the error.
+      binning_avg_cov(&Coarse, G_cent_B, T, n_bin, bs, tau, "Blocked " + tag_cent, "LVS");
+      binning_avg_cov(&Coarse, G_conn_B, T, n_bin, bs, tau, "Blocked " + tag_conn, "LVS");
+      binning_avg_cov(&Coarse, G_cent_s, T, n_bin, bs, tau, "Sparsed " + tag_cent, "LVS");
+      binning_avg_cov(&Coarse, G_conn_s, T, n_bin, bs, tau, "Sparsed " + tag_conn, "LVS");
 
-      binning2(&Coarse, G_B,  T, n_bin, bs, tau, "Blocked " + tag,  "LVS");
-      binning2(&Coarse, G2_B, T, n_bin, bs, tau, "Blocked " + tag2, "LVS");
-      binning2(&Coarse, G_s,  T, n_bin, bs, tau, "Sparsed " + tag,  "LVS");
-      binning2(&Coarse, G2_s, T, n_bin, bs, tau, "Sparsed " + tag2, "LVS");
+      binning_avg_rho(&Coarse, G_cent_B, T, n_bin, bs, tau, "Blocked " + tag_cent, "LVS");
+      binning_avg_rho(&Coarse, G_conn_B, T, n_bin, bs, tau, "Blocked " + tag_conn, "LVS");
+      binning_avg_rho(&Coarse, G_cent_s, T, n_bin, bs, tau, "Sparsed " + tag_cent, "LVS");
+      binning_avg_rho(&Coarse, G_conn_s, T, n_bin, bs, tau, "Sparsed " + tag_conn, "LVS");
     }
   }
 

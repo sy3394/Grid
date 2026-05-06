@@ -1,10 +1,37 @@
+// ACC.hpp — error-estimation routines for spatial autocovariance fields G(x,t).
+//
+// Naming conventions used throughout this file (and the autocovariance_*.cc
+// drivers that include it):
+//
+//   * "binning"  refers to MD-chain partition into n_bin segments.
+//   * "blocking" / "sparsening" refer to SPATIAL-LATTICE coarsening.
+//   * "ACC"      = autocorrelation coefficient ρ(t) = G(t)/G(0).
+//   * "MFCOV"    = the unnormalized autocovariance G(t) itself.
+//   * G_cent / G_conn distinguish the centered vs connected forms of G;
+//     the choice is made in the driver, not here. Routines below are
+//     agnostic and apply to either form.
+//
+// Two binning routines are exposed (preferred routine listed second):
+//
+//   binning_avg_cov  — pool covariances first: G_pool(t) = ⟨G_b(t)⟩_b.
+//                      Then ρ̂ = G_pool(t)/G_pool(0); variance via error
+//                      propagation using inter-bin Cov(G_b(t), G_b(0)).
+//
+//   binning_avg_rho  — per-bin ratio first: ρ_b = G_b(t)/G_b(0).
+//                      Then ρ̂ = ⟨ρ_b⟩_b; variance from inter-bin
+//                      sample variance of ρ_b. PREFERRED — more transparent,
+//                      doesn't require linearization, and the variance is
+//                      computed directly from a sample rather than via
+//                      delta-method propagation. Both are equivalent in
+//                      the large-n_bin limit.
+
 namespace Grid{
   struct WFParameters: Serializable {
     GRID_SERIALIZABLE_CLASS_MEMBERS(WFParameters,
 	    int, tau,
 	    std::string, data_name,
 	    std::string, path);
-       
+
 
     template <class ReaderClass >
     WFParameters(Reader<ReaderClass>& Reader){
@@ -18,7 +45,7 @@ namespace Grid{
            std::string, conf_prefix,
 	   int, StartConfiguration,
 	   int, EndConfiguration);
-  
+
     template <class ReaderClass >
     ConfParameters(Reader<ReaderClass>& Reader){
       read(Reader, "Configurations", *this);
@@ -28,8 +55,8 @@ namespace Grid{
 
   struct ACFParameters: Serializable {
     GRID_SERIALIZABLE_CLASS_MEMBERS(ACFParameters,
-	   int, MDtime_div_fac,				    
-	   int, MScut,	          // Cutoff time for Madras-Sokal approx. to error in ACC
+	   int, MDtime_div_fac,
+	   int, MScut,	          // Cutoff time for Madras-Sokal approx. (currently unreliable, see note)
 	   std::vector<int>, space_block_sizes,
 	   int, R,                // Summation radius of Master field tecnnique
 	   int, isFullTimeAvg);
@@ -50,6 +77,12 @@ template <class T> void readFile(T& out, std::string const fname){
   RD.close();
 }
 
+// MS_approx — Madras-Sokal variance formula applied to the spatially-summed
+// covariance. See limitations note in autocova_usage.md: the 1/√N scaling
+// implicitly assumes statistical independence, which is exactly what the
+// autocorrelation analysis is trying to measure (structural circularity).
+// Retained as a placeholder pending a non-circular variance estimator;
+// not currently considered a trustworthy error bar.
 template <class L, typename A> void MS_approx(Grid::GridBase *Coarse, std::vector<L,A>  const& in, int T, int W, int block_size, int tau,
 					      std::string const e_name, std::string ACC_Type ){
   using namespace Grid;
@@ -64,7 +97,7 @@ template <class L, typename A> void MS_approx(Grid::GridBase *Coarse, std::vecto
     std::cout << GridLogMessage << ACC_Type + " MFCOV "  + e_name + " (Madras-Sokal Approx): " << tau << " " << block_size << " " << 1 << " " << t << " "
 	      << sumG[t] << std::endl;
   }
-  
+
   L var(Coarse), tmp(Coarse), Gt(Coarse), G0(Coarse);
   for (int t=0; 2*t<T-W; t++){ // \sigma_{\rho}(t) uses \rho(t') up to 2t+W
     ACC = sumG[t]/sumG[0];
@@ -80,25 +113,32 @@ template <class L, typename A> void MS_approx(Grid::GridBase *Coarse, std::vecto
   }
 }
 
-template <class L, typename A> void binning(Grid::GridBase *Coarse, std::vector<L,A>  const& in, int T, int n_bin, int block_size, int tau,
-					    std::string const e_name, std::string ACC_Type){
+// binning_avg_cov  (formerly "binning") — average G across MD-time bins,
+// then take the ratio.  Variance of the ratio via error propagation using
+// inter-bin Cov(G_b(t), G_b(0)).
+//
+// Equivalent to binning_avg_rho in the large-n_bin limit (delta method),
+// but relies on linearization being a good approximation.  See the file
+// header for the recommended choice (binning_avg_rho is preferred).
+template <class L, typename A> void binning_avg_cov(Grid::GridBase *Coarse, std::vector<L,A>  const& in, int T, int n_bin, int block_size, int tau,
+						    std::string const e_name, std::string ACC_Type){
   using namespace Grid;
   // error of G_b(t) is first computed via binning for each block b
   // G_b(t) with diff. b is considered as indep. measurement of G(t) => sigma_{G_(t)}^2 is reduced by V_b for the avg over blocks
   // Then, proceed to compute error of G(t)/G(0)
-  // Computing ACC_b(t) = G_b(t)/G_b(0), 
-  
+  // Computing ACC_b(t) = G_b(t)/G_b(0),
+
   L avg(Coarse), avg0(Coarse), var(Coarse), var0(Coarse), cov(Coarse), tmp(Coarse);
   for (int t=0; t<T; t++){
-    
+
     avg = Zero(); var = Zero(); cov = Zero();
-    
+
     // Find avg field over binns
     for (int b=0; b<n_bin; b++)
       avg = avg + (1/RealD(n_bin))*in[b*T + t];
     if ( t== 0 ) avg0 = avg;
     RealD ACC = TensorRemove(sum(avg)).real()/TensorRemove(sum(avg0)).real();
-    std::cout << GridLogMessage << ACC_Type + " MFACC " + e_name + " (Binning): " << tau << " " << block_size << " " << n_bin << " " << t << " "
+    std::cout << GridLogMessage << ACC_Type + " MFACC " + e_name + " (binning_avg_cov): " << tau << " " << block_size << " " << n_bin << " " << t << " "
               << ACC << std::endl;
 
     // Find variance of Gt/G0
@@ -109,43 +149,52 @@ template <class L, typename A> void binning(Grid::GridBase *Coarse, std::vector<
     }
     RealD G0 = real(sum(avg0)), Gt = real(sum(avg)); // the factor of 1/N_B is cancel out by 1/V^2 from Cov[G0,Gt] in the expression of var of Gt/G0
     if ( t == 0 ) var0 = var;
-    std::cout << GridLogMessage << ACC_Type + " Variance " + e_name + " (Binning): " << tau << " " << block_size << " " << n_bin << " " << t << " "
-              << (real(sum(var))/Gt/Gt + real(sum(var0))/G0/G0 - 2.0*real(sum(cov))/G0/Gt)*ACC*ACC 
+    std::cout << GridLogMessage << ACC_Type + " Variance " + e_name + " (binning_avg_cov): " << tau << " " << block_size << " " << n_bin << " " << t << " "
+              << (real(sum(var))/Gt/Gt + real(sum(var0))/G0/G0 - 2.0*real(sum(cov))/G0/Gt)*ACC*ACC
 	      << " " << (real(sum(var))/Gt/Gt + real(sum(var0))/G0/G0)*ACC*ACC << " " << - 2.0*real(sum(cov))/G0/Gt*ACC*ACC << std::endl;
 
   }
 }
 
-template <class L, typename A> void binning2(Grid::GridBase *Coarse, std::vector<L,A>  const& in, int T, int n_bin, int block_size, int tau,
-					     std::string const e_name, std::string ACC_Type){
+// binning_avg_rho  (formerly "binning2") — per-bin ratio ρ_b = G_b(t)/G_b(0),
+// then average across bins.  Variance from inter-bin sample variance of ρ_b.
+//
+// PREFERRED.  More transparent (variance from direct sample, no delta-method
+// linearization), more robust if per-bin G_b are non-Gaussian, and treats
+// each MD-time bin as an independent replicate of the ACC estimate — which
+// is the standard interpretation justified by the law of large numbers when
+// bin width > τ_int.  Requires n_bin enough for sample variance to converge
+// (≳ 20–50 in practice).
+template <class L, typename A> void binning_avg_rho(Grid::GridBase *Coarse, std::vector<L,A>  const& in, int T, int n_bin, int block_size, int tau,
+						    std::string const e_name, std::string ACC_Type){
   using namespace Grid;
   // if bin_size > 30, the mean over binns approx dist. like Gaussian; the validity of this  estimation rests on Central Limit Theorem
   // we avg G_x(t) over blocks first and then take the ratio G(t)/G(0) before avg over bins
   // block avg might give a better sig as it incorpolates more stats; both should be unbiased
-  
+
   RealD avg, avg0, var, tmp;
   std::vector<RealD> in_sum(in.size());
 
   for (int i=0; i<in.size(); i++) {
     in_sum[i] = TensorRemove(sum(in[i])).real();
-    std::cout << GridLogMessage << ACC_Type + " MFCOV " + e_name + " (Binning2): " << tau << " " << block_size << " " << n_bin << " " << i << " "
+    std::cout << GridLogMessage << ACC_Type + " MFCOV " + e_name + " (binning_avg_rho): " << tau << " " << block_size << " " << n_bin << " " << i << " "
 	      << in_sum[i] << std::endl;
   }
-  
+
   // Find avg field over binns
   for (int t=0; t<T; t++){
     avg = 0.0; var = 0.0;
-    for (int b=0; b<n_bin; b++) 
+    for (int b=0; b<n_bin; b++)
       avg += (1/RealD(n_bin))*in_sum[b*T + t]/in_sum[b*T];
-    std::cout << GridLogMessage << ACC_Type + " MFACC " + e_name + " (Binning2): " << tau << " " << block_size << " " << n_bin << " " << t << " "
+    std::cout << GridLogMessage << ACC_Type + " MFACC " + e_name + " (binning_avg_rho): " << tau << " " << block_size << " " << n_bin << " " << t << " "
               << avg << std::endl;
 
-    // Find variance of Gt/G0 
+    // Find variance of Gt/G0
     for (int b=0; b<n_bin; b++){
       tmp = in_sum[b*T + t]/in_sum[b*T] - avg;
       var = var + (1/RealD((n_bin-1)*n_bin))*(tmp*tmp);
     }
-    std::cout << GridLogMessage << ACC_Type + " Variance " + e_name + " (Binning2): " << tau << " " << block_size << " " << n_bin << " " << t << " "
+    std::cout << GridLogMessage << ACC_Type + " Variance " + e_name + " (binning_avg_rho): " << tau << " " << block_size << " " << n_bin << " " << t << " "
               << var << " " << (1-avg*avg)*(1-avg*avg)/RealD(Coarse->gSites()-3)*RealD(n_bin) << std::endl;
   }
 }
@@ -155,7 +204,7 @@ template <class L, typename A> void MF_approx(Grid::GridBase *Coarse, std::vecto
   using namespace Grid;
 
   // Assume: block averaging
-  
+
   int R_b = R/block_size;
   RealD sumG[in.size()], ACC;
   for (int t=0; t<T; t++) {
@@ -174,7 +223,7 @@ template <class L, typename A> void MF_approx(Grid::GridBase *Coarse, std::vecto
     tmp = Gt;
     var = TensorRemove(sum(Gt*Gt)).real(); // C_tt
     cov = TensorRemove(sum(Gt*G0)).real(); // C_t0
-    
+
     for (int r=1; r<=R_b; r++){
       // Shift Gt by y s.t. |y| <= r
       for(int x=-r; x<=r; x++)
@@ -183,16 +232,16 @@ template <class L, typename A> void MF_approx(Grid::GridBase *Coarse, std::vecto
 	    for(int s=-r; s<=r; s++) {
 	      int r2_c = x*x+y*y+z*z+s*s;
 	      if ( (r-1)*(r-1) < r2_c && r2_c <= r*r) {
-		
+
 		int d[4] = {x,y,z,s};
 		Gt = tmp;
-		for(int mu=0; mu<Nd; mu++) 
+		for(int mu=0; mu<Nd; mu++)
 		  Gt = Cshift(Gt, mu, d[mu]);
 		var += TensorRemove(sum(Gt*tmp)).real();
 		cov += TensorRemove(sum(Gt*G0)).real();
 	      }
 	    }
-      
+
       // Note: No division by the volume of the coarse lattice
       std::cout << GridLogMessage << ACC_Type + " Variance " + e_name + " (Master-Field Approx): " << tau << " " << block_size << " " << r << " " << t << " "
 		<< sumG[t] << " " << var << " " << cov << std::endl;

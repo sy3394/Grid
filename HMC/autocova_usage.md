@@ -4,6 +4,26 @@ Sources: `autocovariance_VS.cc`, `autocovariance_NVS.cc`, `ACC.hpp`
 
 ---
 
+## Vocabulary — read this first
+
+This codebase distinguishes three independent concepts that are easy to confuse.
+Throughout the source, docs, and outputs:
+
+| Term | Axis | Meaning |
+|---|---|---|
+| **binning** | MD-chain partition | Splits the Markov chain into `n_bin` consecutive segments; each bin gives one estimate of ρ(t), variance comes from inter-bin sample variance |
+| **blocking** / **sparsening** | spatial-lattice partition | Coarsens the per-site autocovariance field G(x,t) into spatial cells (block: average of `l_B^d` sites; sparse: corner site only) |
+| **ACC** | observable | The autocorrelation coefficient ρ(t) = G(t)/G(0); **never** a label for the centered/connected form of G |
+| **MFCOV** | observable | The unnormalized autocovariance G(t) itself |
+| **G_cent / G_conn** | construction of G | Centered form (subtract mean, then product) vs connected form (product, then subtract product of means); they differ at O(1/V) |
+
+In particular, **binning ≠ blocking**: binning lives on the MC-time axis,
+blocking lives on the lattice. The two routines `binning_avg_cov` and
+`binning_avg_rho` (formerly `binning` / `binning2`) both partition the MD chain
+— they differ in what is averaged across bins, not in any spatial operation.
+
+---
+
 ## Overview
 
 Two Grid-based executables compute the equal-time spatial autocovariance function
@@ -24,9 +44,9 @@ For each spatial pre-blocking size `l_B` in `space_block_sizes` the code also
 computes a **sparse-sampled** variant (sites with all coordinates divisible by
 `l_B`) alongside the standard **block-averaged** variant.
 
-Both executables also compute a second estimator `G2` using the alternative
-mean-subtraction convention (see source comments); its output is tagged `ACC2`
-vs the primary `ACC`.
+Both executables also compute a second variant `G_conn` using the alternative
+mean-subtraction convention (see source comments); its output is tagged
+`G_conn` vs the primary `G_cent`.
 
 ### Three orthogonal axes
 
@@ -34,24 +54,21 @@ Every output row is determined by three independent choices:
 
 | Axis | Choices | Notes |
 |---|---|---|
-| **Field construction** | `G` (centered, ACC) vs `G2` (connected, ACC2) | how `G(x,t)` is built from raw `A(x,i)`. `G` subtracts means before the product; `G2` subtracts the product of means after. They differ at `O(1/V)` only |
+| **Field construction** | `G_cent` (centered) vs `G_conn` (connected) | how `G(x,t)` is built from raw `A(x,i)`. `G_cent` subtracts means before the product; `G_conn` subtracts the product of means after. They differ at `O(1/V)` only |
 | **Spatial coarsening** | `blocked` (cell = mean of `l_B^d` sites) vs `sparse` (cell = corner site) | how `G(x,t)` is reduced to a `V/l_B^d`-cell coarse lattice |
-| **Error estimation** | `MS_approx`, `MF_approx`, `binning`, `binning2` | which variance formula consumes the coarsened field |
+| **Error estimation** | `MS_approx`, `MF_approx`, `binning_avg_cov`, `binning_avg_rho` | which variance formula consumes the coarsened field |
 
 Field construction and spatial coarsening are orthogonal preprocessing steps;
 the error-estimation routine is selected at runtime by `MDtime_div_fac` and `R`.
 
 ### Combinations actually present in the output
 
-Not every combination is computed — the C++ deliberately skips ones that have
-no diagnostic value:
-
-|  | MS | MF | binning | binning2 |
+|  | MS | MF | binning_avg_cov | binning_avg_rho |
 |---|---|---|---|---|
-| cen × blocked  (`G_B`)  | ✓ VS, NVS | ✓ VS only | ✓ VS, NVS | ✓ VS, NVS |
-| cen × sparse   (`G_s`)  | ✓ VS, NVS | — | ✓ VS, NVS | ✓ VS, NVS |
-| conn × blocked (`G2_B`) | ✓ VS, NVS | ✓ VS only | ✓ VS, NVS | ✓ VS, NVS |
-| conn × sparse  (`G2_s`) | ✓ VS, NVS | — | ✓ VS, NVS | ✓ VS, NVS |
+| cent × blocked  (`G_cent_B`) | ✓ VS, NVS | ✓ VS only | ✓ VS, NVS | ✓ VS, NVS |
+| cent × sparse   (`G_cent_s`) | ✓ VS, NVS | — | ✓ VS, NVS | ✓ VS, NVS |
+| conn × blocked  (`G_conn_B`) | ✓ VS, NVS | ✓ VS only | ✓ VS, NVS | ✓ VS, NVS |
+| conn × sparse   (`G_conn_s`) | ✓ VS, NVS | — | ✓ VS, NVS | ✓ VS, NVS |
 
 > **MF + sparse is intentionally omitted.** `MF_approx` integrates the spatial
 > covariance density `Cov[G(x,t), G(y,t)]` over all separations `|x−y| ≤ R`.
@@ -61,7 +78,7 @@ no diagnostic value:
 
 > **NVS has no MF.** Subtracting a single ensemble-mean scalar from every site
 > breaks the spatial covariance decomposition that `MF_approx` relies on, so
-> NVS only outputs MS, binning, and binning2.
+> NVS only outputs MS, `binning_avg_cov`, and `binning_avg_rho`.
 
 ---
 
@@ -100,7 +117,7 @@ The file must be in the run directory (hard-coded name `input_ACF.xml`).
 | Parameter | Type | Description |
 |---|---|---|
 | `tau` | `int` | Wilson-flow step τ_W (integer index into flowed-field filenames) |
-| `data_name` | `string` | Observable name; used in filename construction and output tags. Typical values: `E` (energy density), `topo5li` (5-link topological charge density) |
+| `data_name` | `string` | Observable name; used in filename construction and output tags. Typical values: `E` (energy density), `topo5li` (5-link topological charge density), `plaq` (per-site plaquette at τ=0) |
 | `path` | `string` | Directory containing flowed-field files |
 
 **File naming convention** (constructed inside the executable):
@@ -125,7 +142,7 @@ Total configs loaded: `N = EndConfiguration − StartConfiguration + 1`.
 
 | Parameter | Type | Description |
 |---|---|---|
-| `MDtime_div_fac` | `int` | Number of MD-time bins. `1` = single chain (no binning). `n>1` = split chain into `n` bins of `T = N/n` configs each |
+| `MDtime_div_fac` | `int` | Number of MD-chain bins. `1` = single chain (no binning). `n>1` = split chain into `n` bins of `T = N/n` configs each |
 | `MScut` (`W`) | `int` | Lag cutoff for Madras–Sokal error estimate. Only used when running MS mode; set to `100` (dummy) for MF mode |
 | `space_block_sizes` | `vector<int>` | List of spatial pre-blocking sizes `l_B` to loop over (e.g. `2 4 8`). Each produces independent output |
 | `R` | `int` | Summation radius for Master-Field error estimate (in lattice units). Signals the error mode: `R ≥ 0` → MF mode for VS; `R < 0` → MS mode for VS; see table below |
@@ -140,15 +157,15 @@ The mode is determined by the combination of `MDtime_div_fac` and `R`:
 | Mode | Condition | VS output | NVS output | Notes |
 |---|---|---|---|---|
 | **Master-Field (MF)** | `MDtime_div_fac=1`, `R ≥ 0` | `auto2_VS_MF.dat` | — | VS only; uses spatial covariance sum out to radius `R` (in units of `l_B` blocks on the coarsened lattice) |
-| **Madras–Sokal (MS)** | `MDtime_div_fac=1`, `R < 0` | `auto2_VS_MS.dat` | `auto2_NVS_MS.dat` | Uses ACF truncation at lag `W = MScut`; valid when `T ≫ W` |
-| **MD-time binning** | `MDtime_div_fac > 1` | `auto2_VS.dat` | `auto2_NVS.dat` | Splits chain into `n_bin` segments; error from sample variance across bins |
+| **Madras–Sokal (MS)** | `MDtime_div_fac=1`, `R < 0` | `auto2_VS_MS.dat` | `auto2_NVS_MS.dat` | Uses ACF truncation at lag `W = MScut`. **Currently considered unreliable** — see [Method limitations](#method-limitations) |
+| **MD-chain binning** | `MDtime_div_fac > 1` | `auto2_VS.dat` | `auto2_NVS.dat` | Splits chain into `n_bin` segments; error from sample variance across bins |
 
 > **VS MF mode** (`R ≥ 0`, `MDtime_div_fac=1`): the assertion `R < 0 || MScut ≥ 100`
 > in the source means you must set `MScut` to at least 100 when using MF mode
 > (it is unused but must pass the guard).
 
 > **NVS MS mode** (`MDtime_div_fac=1`): NVS has no MF implementation; it always
-> falls back to the Madras–Sokal approximation.
+> falls back to the (currently unreliable) Madras–Sokal approximation.
 
 ### Choosing `R` for MF mode
 
@@ -160,6 +177,12 @@ the `σ_ρ vs R/l_B` plot in `fthmc_utils.plot_sigma_vs_R`.
 
 **Typical values**: `R = 16` for a 32⁴ lattice with `l_B = 2` gives `R_b = 8`
 blocks, which usually covers the saturation plateau.
+
+> **Block size `l_B` in MF is for data compression / variance reduction only**
+> (cf. Bruno 2023). It does not enter the asymptotic σ_ρ formula in any
+> essential way — the error estimate comes from the exponential falloff of
+> spatial correlations, integrated over a 4D ball of radius R. Different `l_B`
+> values should give the same σ_ρ once the saturation plateau is reached.
 
 ---
 
@@ -190,17 +213,25 @@ All results are printed as tagged lines in stdout.  The relevant tags are:
 | Tag | Function | Columns (after tag) |
 |---|---|---|
 | `{ACC_type} MFACC {name} (Master-Field Approx):` | ACF ratio | `tau  block_size  R  t  ρ(t)` |
-| `{ACC_type} MFACC {name} (Binning):` | ACF ratio | `tau  block_size  n_bin  t  ρ(t)` |
-| `{ACC_type} MFACC {name} (Binning2):` | ACF ratio | `tau  block_size  n_bin  t  ρ(t)` |
+| `{ACC_type} MFACC {name} (binning_avg_cov):`     | ACF ratio | `tau  block_size  n_bin  t  ρ(t)` |
+| `{ACC_type} MFACC {name} (binning_avg_rho):`     | ACF ratio | `tau  block_size  n_bin  t  ρ(t)` |
 | `{ACC_type} Variance {name} (Master-Field Approx):` | MF variance | `tau  block_size  r  t  G(t)  var  cov` |
-| `{ACC_type} Variance {name} (Binning):` | Binning variance | `tau  block_size  n_bin  t  σ²_full  σ²_no_cov  −2cov_term` |
-| `{ACC_type} Variance {name} (Binning2):` | Binning2 variance | `tau  block_size  n_bin  t  var  …` |
-| `{ACC_type} MFCOV {name} (Master-Field Approx):` | Raw covariance | `tau  block_size  R  t  G(t)` |
-| `{ACC_type} MFACC {name} (Madras-Sokal Approx):` | MS ACF ratio | `tau  block_size  1  t  ρ(t)` |
+| `{ACC_type} Variance {name} (binning_avg_cov):`     | binning variance | `tau  block_size  n_bin  t  σ²_full  σ²_no_cov  −2cov_term` |
+| `{ACC_type} Variance {name} (binning_avg_rho):`     | binning variance | `tau  block_size  n_bin  t  var  …` |
+| `{ACC_type} MFCOV {name} (Master-Field Approx):`    | Raw covariance | `tau  block_size  R  t  G(t)` |
+| `{ACC_type} MFACC {name} (Madras-Sokal Approx):`    | MS ACF ratio | `tau  block_size  1  t  ρ(t)` |
 | `{ACC_type} Variance {name} (Madras-Sokal Approx):` | MS variance | `tau  block_size  1  t  σ²` |
 
 `{ACC_type}` is `LVS` (VS executable) or `NVS`.
-`{name}` is composed from `data_name` and spatial sampling, e.g. `Blocked E ACC`.
+`{name}` is composed from `data_name` and spatial sampling, e.g.
+`Blocked E G_cent` (data_name=E, blocked spatial coarsening, centered G).
+
+> **Migration note (2026-04-30):** previous versions of this code used
+> `(Binning)` / `(Binning2)` log markers and tagged the centered/connected
+> distinction with `ACC` / `ACC2`. The current convention is
+> `(binning_avg_cov)` / `(binning_avg_rho)` for the routine, and
+> `G_cent` / `G_conn` for the form of G. **Update any post-processing
+> scripts that grep for the old markers.**
 
 **Extracting `.dat` files from stdout:**
 
@@ -217,11 +248,11 @@ After parsing stdout, the following files are written to the run directory:
 
 | File | Estimator | Columns | When produced |
 |---|---|---|---|
-| `auto2_VS_MF.dat` | VS, Master-Field | 9 | `MDtime_div_fac=1`, `R ≥ 0` |
-| `auto2_VS_MS.dat` | VS, Madras–Sokal | 7 | `MDtime_div_fac=1`, `R < 0` |
-| `auto2_VS.dat` | VS, binning | 9 | `MDtime_div_fac > 1` |
-| `auto2_NVS_MS.dat` | NVS, Madras–Sokal | 7 | `MDtime_div_fac=1` |
-| `auto2_NVS.dat` | NVS, binning | 9 | `MDtime_div_fac > 1` |
+| `auto2_VS_MF.dat`  | VS, Master-Field   | 9 | `MDtime_div_fac=1`, `R ≥ 0` |
+| `auto2_VS_MS.dat`  | VS, Madras–Sokal   | 7 | `MDtime_div_fac=1`, `R < 0` |
+| `auto2_VS.dat`     | VS, MD-chain bin   | 9 | `MDtime_div_fac > 1` |
+| `auto2_NVS_MS.dat` | NVS, Madras–Sokal  | 7 | `MDtime_div_fac=1` |
+| `auto2_NVS.dat`    | NVS, MD-chain bin  | 9 | `MDtime_div_fac > 1` |
 
 ### Column layout — `auto2_VS_MF.dat` (9 columns)
 
@@ -231,7 +262,7 @@ tau_kind  bin_method  tau  block_size  R  t  G(t)  var  cov
 
 | Column | Name | Description |
 |---|---|---|
-| 0 | `tau_kind` | Observable × sampling × estimator index (see encoding below) |
+| 0 | `tau_kind` | Observable × sampling × G-form index (see encoding below) |
 | 1 | `bin_method` | `0` = MFACC rows (ACF ratio at max R, `var=−1`, `cov=−1`); `1` = Variance rows (covariance-of-covariances for each shell radius `r`) |
 | 2 | `tau` | Wilson-flow step |
 | 3 | `block_size` | Spatial pre-blocking size l_B |
@@ -265,41 +296,42 @@ tau_kind  bin_method  tau  block_size  n_bin  t  val  −1  flag
 
 > **Watch out — `bin_method` is overloaded across files.** In `auto2_VS_MF.dat`
 > it distinguishes MFACC ρ(t) rows (0) from per-shell variance rows (1). In
-> `auto2_VS.dat` / `auto2_NVS.dat` it distinguishes the binning routine used:
-> `0` = `binning` (ratio-of-averages), `1` = `binning2` (average-of-ratios).
-> See [Notes](#notes) for the difference.
+> `auto2_VS.dat` / `auto2_NVS.dat` it distinguishes which binning routine
+> produced the row: `0` = `binning_avg_cov`, `1` = `binning_avg_rho`.
+> See [Method limitations](#method-limitations) for why `binning_avg_rho`
+> is the preferred reported number.
 
 ---
 
 ## `tau_kind` encoding
 
-`tau_kind = 4 * i_obs + 2 * i_blk + i_acc`
+`tau_kind = 4 * i_obs + 2 * i_blk + i_form`
 
-| `i_obs` | `i_blk` | `i_acc` | `tau_kind` | Meaning |
+| `i_obs` | `i_blk` | `i_form` | `tau_kind` | Meaning |
 |---|---|---|---|---|
-| 0 | 0 | 0 | **0** | Energy density, Block-averaged, ACC (G, centered) |
-| 0 | 0 | 1 | **1** | Energy density, Block-averaged, ACC2 (G2, connected) |
-| 0 | 1 | 0 | **2** | Energy density, Sparse-sampled, ACC (G, centered) |
-| 0 | 1 | 1 | **3** | Energy density, Sparse-sampled, ACC2 (G2, connected) |
-| 1 | 0 | 0 | **4** | Topo. charge density, Block-averaged, ACC |
-| 1 | 0 | 1 | **5** | Topo. charge density, Block-averaged, ACC2 |
-| 1 | 1 | 0 | **6** | Topo. charge density, Sparse-sampled, ACC |
-| 1 | 1 | 1 | **7** | Topo. charge density, Sparse-sampled, ACC2 |
+| 0 | 0 | 0 | **0** | Energy density, blocked,  G_cent (centered) |
+| 0 | 0 | 1 | **1** | Energy density, blocked,  G_conn (connected) |
+| 0 | 1 | 0 | **2** | Energy density, sparse,   G_cent |
+| 0 | 1 | 1 | **3** | Energy density, sparse,   G_conn |
+| 1 | 0 | 0 | **4** | Topo. charge density, blocked,  G_cent |
+| 1 | 0 | 1 | **5** | Topo. charge density, blocked,  G_conn |
+| 1 | 1 | 0 | **6** | Topo. charge density, sparse,   G_cent |
+| 1 | 1 | 1 | **7** | Topo. charge density, sparse,   G_conn |
 
-`ACC` uses estimator `G` (centered: subtract per-config means *before* the product).
-`ACC2` uses estimator `G2` (connected: take the product, *then* subtract the
-product of per-config means). They differ at `O(1/V)`; cross-checking them is a
+`G_cent` = centered (subtract per-config means *before* the product).
+`G_conn` = connected (take the product, *then* subtract the product of
+per-config means). They differ at `O(1/V)`; cross-checking them is a
 finite-volume-bias diagnostic.
 
 > **`auto2_VS_MF.dat` only contains `tau_kind ∈ {0, 1}` (or `{4, 5}` for
 > `data_name=topo`).** All other `tau_kind` values use sparse sampling, which
-> `MF_approx` does not compute. Sparse and ACC2 entries appear in
+> `MF_approx` does not compute. Sparse and `G_conn` sparse entries appear in
 > `auto2_VS_MS.dat`, `auto2_VS.dat`, and the NVS variants.
 
 `fthmc_utils.MasterFieldACF.rho()` selects the right `tau_kind` from its
-`observable`, `blocked`, and `acc2` keyword arguments:
+`observable`, `blocked`, and `connected` keyword arguments:
 ```python
-tau_kind = 4 * (0 if observable == "E" else 1) + 2 * (0 if blocked else 1) + (1 if acc2 else 0)
+tau_kind = 4 * (0 if observable == "E" else 1) + 2 * (0 if blocked else 1) + (1 if connected else 0)
 ```
 
 ---
@@ -319,7 +351,7 @@ t, rho, sigma = run.master_field.rho(
     bin_method=0,       # 0 = ACF ratio rows; 1 = variance rows
     observable="E",     # "E" or "topo"
     blocked=True,       # True = block-averaged, False = sparse-sampled
-    acc2=False,         # False = ACC (G), True = ACC2 (G2)
+    connected=False,    # False = G_cent (centered), True = G_conn (connected)
 )
 
 # σ_ρ vs R plot (uses bin_method=1 rows internally)
@@ -330,11 +362,13 @@ run.master_field.plot_sigma_vs_R(
     lattice_L=32,       # L for 4D volume V = L^4
 )
 
-# ACF plot
-run.master_field.plot_acf(tau=4, block_size=2, estimator="MF")
-
-# τ_exp lim-sup diagnostic
-run.master_field.plot_tau_diagnostic(tau=4, block_size=2, estimator="MF")
+# Full per-tau analysis suite (lim-sup diagnostic + ACF + fit, all τ_W)
+run.master_field.mf_analysis(
+    [0, 4, 8, 12, 16],
+    fit_ranges={4: [20, 40]},
+    block_size=2,
+    estimator="MF",
+)
 ```
 
 ---
@@ -354,13 +388,13 @@ run.master_field.plot_tau_diagnostic(tau=4, block_size=2, estimator="MF")
 ```
 
 Produces `auto2_VS_MF.dat`.  Use `plot_sigma_vs_R` to find the saturation
-radius R_sat, then use `plot_acf` + `plot_tau_diagnostic` to extract τ_exp.
+radius R_sat, then use `mf_analysis` to extract τ_exp.
 
 ### Binning mode (multiple shorter chains)
 
 ```xml
 <Autocorrelations>
-  <MDtime_div_fac>6</MDtime_div_fac>   <!-- 6 MD-time bins -->
+  <MDtime_div_fac>6</MDtime_div_fac>   <!-- 6 MD-chain bins -->
   <MScut>50</MScut>
   <space_block_sizes>2</space_block_sizes>
   <R>-1</R>                            <!-- negative → no MF; triggers MS assertion bypass -->
@@ -369,9 +403,10 @@ radius R_sat, then use `plot_acf` + `plot_tau_diagnostic` to extract τ_exp.
 ```
 
 Produces `auto2_VS.dat` and `auto2_NVS.dat`.  Use `estimator="VS"` or `"NVS"`
-in `rho()`.
+in `rho()`. **Use `bin_method=1` (= `binning_avg_rho`) as the reported number;
+`bin_method=0` (= `binning_avg_cov`) as a cross-check.**
 
-### MS mode (single chain, Madras–Sokal approximation)
+### MS mode (single chain, Madras–Sokal approximation) — diagnostic only
 
 ```xml
 <Autocorrelations>
@@ -383,60 +418,88 @@ in `rho()`.
 </Autocorrelations>
 ```
 
-Produces `auto2_VS_MS.dat` and `auto2_NVS_MS.dat`.
+Produces `auto2_VS_MS.dat` and `auto2_NVS_MS.dat`. Currently unreliable —
+retained as a placeholder (see below).
 
 ---
 
 ## Notes
 
-- **Both G (centered) and G2 (connected) estimators** are always computed and
-  written; they differ only in the order of mean subtraction relative to the
-  product (`G`: subtract-then-multiply; `G2`: multiply-then-subtract-product-of-means).
-  They agree at `O(1/V)`. `acc2=False` (default) selects `G`.
-- **Sparse vs blocked**: block-averaging (`blocked=True`) reduces per-cell
-  variance by `√(l_B^d)` at the cost of mixing spatial scales within a block.
-  Sparse sampling preserves resolution but is noisier. Block-averaged is the
-  primary variant; sparse is a cross-check (and the natural choice for `MS`,
-  which wants per-site time series).
+- **Both G_cent (centered) and G_conn (connected) variants** are always
+  computed and written; they differ only in the order of mean subtraction
+  relative to the product (`G_cent`: subtract-then-multiply;
+  `G_conn`: multiply-then-subtract-product-of-means). They agree at `O(1/V)`.
+  `connected=False` (default) selects `G_cent`.
+- **Sparse vs blocked** (spatial-lattice coarsening): block-averaging
+  reduces per-cell variance by `√(l_B^d)` at the cost of mixing spatial
+  scales within a block. Sparse sampling preserves resolution but is
+  noisier. Block-averaged is the primary variant; sparse is a cross-check.
 - **`isFullTimeAvg=1`** is strongly recommended: it averages the product
   `A(x,i)·A(x,i+t)` over all valid source times `i`, significantly reducing
   statistical noise at large `t`.
 - **Field files must exist for every config** in `[StartConfiguration,
   EndConfiguration]`.  Missing files will cause a read error.
 
-### `binning` vs `binning2`
+### `binning_avg_cov` vs `binning_avg_rho`
 
 Both run when `MDtime_div_fac > 1` and write to the same `auto2_VS.dat` /
-`auto2_NVS.dat` file, distinguished by `bin_method` (0 = `binning`,
-1 = `binning2`).
+`auto2_NVS.dat` file, distinguished by `bin_method`
+(0 = `binning_avg_cov`, 1 = `binning_avg_rho`).
 
 | Routine | `bin_method` | Formula | Comment |
 |---|---|---|---|
-| `binning`  | 0 | `ρ(t) = ⟨G(t)⟩_b / ⟨G(0)⟩_b` (ratio of averages) | typically tighter σ — averages more statistics into the denominator |
-| `binning2` | 1 | `ρ(t) = ⟨ G(t)/G(0) ⟩_b` (average of ratios) | needs `bin_size > ~30` for CLT-Gaussianity per bin (see source comment) |
+| `binning_avg_cov` | 0 | `ρ(t) = ⟨G(t)⟩_b / ⟨G(0)⟩_b` (average covariance, then ratio) | Variance via delta-method linearization using inter-bin `Cov(G_b(t), G_b(0))` |
+| `binning_avg_rho` | 1 | `ρ(t) = ⟨G(t)/G(0)⟩_b` (per-bin ratio, then average) | **Preferred.** Variance computed directly from inter-bin sample variance of ρ_b — no linearization, no covariance estimate needed |
 
-Both are unbiased to leading order; they differ at `O(1/n_bin)`.
+Both are unbiased to leading order and equivalent in the large-n_bin limit
+(delta method ↔ direct sample variance). They differ at `O(1/n_bin)`.
+**`binning_avg_rho` is the recommended reported number** because:
+1. The variance is computed directly from a sample of ρ_b values, with no
+   reliance on the linearization (delta method) being a good approximation.
+2. Each MD-chain bin is treated as an independent replicate of the ACC
+   estimate — the standard interpretation, justified by the LLN when bin
+   width > τ_int.
+3. Spatial blocking vs sparsening within each bin is essentially a
+   **non-choice** for binning: the bin-to-bin variance is what gives the
+   error, not the within-bin spatial coarsening.
 
-### Limitations of each error-estimation method
+`binning_avg_cov` is run alongside as a cross-check on the linearization;
+the two should agree once `n_bin` is large enough (≳ 20–50 in practice).
 
-- **`MS_approx`** — assumes `T ≫ W`; the variance formula for ρ(t) at lag t
-  uses ρ(t±k) up to k = W, so the noisy tail at large lag dominates the σ
-  estimate. The choice of W is data-dependent (you'd want W ~ a few τ_int but
-  τ_int is what you're estimating). The classic 1/√N error scaling itself
-  implicitly assumes statistical independence — a circularity discussed in
-  §4.3 of `Master_Field_Type_Autocorrelation/main.tex`.
+### Method limitations
+
+- **`MS_approx` (Madras–Sokal)** — *currently unreliable; retained as a
+  placeholder pending a non-circular variance estimator.* The `1/√N` scaling
+  underlying the variance formula implicitly assumes statistical independence,
+  which is exactly the property the autocorrelation analysis is trying to
+  measure. The choice of truncation window `W` is data-dependent in a way
+  that cannot be validated from within the same chain — a structural
+  circularity discussed in §4.3 of `Master_Field_Type_Autocorrelation/main.tex`.
+  Spatial blocking or sparsening of the input field does not cure this:
+  estimating the variance of a spatial average requires the cross-site
+  covariance structure, which is not available from a single configuration.
+  **Do not treat MS error bars as trustworthy.** The implementation is left
+  in the codebase only against the possibility of a future improvement
+  (e.g. an independent estimator for `W` or for the cross-site covariance).
+
 - **`MF_approx`** — requires direct observation of σ_ρ vs R/l_B saturation;
   if no plateau is reached within `R < L/2`, the error is unbounded. With
   `l_B < √(8τ_W)` (Wilson-flow smearing radius), adjacent blocks share
   smeared field, biasing σ_ρ low. Always compare blocked-MF for several
-  `l_B` values (`space_block_sizes>2 4 8</space_block_sizes>`) and use
-  `plot_sigma_vs_R` to confirm saturation.
-- **`binning`** — robust if `T = N/n_bin ≫ τ_int`. With `n_bin` small (~6–10)
-  and a chain that's barely long enough, the bin-to-bin variance estimator
-  itself has large fractional error (~1/√n_bin).
-- **`binning2`** — same caveat as `binning` plus the CLT requirement on
-  `bin_size`. Tends to give slightly larger σ.
+  `l_B` values (`<space_block_sizes>2 4 8</space_block_sizes>`) and use
+  `plot_sigma_vs_R` to confirm saturation. As emphasised above, `l_B` is
+  a data-compression / variance-reduction parameter; the actual error
+  estimate comes from integrating the spatial covariance density out to R.
 
-For a single long chain, use `MF_approx` with the saturation check. For
-multiple short chains use `binning`. Cross-check with `binning2` and the
-`MS` estimator when in doubt.
+- **`binning_avg_cov` / `binning_avg_rho`** — viable when each MD-chain bin
+  produces one spatial-average ACC estimate and the inter-bin sample variance
+  is the error. The validity rests on the LLN: bin width > τ_int (so bins
+  are approximately independent) and enough bins (≳ 20–50) for the sample
+  variance to converge. Within a bin, the choice of spatial coarsening
+  (blocked vs sparse) only affects within-bin precision, not the legitimacy
+  of the inter-bin variance estimate. Use `binning_avg_rho` as the reported
+  number; cross-check with `binning_avg_cov`.
+
+For a single long chain: use `MF_approx` with the saturation check.
+For multiple short chains: use `binning_avg_rho` (with `binning_avg_cov` as a
+linearization cross-check).
