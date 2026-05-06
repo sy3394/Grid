@@ -62,6 +62,20 @@ PANEL_PX=1536   # per-panel pixel size for FDAM movies (total = PANEL_PX * ncols
 CONF_S=700
 CONF_F=709
 nconv=15  # number of converged H_DWF eigenvectors
+
+# ── Two distinct fermion masses are needed by FieldDensityEigen ────────────────
+# MASS_EVEC: the m_f used by Compute_DWF_G5R5.cc when generating the eigenvectors.
+#   Used to recover the kinetic eigenvalue lambda^(0) = sqrt((lambda^H)^2 - m_f^2).
+#   Must MATCH the value used to generate the eigenvectors, else q_naive's second
+#   term has a wrong kinetic eigenvalue.  These eigenvectors were generated at m=0.
+MASS_EVEC=0
+# BC_MASS: the m_f used as Banks–Casher Lorentzian regulator inside Sigma_low(x):
+#     Sigma_low(x) = sum_n [ m_f / ((lambda^(0)_n)^2 + m_f^2) ] rho_n(x)
+#   This is a *probe* mass for the §4.1 scalar-foil diagnostic, independent of
+#   the evec generation mass.  Setting BC_MASS=0 collapses Sigma_low to zero
+#   (the Banks–Casher chiral limit Sigma=pi*rho(0) is delta-function-like and
+#   not pointwise-defined).  Pick a small physical-ish value, e.g. 0.01.
+BC_MASS=0.01
 #############################################
 
 
@@ -238,21 +252,41 @@ for _lbl in "${_weight_labels[@]}"; do
 done
 _q_defs_all="${_q_defs_all% }"   # trim trailing space
 
-for q_def in $_q_defs_all; do
+# All append-mode .dat files written by FieldDensityEigen are truncated here at
+# script start (>file).  This way reruns do not accumulate duplicate rows; the
+# user does not have to manually `rm` anything between runs.
+#
+# Truncate-and-register pattern: ">file" empties the file (creating if absent),
+# then dfiles+=(file) registers it for the final tarball.
+
+# corr_ip_q_*.dat — per-(weight,definition) PCF/IP vs gluonic TCD at each TD_tau.
+# Format: comp_idx  conf  Corr  (one section per TD_tau, separated by labels)
+for q_def in $_q_defs_all q_naive Sigma_low; do
     >${HMC_DIR}/data/corr_ip_${q_def}.dat
     dfiles+=( ${HMC}/data/corr_ip_${q_def}.dat )
 done
 
-# Output comp-ref files — appended each run; to reset: rm ${HMC_DIR}/data/comp_ref_*.dat
-# Format: comp_idx  tau  conf  Q_evec  Q_ref  Corr  IP  rms_diff
-for q_def in $_q_defs_all; do
-    touch ${HMC_DIR}/data/comp_ref_${q_def}.dat
+# comp_ref_*.dat — per-(weight,definition) comparison vs qlat reference field(s).
+# Format: comp_idx  tau_wf  conf  Q_evec  Q_ref  Corr  IP  rms_diff
+for q_def in $_q_defs_all q_naive Sigma_low; do
+    >${HMC_DIR}/data/comp_ref_${q_def}.dat
+    dfiles+=( ${HMC}/data/comp_ref_${q_def}.dat )
 done
 
-# Output stochastic-vs-gluonic file — appended each run
-# Format: comp_idx  TD_tau  tau  conf  Q_ref  Q_gluon  Corr  IP
-touch ${HMC_DIR}/data/corr_ip_stoch.dat
+# corr_ip_stoch.dat — qlat stochastic field vs gluonic TCD at each TD_tau.
+# Format: comp_idx  TD_tau  tau_wf  conf  Q_ref  Q_gluon  Corr  IP
+>${HMC_DIR}/data/corr_ip_stoch.dat
 dfiles+=( ${HMC}/data/corr_ip_stoch.dat )
+
+# alpha_sweep.dat — PCF/IP of q_B^mgap + alpha*B vs gluonic q at each TD_tau.
+# Format: alpha  tau_wf  TD_tau  conf  Corr  IP
+>${HMC_DIR}/data/alpha_sweep.dat
+dfiles+=( ${HMC}/data/alpha_sweep.dat )
+
+# fermferm.dat — pairwise PCF/IP between fermion-q definitions.
+# Format: def1  def2  tau_wf  conf  Corr  IP
+>${HMC_DIR}/data/fermferm.dat
+dfiles+=( ${HMC}/data/fermferm.dat )
 
 for i_conf in "${!CONFS[@]}"; do
     conf=${CONFS[$i_conf]}
@@ -336,6 +370,7 @@ for i_conf in "${!CONFS[@]}"; do
             FDE \
                 --grid $vol \
                 --files2 $F2s --Ls 48 $eval_opt $weights_opt \
+                --mass $MASS_EVEC --bc_mass $BC_MASS \
                 --files1 $F1s --topo_compare --conf_id $conf \
                 --tau_wf $tau --td_taus 0,4,16 \
                 --data_dir ${HMC_DIR}/data \
@@ -347,6 +382,7 @@ for i_conf in "${!CONFS[@]}"; do
             ${CDIR}/FieldDensityEigen \
                 --grid $vol \
                 --files2 $F2s --Ls 48 $eval_opt $weights_opt \
+                --mass $MASS_EVEC --bc_mass $BC_MASS \
                 --topo_out ${DATA_DIR_topo}/Top_dnsty_q_{def}_${tau}_smr.${conf} \
                 > $topo_write_log 2>&1
 
