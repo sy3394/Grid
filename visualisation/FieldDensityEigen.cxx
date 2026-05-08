@@ -164,7 +164,63 @@ template <class T> void writeFile(T& in, std::string const fname){
 
 using namespace Grid;
 
-int n_dims = Nd; //can remove this if define it in class FrameUpdater based on ext_latt_size  
+// ---------------------------------------------------------------------------
+// gaussian_smear:  apply a 4D Gaussian low-pass filter to a complex scalar
+// lattice field via FFT.   K(p) = exp(-sigma^2 |p|^2 / 2)
+// with continuum lattice momentum p_mu = 2*pi*k_mu/L_mu, k_mu folded into
+// [-L/2, L/2).
+//
+// Implements the Luchang/collaborator suggestion (sec:smear_sweep): convolving
+// q_B^mgap and q_gluon with the same sigma decouples the gluonic Wilson-flow's
+// non-linear gauge diffusion (which preserves instanton saddle points) from
+// pure linear signal-processing bandwidth matching.   Symmetric application
+// to both fields is required to test the "matched-bandwidth peak" hypothesis.
+//
+// Cost: ~1 forward + 1 backward 4D FFT per call + a per-site kernel build.
+// The kernel is recomputed inside the function for cleanliness; if used in a
+// hot loop callers should cache the kernel themselves.
+// ---------------------------------------------------------------------------
+LatticeComplexD gaussian_smear(const LatticeComplexD& field, double sigma){
+  GridBase* gridB = field.Grid();
+  GridCartesian* gridC = dynamic_cast<GridCartesian*>(gridB);
+  assert(gridC && "gaussian_smear: requires GridCartesian");
+  Coordinate latt = gridC->FullDimensions();
+  int Nd_local = latt.size();
+
+  // Build kernel = exp(-sigma^2/2 * sum_mu (2*pi*k_mu/L_mu)^2)
+  // Iterate per local site with pokeLocalSite — runs once per sigma and
+  // avoids per-lane SIMD acrobatics; cost is O(V) doubles per call.
+  LatticeComplexD kernel(gridC);
+  kernel = ComplexD(0.0, 0.0);
+  {
+    Coordinate local_dims = gridC->LocalDimensions();
+    Coordinate proc_coor  = gridC->ThisProcessorCoor();
+    double half_sig2 = 0.5 * sigma * sigma;
+    for(int ls = 0; ls < gridC->lSites(); ls++){
+      Coordinate lcoor;
+      gridC->LocalIndexToLocalCoor(ls, lcoor);
+      double psq = 0.0;
+      for(int mu = 0; mu < Nd_local; mu++){
+        int km = proc_coor[mu] * local_dims[mu] + lcoor[mu];
+        if(km > latt[mu]/2) km -= latt[mu];
+        double pm = 2.0 * M_PI * km / RealD(latt[mu]);
+        psq += pm * pm;
+      }
+      ComplexD val(std::exp(-half_sig2 * psq), 0.0);
+      pokeLocalSite(val, kernel, lcoor);
+    }
+  }
+
+  // Apply via FFT
+  LatticeComplexD field_FT(gridC), out_field(gridC);
+  FFT theFFT(gridC);
+  theFFT.FFT_all_dim(field_FT, field, FFT::forward);
+  field_FT = field_FT * kernel;
+  theFFT.FFT_all_dim(out_field, field_FT, FFT::backward);
+  return out_field;
+}
+
+int n_dims = Nd; //can remove this if define it in class FrameUpdater based on ext_latt_size
 
 
 int main(int argc, char* argv[])
@@ -519,6 +575,24 @@ int main(int argc, char* argv[])
     }
   }
 
+  // Cache mgap and sign weight-track indices.  Used by the in-loop B_k sweep
+  // (cumulative spectral sum diagnostic of sec:bk_sweep) and the post-loop
+  // alpha-sweep / smear-sweep blocks.
+  int mgap_idx = -1, sign_idx = -1;
+  for(int t = 0; t < (int)weight_specs.size(); t++){
+    if(weight_specs[t].is_sign)              sign_idx = t;
+    else if(weight_specs[t].label == "mgap") mgap_idx = t;
+  }
+  // Bk-sweep enable flag.  Default OFF (extra memory + IO); enable with
+  // --bk_sweep on the command line.  When ON, the per-mode loop checkpoints
+  // q_naive_partial[k] and q_eps_all[mgap_idx]_partial[k] after each mode k
+  // so a post-loop block can compute B_k = q_naive_k - q_B^mgap_k and
+  // PCF/IP against each gluonic data1[i].  Memory cost: 2 * N_conv * V * 16B
+  // ~ 2 * 16 * 16 MB = 512 MB on a 32^4 lattice with N_conv=16.
+  bool do_bk_sweep =  GridCmdOptionExists(argv,argv+argc,"--bk_sweep");
+  std::vector<LatticeComplexD> qnaive_partial;
+  std::vector<LatticeComplexD> qB_mgap_partial;
+
   // Eigenvalues embedded inside each SCIDAC evec_density file (H_DWF_EvalRecord).
   // Populated during data2 loading; takes priority over --evals when available.
   std::vector<double> evals_embedded;
@@ -747,6 +821,19 @@ int main(int argc, char* argv[])
         // Sigma_low: Banks-Casher Lorentzian-weighted scalar density.
         Sigma_low = Sigma_low + bc_weight * rho_n;
       }
+
+      /****** Bk sweep checkpoint (sec:bk_sweep) ****************************/
+      // If --bk_sweep, snapshot q_naive and q_eps_all[mgap_idx] AFTER mode c
+      // has been added so a post-loop block can build B_k = q_naive_k -
+      // q_B^mgap_k and emit PCF/IP vs each gluonic data1[i].  We don't
+      // emit here because tau_wf/conf_id/get_td_tau are parsed later in main.
+      if(do_bk_sweep && mgap_idx >= 0){
+        qnaive_partial.emplace_back(grid);
+        qnaive_partial.back() = q_naive;
+        qB_mgap_partial.emplace_back(grid);
+        qB_mgap_partial.back() = q_eps_all[mgap_idx];
+      }
+      /**********************************************************************/
 
       std::cout << "TopoContrib evec=" << c << " mu_n=" << mu_n;
       for(int t = 0; t < ntracks; t++)
@@ -981,6 +1068,137 @@ int main(int argc, char* argv[])
                 << "Alpha sweep: skipped (need both sign and mgap weight tracks)"
                 << std::endl;
     }
+
+    /****** Bk sweep emission (sec:bk_sweep) ********************************/
+    // Cumulative spectral sum: how concentrated in the lowest modes is the
+    // chirality structure of B?  Use partial sums saved during the per-mode
+    // loop to compute B_k = q_naive_k - q_B^mgap_k and PCF/IP vs q_gluon at
+    // each TD_tau, for each k = 1..N_conv.
+    // Output schema (bk_sweep.dat):  k tau_wf TD_tau conf Corr IP
+    if(do_bk_sweep && !qnaive_partial.empty() && !data1.empty()){
+      LatticeComplexD oneL(grid); oneL = ComplexD(1.0, 0.0);
+      int nk = (int)qnaive_partial.size();
+      std::cout << GridLogMessage << "Bk sweep: " << nk << " modes" << std::endl;
+      for(int k = 0; k < nk; k++){
+        LatticeComplexD B_k(grid);
+        B_k = qnaive_partial[k] - qB_mgap_partial[k];
+        for(int i = 0; i < (int)data1.size(); i++){
+          ComplexD avg1 = TensorRemove(sum(data1[i])) / RealD(grid->gSites());
+          ComplexD avgB = TensorRemove(sum(B_k))      / RealD(grid->gSites());
+          LatticeComplexD X(grid), Y(grid);
+          X = data1[i] - avg1 * oneL;
+          Y = B_k       - avgB * oneL;
+          double n2X = norm2(X), n2Y = norm2(Y);
+          double corr = (n2X > 0 && n2Y > 0)
+                      ? real(TensorRemove(sum(X*Y))) / std::sqrt(n2X * n2Y)
+                      : 0.0;
+          double n21 = norm2(data1[i]), n2B = norm2(B_k);
+          double ip   = (n21 > 0 && n2B > 0)
+                      ? real(TensorRemove(innerProduct(data1[i], B_k)))
+                          / std::sqrt(n21 * n2B)
+                      : 0.0;
+          std::cout << "BkSweep: k=" << (k+1)
+                    << " tau_wf=" << tau_wf
+                    << " TD_tau=" << get_td_tau(i)
+                    << " conf=" << conf_id
+                    << " Corr=" << corr << " IP=" << ip << std::endl;
+          if(!data_dir.empty()){
+            std::ofstream of(data_dir+"/bk_sweep.dat", std::ios::app);
+            of << (k+1) << " " << tau_wf << " " << get_td_tau(i) << " "
+               << conf_id << " " << corr << " " << ip << "\n";
+          }
+        }
+      }
+      // Free partial-sum memory now that PCFs are written
+      qnaive_partial.clear();   qnaive_partial.shrink_to_fit();
+      qB_mgap_partial.clear();  qB_mgap_partial.shrink_to_fit();
+    }
+
+    /****** Sigma sweep: density-level Gaussian smearing (sec:smear_sweep) ***/
+    // Luchang's diagnostic: apply a 4D Gaussian density smear of width sigma
+    // to BOTH a fermionic estimator AND each gluonic q_g(tau_WG) (and Luchang's
+    // q_L if --comp_file is supplied), then measure PCF as a function of
+    // sigma.  Decouples physical topology from signal-processing bandwidth:
+    // Wilson flow preserves instantons; Gaussian density smearing is a pure
+    // linear low-pass.
+    //
+    // Default sigma grid: {0.5, 1.0, 1.5, 2.0, 3.0, 5.0} lattice units;
+    // override via --smear_sweep "0.3,0.6,..."
+    // Output schema (smear_sweep.dat): kind name sigma tau_wf TD_tau conf Corr IP
+    //   kind in {fermion, comp};  name is the operator label (e.g. q_B_mgap, comp_0).
+    if(GridCmdOptionExists(argv,argv+argc,"--smear_sweep")){
+      std::vector<double> sigmas = {0.5, 1.0, 1.5, 2.0, 3.0, 5.0};
+      std::string s_arg = GridCmdOptionPayload(argv,argv+argc,"--smear_sweep");
+      if(!s_arg.empty()){
+        std::vector<std::string> s_strs;
+        GridCmdOptionCSL(s_arg, s_strs);
+        if(!s_strs.empty()){
+          sigmas.clear();
+          for(auto& s : s_strs) sigmas.push_back(std::stod(s));
+        }
+      }
+      std::cout << GridLogMessage << "Smear sweep: " << sigmas.size()
+                << " sigma values" << std::endl;
+
+      // Fermionic operators to include in the sweep.  Limit to a small set
+      // to keep IO manageable; the headline test is q_B^mgap, with q_naive
+      // as a sanity-check (its sigma-sweep should plateau quickly since it
+      // already includes the bulk-mode chirality content).
+      struct SsField { std::string name; LatticeComplexD* field; };
+      std::vector<SsField> ferm_for_smear;
+      if(mgap_idx >= 0)
+        ferm_for_smear.push_back({"q_B_mgap", &q_eps_all[mgap_idx]});
+      ferm_for_smear.push_back({"q_naive", &q_naive});
+
+      LatticeComplexD oneL(grid); oneL = ComplexD(1.0, 0.0);
+
+      for(double sigma : sigmas){
+        // Smear each gluonic data1[i] once per sigma (cache for reuse below)
+        std::vector<LatticeComplexD> data1_smr;
+        data1_smr.reserve(data1.size());
+        for(int i = 0; i < (int)data1.size(); i++)
+          data1_smr.push_back(gaussian_smear(data1[i], sigma));
+
+        // Fermion ops vs gluonic
+        for(auto& ff : ferm_for_smear){
+          LatticeComplexD ferm_smr = gaussian_smear(*ff.field, sigma);
+          for(int i = 0; i < (int)data1.size(); i++){
+            ComplexD avg1 = TensorRemove(sum(data1_smr[i])) / RealD(grid->gSites());
+            ComplexD avgF = TensorRemove(sum(ferm_smr))    / RealD(grid->gSites());
+            LatticeComplexD X(grid), Y(grid);
+            X = data1_smr[i] - avg1 * oneL;
+            Y = ferm_smr     - avgF * oneL;
+            double n2X = norm2(X), n2Y = norm2(Y);
+            double corr = (n2X > 0 && n2Y > 0)
+                        ? real(TensorRemove(sum(X*Y))) / std::sqrt(n2X * n2Y)
+                        : 0.0;
+            double n21 = norm2(data1_smr[i]), n2F = norm2(ferm_smr);
+            double ip   = (n21 > 0 && n2F > 0)
+                        ? real(TensorRemove(innerProduct(data1_smr[i], ferm_smr)))
+                            / std::sqrt(n21 * n2F)
+                        : 0.0;
+            std::cout << "SmearSweep: kind=fermion name=" << ff.name
+                      << " sigma=" << sigma
+                      << " tau_wf=" << tau_wf
+                      << " TD_tau=" << get_td_tau(i)
+                      << " conf=" << conf_id
+                      << " Corr=" << corr << " IP=" << ip << std::endl;
+            if(!data_dir.empty()){
+              std::ofstream of(data_dir+"/smear_sweep.dat", std::ios::app);
+              of << "fermion " << ff.name << " " << sigma << " "
+                 << tau_wf << " " << get_td_tau(i) << " " << conf_id << " "
+                 << corr << " " << ip << "\n";
+            }
+          }
+        }
+        // (Luchang/comp-file vs gluonic at this sigma is handled in the
+        // separate Luchang block below if comp_files are present; that block
+        // detects --smear_sweep and emits its own SmearSweep rows with
+        // kind=comp.)
+      }
+    }
+    /************************************************************************/
+
   }
   /****** Compare fermion TCD definitions against each other (FermFerm) ************/
   // Computes Pearson Corr and normalised IP for every (i,j) pair with i<j.
@@ -1203,6 +1421,66 @@ int main(int argc, char* argv[])
       if(do_fermion_comp)
         comp_fields.push_back(refs[ci]);
     }
+
+    /****** Sigma sweep — Luchang vs gluonic (sec:smear_sweep, comp arm) ****/
+    // Apply the same Gaussian density smear to both q_L and each gluonic
+    // q_g(tau_WG), then measure PCF vs sigma.  q_L is UV-sharp (single
+    // m=1 Dirac trace) so PCF(q_L, q_g(tau_WG=0)) is large but
+    // PCF(q_L, q_g(tau_WG=16)) is small.  Smearing both should equalise:
+    // the bandwidth-mismatch story makes a sharp prediction.
+    // Output schema appended to smear_sweep.dat: kind name sigma tau_wf TD_tau conf Corr IP
+    if(do_gluon_comp && GridCmdOptionExists(argv,argv+argc,"--smear_sweep")
+       && !data1.empty() && !refs.empty()){
+      std::vector<double> sigmas = {0.5, 1.0, 1.5, 2.0, 3.0, 5.0};
+      std::string s_arg = GridCmdOptionPayload(argv,argv+argc,"--smear_sweep");
+      if(!s_arg.empty()){
+        std::vector<std::string> s_strs;
+        GridCmdOptionCSL(s_arg, s_strs);
+        if(!s_strs.empty()){
+          sigmas.clear();
+          for(auto& s : s_strs) sigmas.push_back(std::stod(s));
+        }
+      }
+      LatticeComplexD oneL(grid); oneL = ComplexD(1.0, 0.0);
+      for(double sigma : sigmas){
+        std::vector<LatticeComplexD> data1_smr;
+        data1_smr.reserve(data1.size());
+        for(int i = 0; i < (int)data1.size(); i++)
+          data1_smr.push_back(gaussian_smear(data1[i], sigma));
+        for(int ci = 0; ci < (int)refs.size(); ci++){
+          LatticeComplexD ref_smr = gaussian_smear(refs[ci], sigma);
+          for(int i = 0; i < (int)data1.size(); i++){
+            ComplexD avg1 = TensorRemove(sum(data1_smr[i])) / RealD(grid->gSites());
+            ComplexD avgR = TensorRemove(sum(ref_smr))      / RealD(grid->gSites());
+            LatticeComplexD X(grid), Y(grid);
+            X = data1_smr[i] - avg1 * oneL;
+            Y = ref_smr      - avgR * oneL;
+            double n2X = norm2(X), n2Y = norm2(Y);
+            double corr = (n2X > 0 && n2Y > 0)
+                        ? real(TensorRemove(sum(X*Y))) / std::sqrt(n2X * n2Y)
+                        : 0.0;
+            double n21 = norm2(data1_smr[i]), n2R = norm2(ref_smr);
+            double ip   = (n21 > 0 && n2R > 0)
+                        ? real(TensorRemove(innerProduct(data1_smr[i], ref_smr)))
+                            / std::sqrt(n21 * n2R)
+                        : 0.0;
+            std::cout << "SmearSweep: kind=comp name=comp_" << ci
+                      << " sigma=" << sigma
+                      << " tau_wf=" << tau_wf
+                      << " TD_tau=" << get_td_tau(i)
+                      << " conf=" << conf_id
+                      << " Corr=" << corr << " IP=" << ip << std::endl;
+            if(!data_dir.empty()){
+              std::ofstream of(data_dir+"/smear_sweep.dat", std::ios::app);
+              of << "comp comp_" << ci << " " << sigma << " "
+                 << tau_wf << " " << get_td_tau(i) << " " << conf_id << " "
+                 << corr << " " << ip << "\n";
+            }
+          }
+        }
+      }
+    }
+    /************************************************************************/
   }
   /******************************************************************************/
 

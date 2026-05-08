@@ -297,6 +297,32 @@ dfiles+=( ${HMC}/data/alpha_sweep.dat )
 >${HMC_DIR}/data/fermferm.dat
 dfiles+=( ${HMC}/data/fermferm.dat )
 
+# bk_sweep.dat — cumulative-spectral-sum PCF (sec:bk_sweep): how concentrated
+# in the lowest modes is the chirality structure of B = q_naive - q_B^mgap?
+# Emitted only when --bk_sweep is passed to FieldDensityEigen.
+# Format: k  tau_wf  TD_tau  conf  Corr  IP
+>${HMC_DIR}/data/bk_sweep.dat
+dfiles+=( ${HMC}/data/bk_sweep.dat )
+
+# smear_sweep.dat — Gaussian density-smearing sweep (sec:smear_sweep,
+# Luchang's diagnostic): apply 4D Gaussian smear of width sigma to BOTH
+# fermionic q and gluonic q (and q_L if --comp_file present), measure PCF
+# vs sigma.  Emitted only when --smear_sweep is passed.
+# Format: kind  name  sigma  tau_wf  TD_tau  conf  Corr  IP
+#   kind in {fermion, comp};  name is q_B_mgap, q_naive, comp_0, comp_1, ...
+>${HMC_DIR}/data/smear_sweep.dat
+dfiles+=( ${HMC}/data/smear_sweep.dat )
+
+# Optional flags for the new diagnostics — set these via env vars to enable.
+#   BK_SWEEP=1            -> pass --bk_sweep to FieldDensityEigen
+#   SMEAR_SWEEP="1,2,3"   -> pass --smear_sweep "<value>" (comma-separated)
+BK_SWEEP="${BK_SWEEP:-0}"
+SMEAR_SWEEP="${SMEAR_SWEEP:-}"
+bk_opt=""
+smr_opt=""
+[[ "$BK_SWEEP" == "1" ]] && bk_opt="--bk_sweep"
+[[ -n "$SMEAR_SWEEP" ]] && smr_opt="--smear_sweep $SMEAR_SWEEP"
+
 for i_conf in "${!CONFS[@]}"; do
     conf=${CONFS[$i_conf]}
     regen=${REGENS_25[$i_conf]}
@@ -383,7 +409,7 @@ for i_conf in "${!CONFS[@]}"; do
                 --files1 $F1s --topo_compare --conf_id $conf \
                 --tau_wf $tau --td_taus 0,4,16 \
                 --data_dir ${HMC_DIR}/data \
-                $comp_opt
+                $comp_opt $bk_opt $smr_opt
 
             ### Step 2: write topo density SCIDAC fields — binary LIME output.
             ### Redirected to a dedicated per-conf/tau log to keep log_G clean.
