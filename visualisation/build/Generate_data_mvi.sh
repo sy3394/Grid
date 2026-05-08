@@ -121,7 +121,7 @@ for tau in 0 4; do
 	dpath=${HMC_DIR}/${fname}_${ext}.dat
 	dfile=${HMC}/${fname}_${ext}.dat
 	mpeg=${HMC_DIR}/${fname}_${ext}.avi
-	dfiles+=( $dfile )
+	#dfiles+=( $dfile )   # too large — skip tarball
 
 	if [[ $REGEN == 0 ]] ; then
 	    F=""
@@ -153,7 +153,7 @@ for tau in 0 4; do
 	dpath=${HMC_DIR}/${fname}_${ext}.dat
 	dfile=${HMC}/${fname}_${ext}.dat
 	mpeg=${HMC_DIR}/${fname}_${ext}.avi
-	dfiles+=( $dfile )
+	#dfiles+=( $dfile )   # too large — skip tarball
 
 	if [[ $REGEN == 0 ]] ; then
 
@@ -186,7 +186,7 @@ for tau in 0 4; do
 	dfile=${HMC}/${fname}${ext}_${conf}.dat
 	dpath=${HMC_DIR}/${fname}${ext}_${conf}.dat
 	mpeg=${HMC_DIR}/${fname}${ext}_${conf}.avi
-	dfiles+=( $dfile )
+	#dfiles+=( $dfile )   # too large — skip tarball
 
 	if [[ $REGEN == 0 ]] ; then
 	    F=""
