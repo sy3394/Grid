@@ -441,13 +441,13 @@ done       # i_conf
 
 ###########   INPUT   ###########################
 CONFS=(  702  719  71902 )
-REGENS=(   0    0      0 )   # set 0 to skip a config
+regens=(   0    0      0 )   # set 1 to run a config
 NCUT=4
 #################################################
 
 for i_conf in "${!CONFS[@]}"; do
     conf=${CONFS[$i_conf]}
-    REGEN=${REGENS[$i_conf]}
+    regen=${regens[$i_conf]}
 
 DATA_DIR=${HMC_DIR}/eigen/${conf}
 
@@ -481,7 +481,7 @@ for dof in smr lat; do
             dfiles+=( $dfile ) #$mfile )
             echo $tau $dof $n
 
-	    if [[ $REGEN == 0 ]] ; then
+	    if [[ $regen == 1 ]] ; then
 		F=""
 		for f in `ls $DATA_DIR/${fname}_* | sort -n` ; do F+=$f,; done
 		Fs=${F%?}
@@ -502,7 +502,7 @@ for dof in smr lat; do
             mfile=${HMC}/${fname}_${ext}.avi
             #dfiles+=( $dfile )
 
-            if [[ $REGEN == 0 ]] ; then
+            if [[ $regen == 1 ]] ; then
                 F=""
                 for f in `ls $DATA_DIR/${fname}_* | sort -n` ; do F+=$f,; done
                 Fs=${F%?}
@@ -523,7 +523,7 @@ for dof in smr lat; do
             mfile=${HMC}/${fname}_${ext}.avi
             #dfiles+=( $dfile )
 
-            if [[ $REGEN == 0 ]] ; then
+            if [[ $regen == 1 ]] ; then
                 F=""
                 for f in `ls $DATA_DIR/${fname}_* | sort -n` ; do F+=$f,; done
                 Fs=${F%?}
@@ -544,7 +544,7 @@ for dof in smr lat; do
             mfile=${HMC}/${fname}_${ext}.avi
             #dfiles+=( $dfile ) #$mfile )
 
-	    if [[ $REGEN == 0 ]] ; then
+	    if [[ $regen == 1 ]] ; then
 		F=""
                 for f in `ls $DATA_DIR/${fname}_* | sort -n` ; do F+=$f,; done
                 Fs=${F%?}
@@ -563,7 +563,7 @@ for dof in smr lat; do
 	# Sums evec density across all converged modes at a given tau_MD and dof, writing one file per snapshot.
 	########################################################################################################################
 
-	if [[ $REGEN == 0 ]] ; then
+	if [[ $regen == 1 ]] ; then
 	    for t in `ls $DATA_DIR/evec_density_sorted_0_tau_${tau}_${dof}_${conf}_*| awk -F _ '{print $NF}' | sort -n`; do
 		F=""
 		for f in `ls $DATA_DIR/evec_density_sorted_*_tau_${tau}_${dof}_${conf}_${t} | sort -n` ; do F+=$f,; done
@@ -588,7 +588,7 @@ for dof in smr lat; do
 	dfile=${HMC}/${fname}_${ext}.dat
 	mfile=${HMC}/${fname}_${ext}.avi
 
-	if [[ $REGEN == 0 ]] ; then
+	if [[ $regen == 1 ]] ; then
 	    F=""
             for f in `ls $DATA_DIR/${fname}_* | sort -n` ; do F+=$f,; done
             Fs=${F%?}
@@ -601,7 +601,7 @@ for dof in smr lat; do
     done
 done
 
-done  # end CONFS loop
+done  # end CONFS loop §3
 
 
 ########################################################################################################################
