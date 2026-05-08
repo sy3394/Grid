@@ -59,6 +59,7 @@ HMC=32cube-rho0.124-tau4
 HMC_DIR=$PDIR/$HMC
 vol=32.32.32.32
 REGEN=1
+REGEN_MOVIE=0   # set to 1 to also generate the T-animated multi-panel movie in §2.5 Step 3
 PANEL_PX=1536   # per-panel pixel size for FDAM movies (total = PANEL_PX * ncols × PANEL_PX * nrows)
 
 
@@ -422,7 +423,7 @@ for i_conf in "${!CONFS[@]}"; do
             Fs_all="${Fs_all%,}"   # strip trailing comma
             mpeg_all=${HMC_DIR}/Top_dnsty_all_defs_${conf}_tau${tau}.avi
             _first_lbl="${_weight_labels[0]}"
-            if [[ -f ${pfx}_A_${_first_lbl}_${tau}_smr.${conf} ]]; then
+            if [[ $REGEN_MOVIE == 1 && -f ${pfx}_A_${_first_lbl}_${tau}_smr.${conf} ]]; then
                 FDAM --files $Fs_all --grid $vol --animate T \
                        --mpeg $mpeg_all --isosurface -0.01 \
                        --panel_size ${PANEL_PX}
@@ -910,33 +911,44 @@ done
 ####################  §7  Gauge action force density (Iwasaki, Jacobian)  ############################################
 ########################################################################################################################
 
-for force in IwasakiGaugeAction JacobianAction; do
+#########   INPUT   #################
+CONFS=( 702 7026 70201 70202 70203 70204 70205 703 70301 718 719 )
+regens=( 0   0     0     0     0     0     0    0    0    0   0  )
+######################################
 
-    if [[ "$force" == "IwasakiGaugeAction" ]] ; then iters="smr lat"; else iters=lat; fi
-    for dof in $iters; do
+DATA_DIR=${HMC_DIR}/snapshots
 
-	fname=F_${force}_${dof}
-	ext=T_update #summed
+for((i_conf=0; i_conf<${#CONFS[@]}; i_conf++)); do
+    conf=${CONFS[i_conf]}
 
-	mpeg=${HMC_DIR}/${fname}_${ext}.avi
-	dpath=${HMC_DIR}/${fname}_${ext}.dat
-	dfile=${HMC}/${fname}_${ext}.dat
-	mfile=${HMC}/${fname}_${ext}.avi
-	dfiles+=( $dfile )   # archive .dat only; .avi files are too large
+    for force in IwasakiGaugeAction JacobianAction; do
 
-	if [[ "$dof" == "smr" ]] ; then iso=-0.45; else iso=-0.58; fi
-	if [[ "$force" == "JacobianAction" ]] ; then iso=-0.61; fi
+        if [[ "$force" == "IwasakiGaugeAction" ]] ; then iters="smr lat"; else iters=lat; fi
+        for dof in $iters; do
 
-	if [[ $REGEN == 0 ]] ; then
-            F=""
-            for f in `ls $DATA_DIR/${conf}/${fname}.*|awk -F . '{print $NF, $0}' | sort  -nk1| cut -f2- -d' ' | tail -375 |head -100`; do F+=$f,;done
-            Fs=${F%?}
-	    tail -376 traj_times|head -100 > foo_ind #traj_times includes 4.00, at which force is not computed
-	    FDAM --files $Fs --grid $vol --animate configs --cycle T=0 --isosurface $iso \
-		   --mpeg $mpeg --save_data_to $dpath --index_file foo_ind
-	fi
+            fname=F_${force}_${dof}
+            ext=T_update #summed
+
+            mpeg=${HMC_DIR}/${fname}_${ext}.avi
+            dpath=${HMC_DIR}/${fname}_${ext}.dat
+            dfile=${HMC}/${fname}_${ext}.dat
+            dfiles+=( $dfile )   # archive .dat only; .avi files are too large
+
+            if [[ "$dof" == "smr" ]] ; then iso=-0.45; else iso=-0.58; fi
+            if [[ "$force" == "JacobianAction" ]] ; then iso=-0.61; fi
+
+            if [[ ${regens[i_conf]} == 1 ]] ; then
+                F=""
+                for f in `ls $DATA_DIR/${conf}/${fname}.*|awk -F . '{print $NF, $0}' | sort  -nk1| cut -f2- -d' ' | tail -375 |head -100`; do F+=$f,;done
+                Fs=${F%?}
+                tail -376 traj_times|head -100 > foo_ind #traj_times includes 4.00, at which force is not computed
+                FDAM --files $Fs --grid $vol --animate configs --cycle T=0 --isosurface $iso \
+                       --mpeg $mpeg --save_data_to $dpath --index_file foo_ind
+            fi
+        done
     done
-done
+
+done   # i_conf §7
 
 
 ########################################################################################################################
@@ -946,6 +958,11 @@ done
 # using FieldDensityEigen --compareTCD_defs.  Output: filter_TCD.dat.
 ########################################################################################################################
 
+#########   INPUT   #################
+CONFS=( 702 7026 70201 70202 70203 70204 70205 703 70301 718 719 )
+regens=( 0   0     0     0     0     0     0    0    0    0   0  )
+######################################
+
 DATA_DIR_dnsty=${HMC_DIR}/dnsty
 DATA_DIR_eigen=${HMC_DIR}/eigen
 
@@ -954,20 +971,23 @@ dpath=${HMC_DIR}/data/filter_TCD.dat
 dfiles+=( $dfile )
 
 >$dpath
-if [[ $REGEN == 0 ]] ; then
-    for TD_tau in 0 4; do
-	fname2=evec_density_0_tau_${TD_tau}
-	F1s=""
-	for conf in `seq -f "%03g" $((CONF_S)) 1 $CONF_F`; do  F1s+=$DATA_DIR_dnsty/Top_dnsty_${TD_tau}_ckpoint_EODWF_lat_smr.${conf},;done
-	F1s=${F1s%?}
-	F2s=""
-	for conf in `seq -f "%03g" $((CONF_S)) 1 $CONF_F`; do  F2s+=$DATA_DIR_eigen/$conf/$fname2.${conf},;done
-	F2s=${F2s%?}
 
-	${CDIR}/FieldDensityEigen --files1 $F1s --files2 $F2s --grid $vol --Ls 48 --compareTCD_defs --cut 0.00001 | tee -a foo2 | cat
-	grep "Filtered Sum" foo2 | awk -v tau=$TD_tau '{print tau, $3, $4, $8}' >> $dpath
-    done
-fi
+for((i_conf=0; i_conf<${#CONFS[@]}; i_conf++)); do
+    conf=${CONFS[i_conf]}
+    if [[ ${regens[i_conf]} == 1 ]] ; then
+        for TD_tau in 0 4; do
+            fname2=evec_density_0_tau_${TD_tau}
+            f1=$DATA_DIR_dnsty/Top_dnsty_${TD_tau}_ckpoint_EODWF_lat_smr.${conf}
+            f2=$DATA_DIR_eigen/${conf}/${fname2}.${conf}
+            [[ ! -f $f1 ]] && { echo "Warning §8: gluonic TCD not found: $f1"; continue; }
+            [[ ! -f $f2 ]] && { echo "Warning §8: evec file not found: $f2"; continue; }
+
+            ${CDIR}/FieldDensityEigen --files1 $f1 --files2 $f2 --grid $vol --Ls 48 --compareTCD_defs --cut 0.00001 | tee -a foo2 | cat
+            grep "Filtered Sum" foo2 | awk -v tau=$TD_tau -v c=$conf '{print tau, c, $3, $4, $8}' >> $dpath
+        done
+    fi
+done   # i_conf §8
+
 wait
 
 
