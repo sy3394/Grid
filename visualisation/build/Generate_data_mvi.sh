@@ -478,7 +478,7 @@ for dof in smr lat; do
             dpath=${HMC_DIR}/${fname}_${ext}.dat
             dfile=${HMC}/${fname}_${ext}.dat
             mfile=${HMC}/${fname}_${ext}.avi
-            dfiles+=( $dfile ) #$mfile )
+            #dfiles+=( $dfile )   # too large / not always generated — skip tarball
             echo $tau $dof $n
 
 	    if [[ $regen == 1 ]] ; then
@@ -878,7 +878,7 @@ for((i_conf=0; i_conf<${#CONFS[@]}; i_conf++)); do
 	    dpath=${HMC_DIR}/${fname}_${ext}.dat
 	    dfile=${HMC}/${fname}_${ext}.dat
 	    mfile=${HMC}/${fname}_${ext}.avi
-	    dfiles+=( $dfile ) #$mfile )
+	    #dfiles+=( $dfile )   # too large / not always generated — skip tarball
 
 	    if [[ ${regens[i_conf]} == 1 ]] ; then
 
@@ -933,7 +933,7 @@ for((i_conf=0; i_conf<${#CONFS[@]}; i_conf++)); do
             mpeg=${HMC_DIR}/${fname}_${ext}.avi
             dpath=${HMC_DIR}/${fname}_${ext}.dat
             dfile=${HMC}/${fname}_${ext}.dat
-            dfiles+=( $dfile )   # archive .dat only; .avi files are too large
+            #dfiles+=( $dfile )   # too large / not always generated — skip tarball
 
             if [[ "$dof" == "smr" ]] ; then iso=-0.45; else iso=-0.58; fi
             if [[ "$force" == "JacobianAction" ]] ; then iso=-0.61; fi
