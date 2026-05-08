@@ -299,8 +299,8 @@ dfiles+=( ${HMC}/data/fermferm.dat )
 
 for i_conf in "${!CONFS[@]}"; do
     conf=${CONFS[$i_conf]}
-    REGEN=${REGENS_25[$i_conf]}
-    if [[ $REGEN == 1 ]] ; then
+    regen=${REGENS_25[$i_conf]}
+    if [[ $regen == 1 ]] ; then
 
         DATA_DIR_eigen=${HMC_DIR}/eigen/${conf}
         DATA_DIR_topo=${HMC_DIR}/eigen/${conf}   # Top_dnsty_q_X_<tau>_smr.<conf> lives here
@@ -430,7 +430,7 @@ for i_conf in "${!CONFS[@]}"; do
             fi
 
         done   # tau
-    fi     # REGEN
+    fi     # regen
 done       # i_conf
 
 
@@ -611,6 +611,7 @@ done  # end CONFS loop §3
 ############  INPUT ##################
 CONF=702
 tau=0
+regen_4=0   # set 1 to run §4.1/§4.2 (independent of global REGEN)
 ######################################
 
 DATA_DIR=${HMC_DIR}/eigen_Wilson/${CONF}/${CONF}
@@ -621,7 +622,7 @@ DATA_DIR=${HMC_DIR}/eigen_Wilson/${CONF}/${CONF}
 # For each t_MD step and each M_5 mass, sums all eigenvector density files via FieldDensityEigen.
 ########################################################################################################################
 
-if [[ $REGEN == 0 ]] ; then
+if [[ $regen_4 == 1 ]] ; then
     for d in `ls -d $DATA_DIR/U_smr_*| sort -n`; do
 	for m5 in `ls $d/evec_*_0| awk -F _ '{print $(NF-1)}'`; do
 	    F=""
@@ -653,7 +654,7 @@ dpath=${HMC_DIR}/${fname}_${ext}.dat
 dfile=${HMC}/${fname}_${ext}.dat
 mfile=${HMC}/${fname}_${ext}.avi
 
-if [[ $REGEN == 0 ]] ; then
+if [[ $regen_4 == 1 ]] ; then
 
     F=""
     for f in `ls $DATA_DIR/U_smr_${t_MD}/evec_sum_* | sort -n` ; do F+=$f,; done
@@ -676,7 +677,7 @@ dpath=${HMC_DIR}/${fname}_${ext}.dat
 dfile=${HMC}/${fname}_${ext}.dat
 mfile=${HMC}/${fname}_${ext}.avi
 
-if [[ $REGEN == 0 ]] ; then
+if [[ $regen_4 == 1 ]] ; then
     F=""
     for f in `ls $DATA_DIR/U_smr_*/evec_sum_-1.800000 | sort -n` ; do F+=$f,; done
     Fs=${F%?}
@@ -714,7 +715,7 @@ for((i_conf=0; i_conf<${#CONFS[@]}; i_conf++)); do
     mfile=${HMC}/${fname}_${ext}.avi
     #dfiles+=( $dfile )
 
-    if [[ $REGEN == ${regens[i_conf]} ]] ; then
+    if [[ ${regens[i_conf]} == 1 ]] ; then
 
 	F=""
 	for f in `ls $DATA_DIR/U_smr_${t_MD}/evec_*_0 | sort -n` ; do F+=$f,; done
@@ -738,7 +739,7 @@ for((i_conf=0; i_conf<${#CONFS[@]}; i_conf++)); do
     dfile=${HMC}/${fname}_${ext}.dat
     mfile=${HMC}/${fname}_${ext}.avi
     #dfiles+=( $dfile )
-    if [[ $REGEN == ${regens[i_conf]} ]] ; then
+    if [[ ${regens[i_conf]} == 1 ]] ; then
     F=""
     for f in `ls $DATA_DIR/U_smr_*/evec_-1.800000_0 | sort -n` ; do F+=$f,; done
     Fs=${F%?}
@@ -762,7 +763,7 @@ for((i_conf=0; i_conf<${#CONFS[@]}; i_conf++)); do
     mfile=${HMC}/${fname}_${ext}.avi
     #dfiles+=( $dfile )
 
-    if [[ $REGEN == ${regens[i_conf]} ]] ; then
+    if [[ ${regens[i_conf]} == 1 ]] ; then
 	F=""
 	for f in `ls $DATA_DIR/U_smr_*/evec_-1.800000_0 | sort -n` ; do F+=$f,; done
 	Fs=${F%?}
@@ -820,7 +821,7 @@ for((i_conf=0; i_conf<${#CONFS[@]}; i_conf++)); do
 	    #dfiles+=( $dfile ) #$mfile )
 	    echo $fname $tau $dof
 
-	    if [[ $REGEN == ${regens[i_conf]} ]] ; then
+	    if [[ ${regens[i_conf]} == 1 ]] ; then
 		if [[ "$dof" == "smr" ]] ; then iso0=-0.3; else iso0=-0.4; fi
 		if [[ "$tau" == "0" ]] ; then iso=`awk -v a=$iso0 'BEGIN{print a+0.1}'`; else iso=`awk -v a=$iso0 'BEGIN{print a+0.2}'`; fi
 		if [ "$dof" == "smr" -a $tau -eq 0 ] ; then iso=-0.4; fi
@@ -879,7 +880,7 @@ for((i_conf=0; i_conf<${#CONFS[@]}; i_conf++)); do
 	    mfile=${HMC}/${fname}_${ext}.avi
 	    dfiles+=( $dfile ) #$mfile )
 
-	    if [[ $REGEN == ${regens[i_conf]} ]] ; then
+	    if [[ ${regens[i_conf]} == 1 ]] ; then
 
 		if [[ "$dof" == "smr" ]] ; then iso=-0.4; else iso=-0.45; fi
 		if [[ $force != *"Two"* ]] ; then iso=-0.2; else iso=-0.3; fi
