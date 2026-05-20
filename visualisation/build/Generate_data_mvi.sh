@@ -229,9 +229,14 @@ done
 ########################################################################################################################
 
 ##########   INPUT   ######################################
-CONFS=(    700  701  702  703  704  705  706  707  708  709 )
-REGENS_25=(  0    0    1    0    0    0    0    0    0    0 )  # 1=run, 0=skip
-# 702: has comp_file data (topo_field_*.scidac) and correctly ordered evec files.
+CONFS=(    700  701  702  703  704  705  706  707  708  709  795 )
+REGENS_25=(  0    0    1    0    0    0    0    0    0    0    1 )  # 1=run, 0=skip
+# 702: Q=-1; has comp_file data (topo_field_*.scidac) and correctly ordered evec files.
+# 795: Q=+1; the sign-flip falsification config (sec:autocorr / sec:sp_sum_bonus
+#      predict q_B^mgap uniformly POSITIVE and PCF(q_B^mgap,Sigma_low) ~ +0.63).
+#      Evecs generated with HMC/Compute_DWF_G5R5.cc; needs its own gluonic
+#      Top_dnsty_*.795 (Wilson flow) and, optionally, its own Luchang reference
+#      topo_field_*_795.scidac for the comp comparison (see conf-aware lookup below).
 # Add more confs here as data becomes available.
 ###########################################################
 
@@ -350,10 +355,17 @@ for i_conf in "${!CONFS[@]}"; do
             F1s=${F1%?}
 
             ### qlat reference SCIDAC files (optional; requires comp_file data + ordered evecs)
+            ### Conf-aware lookup: prefer topo_field_<idx>_<conf>.scidac so each
+            ### config compares against ITS OWN Luchang reference.  The legacy
+            ### unsuffixed topo_field_<idx>.scidac is conf 702's reference, so it
+            ### is used only as a fallback for conf 702 — never for other confs
+            ### (otherwise e.g. 795 would be compared against 702's field, which
+            ### is physically meaningless).
             comp_opt=""
             comp_files=""
             for idx in 0 1; do
-                f=${COMP_DIR}/topo_field_${idx}.scidac
+                f=${COMP_DIR}/topo_field_${idx}_${conf}.scidac
+                [[ ! -f $f && "$conf" == "702" ]] && f=${COMP_DIR}/topo_field_${idx}.scidac
                 [[ -f $f ]] && comp_files+=$f,
             done
             comp_files=${comp_files%?}   # strip trailing comma
