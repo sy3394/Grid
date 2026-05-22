@@ -465,10 +465,12 @@ for i_conf in "${!CONFS[@]}"; do
                     dfiles+=( ${HMC}/eigen/${conf}/Top_dnsty_q_${_def}_${_lbl}_${tau}_smr.${conf} )
                 done
             done
-            # q_naive (legacy sign-correct) + Sigma_low (Banks-Casher locality):
-            # single fields, no weight track. Needed for 2D-slice diagnostics
-            # (e.g. zero-mode dominance check vs q_B^mgap; sec:Btypes).
-            for _name in naive Sigma; do
+            # q_naive (legacy sign-correct), Sigma_low (Banks-Casher locality), and
+            # Bbulk (direct bulk remainder B = sum_{n in bulk} chi_n^B): single
+            # fields, no weight track. Needed for 2D-slice diagnostics
+            # (e.g. zero-mode dominance check vs q_B^mgap; sec:Btypes) and for
+            # using B directly instead of the q_naive - q_B^mgap proxy.
+            for _name in naive Sigma Bbulk; do
                 f_local=${HMC}/eigen/${conf}/Top_dnsty_q_${_name}_${tau}_smr.${conf}
                 [[ -f ${PDIR}/${f_local} ]] && dfiles+=( ${f_local} )
             done
@@ -480,9 +482,10 @@ for i_conf in "${!CONFS[@]}"; do
                     Fs_all+="${pfx}_${_def}_${_lbl}_${tau}_smr.${conf},"
                 done
             done
-            # q_naive (legacy sp_sum, sign-correct) and Sigma_low (Banks-Casher locality):
-            # single fields, no weight-track loop. Added once per tau.
-            for _name in naive Sigma; do
+            # q_naive (legacy sp_sum, sign-correct), Sigma_low (Banks-Casher
+            # locality), and Bbulk (direct bulk remainder): single fields, no
+            # weight-track loop. Added once per tau.
+            for _name in naive Sigma Bbulk; do
                 f="${pfx}_${_name}_${tau}_smr.${conf}"
                 [[ -f $f ]] && Fs_all+="${f},"
             done
