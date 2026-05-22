@@ -328,12 +328,18 @@ dfiles+=( ${HMC}/data/smear_sweep.dat )
 # Optional flags for the new diagnostics — set these via env vars to enable.
 #   BK_SWEEP=1            -> pass --bk_sweep to FieldDensityEigen
 #   SMEAR_SWEEP="1,2,3"   -> pass --smear_sweep "<value>" (comma-separated)
+#   SIGNED_MGAP=1         -> pass --signed_mgap (LEGACY signed m_gap/mu_n weight,
+#                           sign-blind to Q; default is the |mu_n| weight). Use
+#                           only for cross-checks.
 BK_SWEEP="${BK_SWEEP:-0}"
 SMEAR_SWEEP="${SMEAR_SWEEP:-}"
+SIGNED_MGAP="${SIGNED_MGAP:-0}"
 bk_opt=""
 smr_opt=""
+smgap_opt=""
 [[ "$BK_SWEEP" == "1" ]] && bk_opt="--bk_sweep"
 [[ -n "$SMEAR_SWEEP" ]] && smr_opt="--smear_sweep $SMEAR_SWEEP"
+[[ "$SIGNED_MGAP" == "1" ]] && smgap_opt="--signed_mgap"
 
 for i_conf in "${!CONFS[@]}"; do
     conf=${CONFS[$i_conf]}
@@ -436,7 +442,7 @@ for i_conf in "${!CONFS[@]}"; do
             FDE \
                 --grid $vol \
                 --files2 $F2s --Ls 48 $eval_opt $weights_opt \
-                --mass $MASS_EVEC --bc_mass $BC_MASS --n_topo $n_topo \
+                --mass $MASS_EVEC --bc_mass $BC_MASS --n_topo $n_topo $smgap_opt \
                 --files1 $F1s --topo_compare --conf_id $conf \
                 --tau_wf $tau --td_taus 0,4,16 \
                 --data_dir ${HMC_DIR}/data \
@@ -448,7 +454,7 @@ for i_conf in "${!CONFS[@]}"; do
             ${CDIR}/FieldDensityEigen \
                 --grid $vol \
                 --files2 $F2s --Ls 48 $eval_opt $weights_opt \
-                --mass $MASS_EVEC --bc_mass $BC_MASS --n_topo $n_topo \
+                --mass $MASS_EVEC --bc_mass $BC_MASS --n_topo $n_topo $smgap_opt \
                 --topo_out ${DATA_DIR_topo}/Top_dnsty_q_{def}_${tau}_smr.${conf} \
                 > $topo_write_log 2>&1
 
