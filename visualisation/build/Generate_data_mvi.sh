@@ -458,22 +458,13 @@ for i_conf in "${!CONFS[@]}"; do
                 --topo_out ${DATA_DIR_topo}/Top_dnsty_q_{def}_${tau}_smr.${conf} \
                 > $topo_write_log 2>&1
 
-            # Register topo density files for archiving
+            # NOTE: the topo-density SCIDAC fields (q_{A,B,C}_{sign,mgap},
+            # q_naive, q_Sigma, q_Bbulk) are LARGE binaries (~16 MB each) and are
+            # transferred by direct rsync of eigen/<conf>/, NOT bundled into the
+            # .dat tarball.  They are therefore deliberately NOT added to dfiles
+            # (which is the tarball list, see below).  Cf. the skipped E_dnsty/
+            # Top_dnsty/evec_density entries above.
             pfx=${DATA_DIR_topo}/Top_dnsty_q
-            for _lbl in "${_weight_labels[@]}"; do
-                for _def in A B C; do
-                    dfiles+=( ${HMC}/eigen/${conf}/Top_dnsty_q_${_def}_${_lbl}_${tau}_smr.${conf} )
-                done
-            done
-            # q_naive (legacy sign-correct), Sigma_low (Banks-Casher locality), and
-            # Bbulk (direct bulk remainder B = sum_{n in bulk} chi_n^B): single
-            # fields, no weight track. Needed for 2D-slice diagnostics
-            # (e.g. zero-mode dominance check vs q_B^mgap; sec:Btypes) and for
-            # using B directly instead of the q_naive - q_B^mgap proxy.
-            for _name in naive Sigma Bbulk; do
-                f_local=${HMC}/eigen/${conf}/Top_dnsty_q_${_name}_${tau}_smr.${conf}
-                [[ -f ${PDIR}/${f_local} ]] && dfiles+=( ${f_local} )
-            done
 
             ### Step 3: T-animated movie — one column per weight track (A/B/C rows) + qlat reference
             Fs_all=""
