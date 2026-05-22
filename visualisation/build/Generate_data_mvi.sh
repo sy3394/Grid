@@ -231,6 +231,13 @@ done
 ##########   INPUT   ######################################
 CONFS=(    700  701  702  703  704  705  706  707  708  709  795 )
 REGENS_25=(  0    0    1    0    0    0    0    0    0    0    1 )  # 1=run, 0=skip
+# NTOPO_25[i] = number of leading near-zero modes to exclude from the direct
+# bulk remainder B_bulk = sum_{n in bulk} chi_n^B (passed as --n_topo to
+# FieldDensityEigen).  Set = |Q| of each config (or 2|Q| if the solver lists
+# each zero mode as a degenerate +-pair); VERIFY against the per-mode
+# "TopoContrib evec= c mu_n=" printout that the first NTOPO modes are the
+# |mu_n|~m_gap ones.  0 => B_bulk is the full unweighted chiral sum.
+NTOPO_25=(   1    1    1    1    1    1    1    1    1    1    1 )  # |Q| per conf
 # 702: Q=-1; has comp_file data (topo_field_*.scidac) and correctly ordered evec files.
 # 795: Q=+1; the sign-flip falsification config (sec:autocorr / sec:sp_sum_bonus
 #      predict q_B^mgap uniformly POSITIVE and PCF(q_B^mgap,Sigma_low) ~ +0.63).
@@ -331,6 +338,7 @@ smr_opt=""
 for i_conf in "${!CONFS[@]}"; do
     conf=${CONFS[$i_conf]}
     regen=${REGENS_25[$i_conf]}
+    n_topo=${NTOPO_25[$i_conf]:-1}      # |Q| for this conf (B_bulk zero-mode exclusion)
     if [[ $regen == 1 ]] ; then
 
         DATA_DIR_eigen=${HMC_DIR}/eigen/${conf}
@@ -402,6 +410,16 @@ for i_conf in "${!CONFS[@]}"; do
             elif [[ "$tau" == "0" && -f "${DATA_DIR_eigen}/eigenvalues_tau_4.${conf}" ]]; then
                 echo "Note: conf=$conf eigenvalues_tau_0 absent — using tau=4 evals as proxy"
                 eval_opt="--evals ${DATA_DIR_eigen}/eigenvalues_tau_4.${conf}"
+            else
+                ### No per-config eigenvalue file: q_B^mgap/q_B^sign weights fall back
+                ### to mu_n=0 and the SIGN-weighted estimators are MISCOMPUTED on
+                ### topological configs (this is the suspected cause of the conf-795
+                ### sign-flip anomaly; see sp_sum_vs_qB_bulk_analysis.tex App. on
+                ### predictions).  Warn loudly so it is never silent.
+                echo "WARNING: conf=$conf tau=$tau — eigenvalue file '$EVALS_FILE' MISSING."
+                echo "         sgn(mu_n)/m_gap weights unavailable: q_B^{mgap,sign} will be"
+                echo "         miscomputed (sign-blind).  Generate eigenvalues_tau_${tau}.${conf}"
+                echo "         (Compute_DWF_G5R5) before trusting the Gamma_5-weighted fields."
             fi
 
             ### Weight tracks: controlled by WEIGHTS env var (parsed above into _weight_labels).
@@ -417,7 +435,7 @@ for i_conf in "${!CONFS[@]}"; do
             FDE \
                 --grid $vol \
                 --files2 $F2s --Ls 48 $eval_opt $weights_opt \
-                --mass $MASS_EVEC --bc_mass $BC_MASS \
+                --mass $MASS_EVEC --bc_mass $BC_MASS --n_topo $n_topo \
                 --files1 $F1s --topo_compare --conf_id $conf \
                 --tau_wf $tau --td_taus 0,4,16 \
                 --data_dir ${HMC_DIR}/data \
@@ -429,7 +447,7 @@ for i_conf in "${!CONFS[@]}"; do
             ${CDIR}/FieldDensityEigen \
                 --grid $vol \
                 --files2 $F2s --Ls 48 $eval_opt $weights_opt \
-                --mass $MASS_EVEC --bc_mass $BC_MASS \
+                --mass $MASS_EVEC --bc_mass $BC_MASS --n_topo $n_topo \
                 --topo_out ${DATA_DIR_topo}/Top_dnsty_q_{def}_${tau}_smr.${conf} \
                 > $topo_write_log 2>&1
 

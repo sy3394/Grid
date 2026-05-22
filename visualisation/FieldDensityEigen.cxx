@@ -395,6 +395,18 @@ int main(int argc, char* argv[])
   //             Must be non-zero to get a non-trivial Sigma_low.
   double mass_f  = 0.0;
   double bc_mass = -1.0;  // sentinel: -1 -> fall back to mass_f below
+  // --n_topo <k>: number of near-zero (topological) eigenmodes to EXCLUDE from
+  // the direct bulk remainder B_bulk(x) = sum_{n in bulk} chi_n^B(x).  The k
+  // excluded modes are chosen by SMALLEST |mu_n| (computed below), NOT by index
+  // position, so this is robust to an unsorted --evals file (e.g. conf 795
+  // lists the zero mode at index 1, not 0).  Set k = |Q| (or 2|Q| if the
+  // solver lists each zero mode as a degenerate +-pair); k=0 (default) makes
+  // B_bulk the full unweighted chiral sum sum_n chi_n^B.
+  // NOTE: this assumes evals[c] corresponds to eigenvector c.  If the --evals
+  // file is ordered differently from the evec-density files, q_B^{mgap,sign}
+  // and B_bulk are all mismatched -- re-sort the eval file to match the evecs
+  // (or fix Compute_DWF_G5R5) before trusting the Gamma_5-weighted fields.
+  int    n_topo  = 0;
   std::vector<double> evals;
   std::string topo_out = "topo_evec";
   // Default: both sign and mgap tracks always active
@@ -407,6 +419,12 @@ int main(int argc, char* argv[])
   if( GridCmdOptionExists(argv,argv+argc,"--bc_mass") ){
     arg = GridCmdOptionPayload(argv,argv+argc,"--bc_mass");
     GridCmdOptionFloat(arg, bc_mass);
+  }
+  if( GridCmdOptionExists(argv,argv+argc,"--n_topo") ){
+    arg = GridCmdOptionPayload(argv,argv+argc,"--n_topo");
+    GridCmdOptionInt(arg, n_topo);
+    std::cout << GridLogMessage << "--n_topo: excluding the " << n_topo
+              << " leading near-zero mode(s) from B_bulk" << std::endl;
   }
   if(bc_mass < 0.0) bc_mass = mass_f;  // legacy fallback
   if(bc_mass == 0.0){
@@ -509,6 +527,26 @@ int main(int argc, char* argv[])
     std::cout << GridLogMessage << "m_gap_auto = mass_f = " << m_gap_auto
               << " (--evals not provided; supply for accurate mgap weight)" << std::endl;
   }
+
+  // Identify the n_topo near-zero (topological) modes by SMALLEST |mu_n|,
+  // independent of the order in the --evals file.  The eigenvalue file is NOT
+  // guaranteed |mu_n|-sorted (e.g. conf 795 lists the zero mode at index 1,
+  // not 0), so an index-position cut would exclude the wrong mode.  is_bulk[c]
+  // = 0 for the n_topo smallest-|mu_n| modes (topological), 1 otherwise (bulk).
+  // Used to build the direct bulk remainder B_bulk = sum_{bulk} chi_n^B.
+  std::vector<char> is_bulk(evals.size(), 1);
+  if(n_topo > 0 && !evals.empty()){
+    std::vector<int> idx(evals.size());
+    for(size_t i=0;i<idx.size();i++) idx[i]=(int)i;
+    std::sort(idx.begin(), idx.end(),
+              [&](int a,int b){ return std::fabs(evals[a]) < std::fabs(evals[b]); });
+    int k = std::min(n_topo, (int)idx.size());
+    std::cout << GridLogMessage << "--n_topo: excluding " << k
+              << " smallest-|mu_n| mode(s) from B_bulk:";
+    for(int j=0;j<k;j++){ is_bulk[idx[j]] = 0;
+      std::cout << " c=" << idx[j] << "(mu=" << evals[idx[j]] << ")"; }
+    std::cout << std::endl;
+  }
   // Print active weight tracks
   {
     std::cout << GridLogMessage << "Active weight tracks (" << weight_specs.size() << "):";
@@ -566,6 +604,12 @@ int main(int argc, char* argv[])
   // for sign-consistency with the master-table PCFs of q_B/q_C.
   LatticeComplexD q_naive(grid);   q_naive   = Zero();
   LatticeComplexD Sigma_low(grid); Sigma_low = Zero();
+  // B_bulk(x) = sum_{n in bulk} chi_n^B(x): the DIRECT (exact) bulk remainder,
+  // excluding the n_topo leading near-zero modes.  This is the formal B of
+  // eq:Btrunc computed from the eigenvectors without the q_naive - q_B^mgap
+  // approximation, so it carries NO topological pedestal (int B_bulk = 0 to
+  // the +-lambda pairing accuracy).  Requires --n_topo = |Q|.
+  LatticeComplexD B_bulk(grid);    B_bulk    = Zero();
   if(compute_topo){
     q_eps_all.reserve(ntracks); q_bdy_all.reserve(ntracks); q_mid_all.reserve(ntracks);
     for(int t = 0; t < ntracks; t++){
@@ -809,13 +853,23 @@ int main(int argc, char* argv[])
         // is -Gamma_5_doc). Net: q_naive's first sum has the same sign
         // convention as q_B^sign in this codebase.
         {
+          LatticeComplexD chi_n(grid); chi_n = Zero();
           LatticeComplexD eps_slice(grid);
           for(int s = 0; s < Ls; s++){
             ExtractSlice(eps_slice, tmp, s, 0);
             double eps_s = (s >= Ls/2) ? 1.0 : -1.0;
-            q_naive = q_naive - eps_s * eps_slice;
+            chi_n = chi_n - eps_s * eps_slice;   // = +chi^B_doc for mode c
           }
-          q_naive = q_naive + (0.5 * sgn_lambda * lambda_0) * rho_n;
+          q_naive = q_naive + chi_n + (0.5 * sgn_lambda * lambda_0) * rho_n;
+          // Direct bulk remainder: the same per-mode chirality density, but
+          // accumulated only for the bulk modes (skip the n_topo smallest-|mu|
+          // near-zero modes, identified above by |mu_n| -- robust to an
+          // unsorted --evals file).  If no --evals (is_bulk empty), fall back
+          // to the index cut c>=n_topo.  Gives B_bulk = sum_{n in bulk} chi_n^B
+          // with no pedestal, the exact form of eq:Btrunc.
+          bool mode_is_bulk = (c < (int)is_bulk.size()) ? (bool)is_bulk[c]
+                                                        : (c >= n_topo);
+          if(mode_is_bulk) B_bulk = B_bulk + chi_n;
         }
 
         // Sigma_low: Banks-Casher Lorentzian-weighted scalar density.
@@ -913,6 +967,10 @@ int main(int argc, char* argv[])
     writeFile(Sigma_low, fill_def(topo_out,"Sigma"));
     std::cout << "Wrote Sigma_low -> " << fill_def(topo_out,"Sigma")
               << "  S=" << real(TensorRemove(sum(Sigma_low))) << std::endl;
+    writeFile(B_bulk,    fill_def(topo_out,"Bbulk"));
+    std::cout << "Wrote B_bulk    -> " << fill_def(topo_out,"Bbulk")
+              << "  intB=" << real(TensorRemove(sum(B_bulk)))
+              << "  (n_topo=" << n_topo << ")" << std::endl;
   }
   /****** IP & Corr of each fermion TCD definition vs gluonic TCD (--topo_compare) *****/
   // Requires: --files2 + Ls (so q_eps/q_bdy/q_mid accumulate), have_evals (for weights),
@@ -985,6 +1043,7 @@ int main(int argc, char* argv[])
     }
     qdefs.push_back({"q_naive",   &q_naive});
     qdefs.push_back({"Sigma_low", &Sigma_low});
+    qdefs.push_back({"B_bulk",    &B_bulk});
     for(auto& qd : qdefs){
       if(data_dir.empty()) *topo_log << "# " << qd.name << std::endl;
       for(int i=0; i<(int)data1.size(); i++){
@@ -1309,6 +1368,7 @@ int main(int argc, char* argv[])
       }
       qdefs.push_back({"q_naive",   &q_naive});
       qdefs.push_back({"Sigma_low", &Sigma_low});
+      qdefs.push_back({"B_bulk",    &B_bulk});
     }
 
     // Pre-load all comp files BEFORE printing the header so that LIME/IOobject
