@@ -413,9 +413,10 @@ for i_conf in "${!CONFS[@]}"; do
             else
                 ### No per-config eigenvalue file: q_B^mgap/q_B^sign weights fall back
                 ### to mu_n=0 and the SIGN-weighted estimators are MISCOMPUTED on
-                ### topological configs (this is the suspected cause of the conf-795
-                ### sign-flip anomaly; see sp_sum_vs_qB_bulk_analysis.tex App. on
-                ### predictions).  Warn loudly so it is never silent.
+                ### topological configs.  Warn loudly so it is never silent.
+                ### (NB: this is a DIFFERENT failure mode from the conf-795 sign-flip
+                ###  anomaly, where the eval file is present but the mu~0 zero mode's
+                ###  sign is convention-determined; see the predictions appendix.)
                 echo "WARNING: conf=$conf tau=$tau — eigenvalue file '$EVALS_FILE' MISSING."
                 echo "         sgn(mu_n)/m_gap weights unavailable: q_B^{mgap,sign} will be"
                 echo "         miscomputed (sign-blind).  Generate eigenvalues_tau_${tau}.${conf}"
