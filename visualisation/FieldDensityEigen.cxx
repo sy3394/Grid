@@ -407,6 +407,15 @@ int main(int argc, char* argv[])
   // and B_bulk are all mismatched -- re-sort the eval file to match the evecs
   // (or fix Compute_DWF_G5R5) before trusting the Gamma_5-weighted fields.
   int    n_topo  = 0;
+  // mgap-track weight: DEFAULT uses the UNSIGNED eigenvalue, w = m_gap/|mu_n|,
+  // so the zero-mode weight is +m_gap/|mu_0| and the chirality chi_0^B (which
+  // carries the index, int chi_0 = Q) sets the sign of q_B -> int q_B = Q for
+  // either sign of Q.  The legacy SIGNED weight w = m_gap/mu_n is sign-blind:
+  // for the near-zero mode sgn(mu_0) = -Q (spectral flow), so m_gap/mu_0 = -Q
+  // multiplies chi_0 = +Q to give -Q^2 = -1 regardless of Q (verified: conf 702
+  // Q=-1 and conf 795 Q=+1 both give int q_B^mgap = -1).  --signed_mgap
+  // restores the legacy signed weight for cross-checks only.
+  bool   signed_mgap = false;
   std::vector<double> evals;
   std::string topo_out = "topo_evec";
   // Default: both sign and mgap tracks always active
@@ -419,6 +428,14 @@ int main(int argc, char* argv[])
   if( GridCmdOptionExists(argv,argv+argc,"--bc_mass") ){
     arg = GridCmdOptionPayload(argv,argv+argc,"--bc_mass");
     GridCmdOptionFloat(arg, bc_mass);
+  }
+  if( GridCmdOptionExists(argv,argv+argc,"--signed_mgap") ){
+    signed_mgap = true;
+    std::cout << GridLogMessage << "--signed_mgap: using LEGACY signed weight "
+              << "m_gap/mu_n (sign-blind to Q; cross-check only)" << std::endl;
+  } else {
+    std::cout << GridLogMessage << "mgap weight: m_gap/|mu_n| (default; "
+              << "signed-index-faithful)" << std::endl;
   }
   if( GridCmdOptionExists(argv,argv+argc,"--n_topo") ){
     arg = GridCmdOptionPayload(argv,argv+argc,"--n_topo");
@@ -762,8 +779,9 @@ int main(int argc, char* argv[])
 
       // Compute weight for each active track:
       //   is_sign = true  => w = sign(mu_n)                            (exact ±1 or 0)
-      //   is_sign = false, mgap_val = 0 => w = m_gap_auto / mu_n      (auto = min|mu_n|)
-      //   is_sign = false, mgap_val ≠ 0 => w = mgap_val / mu_n        (user-supplied literal)
+      //   is_sign = false, mgap_val = 0 => w = m_gap_auto / |mu_n|   (auto = min|mu_n|)
+      //   is_sign = false, mgap_val ≠ 0 => w = mgap_val / |mu_n|      (user-supplied literal)
+      //   (|mu_n| is the default; --signed_mgap uses mu_n, the legacy sign-blind weight)
       // q_A midpoint note: both weight tracks give integral Q_evec(q_A) ~ 0
       //   because topological modes have e^{-alpha*Ls/2}-suppressed midplane
       //   amplitude AND the UV bulk modes that dominate J_5q at the midplane
@@ -776,7 +794,11 @@ int main(int argc, char* argv[])
           track_w[t] = (mu_n > 0.0) ? 1.0 : (mu_n < 0.0) ? -1.0 : 0.0;
         else {
           double mg = (ws.mgap_val == 0.0) ? m_gap_auto : ws.mgap_val;
-          track_w[t] = (mu_n != 0.0) ? (mg / mu_n) : 0.0;
+          // Default: m_gap/|mu_n| (signed-index-faithful; the chirality chi_n^B
+          // carries the sign).  --signed_mgap restores the legacy m_gap/mu_n,
+          // which is sign-blind to Q (see header comment at signed_mgap decl).
+          double denom = signed_mgap ? mu_n : std::fabs(mu_n);
+          track_w[t] = (mu_n != 0.0) ? (mg / denom) : 0.0;
         }
       }
 
