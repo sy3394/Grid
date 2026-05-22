@@ -340,39 +340,26 @@ int main(int argc, char** argv) {
     for(int i = 0; i < Nconv; i++){
       finalevec_copy[i] = finalevec[i];
     }
-    std::vector<RealD> eMe_sort(eMe);   // signed working copy
-    std::vector<RealD> eMe_sort2;       // output: (+mu_0,-mu_0, +mu_1,-mu_1, ...) by |mu|
+    // Order the modes by |mu| ascending (the zero mode, |mu|~0, FIRST), with
+    // +mu before -mu for each near-degenerate +-pair.  Implemented as a single
+    // argsort permutation applied to the eigenvectors (eMe is recomputed below
+    // to match).  This replaces the old "+partners first, then insert negatives"
+    // scheme, whose `j==0` clause placed a *negative* zero mode at index 1
+    // instead of index 0 (correct only when the zero mode's mu happened to be
+    // positive; e.g. conf 702 mu_0=+8e-8 sorted right, conf 795 mu_0=-6e-7 did
+    // not).  Robust to the (numerically ~0) sign of the zero-mode eigenvalue.
+    const RealD pair_tol = 1.0e-6;       // |mu| within this => treat as a +- pair
+    std::vector<int> perm(Nconv);
+    for(int i = 0; i < Nconv; i++) perm[i] = i;
+    std::sort(perm.begin(), perm.end(), [&](int a, int b){
+        RealD ma = std::fabs(eMe[a]), mb = std::fabs(eMe[b]);
+        if(std::fabs(ma - mb) > pair_tol) return ma < mb;  // distinct |mu|: ascending
+        return eMe[a] > eMe[b];                            // near-degenerate pair: + before -
+      });
 
-    // Step 1: sort signed values ascending (most negative first)
-    sort(eMe_sort.begin(), eMe_sort.end());
-
-    // Step 2: seed with positive eigenvalues in ascending order
+    // Reorder eigenvectors by the permutation; eMe is recomputed just below.
     for(int i = 0; i < Nconv; i++)
-      if(eMe_sort[i] >= 0) eMe_sort2.push_back(eMe_sort[i]);
-
-    // Step 3: insert each negative eval after its +partner (closest magnitude)
-    for(int i = 0; i < (int)eMe_sort.size(); i++){
-      if(eMe_sort[i] < 0){
-        int miss = 1;
-        for(int j = 0; j < (int)eMe_sort2.size(); j++){
-          if(eMe_sort2[j] > 0 && eMe_sort2[j] > std::fabs(eMe_sort[i])){
-            int pos = j;
-            if(j == 0 || std::fabs(eMe_sort2[j]   + eMe_sort[i]) <
-                         std::fabs(eMe_sort2[j-1]  + eMe_sort[i]))
-              pos += 1;
-            eMe_sort2.insert(eMe_sort2.begin() + pos, eMe_sort[i]);
-            miss = 0; break;
-          }
-        }
-        if(miss) eMe_sort2.push_back(eMe_sort[i]);
-      }
-    }
-
-    // Step 4: reorder finalevec to match eMe_sort2
-    for(int i = 0; i < Nconv; i++)
-      for(int j = 0; j < Nconv; j++)
-        if(eMe[j] == eMe_sort2[i])
-          finalevec[i] = finalevec_copy[j];
+      finalevec[i] = finalevec_copy[perm[i]];
 
     for(int i = 0; i < Nconv; i++){
       G5R5Herm.HermOpAndNorm(finalevec[i], G5R5Mevec[i], eMe[i], eMMe[i]);
