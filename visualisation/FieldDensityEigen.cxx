@@ -530,6 +530,36 @@ int main(int argc, char* argv[])
     std::cout << GridLogMessage << "--m_gap: added/updated 'mext' track with mgap_val="
               << m_gap_ext << std::endl;
   }
+  // --band_pass <lc1,lc2,...>: add Gaussian even-window weight tracks
+  //   w_{lc}(mu) = exp(-mu^2 / (2 lc^2))
+  // an integer-exact member of the bulk-estimator family (topo_charge.tex
+  // sec:qBfamily; sp_sum App. window_tests): the window is EVEN in mu and ->1 at
+  // mu=0, so sum_x q_B^{w} = Q_ov + O(e^{-a Ls}) is preserved (the +-lambda^H
+  // pair integrals cancel for any common weight), while the LOCAL content is
+  // band-passed -- bulk-mode I-Ibar chirality kept, deep-UV jitter rolled off at
+  // the mobility edge lc.  Encoded WITHOUT a WeightSpec struct change by a
+  // NEGATIVE mgap_val sentinel: mgap_val = -lc flags a window track with
+  // lambda_c = -mgap_val (handled in the track_w computation below).  These add
+  // ordinary tracks, so they flow automatically into the q_{A,B,C}_<lbl> output,
+  // the FermFerm/topo_compare qdefs, and the corr_ip/comp_ref files.  Default: none.
+  if( GridCmdOptionExists(argv,argv+argc,"--band_pass") ){
+    arg = GridCmdOptionPayload(argv,argv+argc,"--band_pass");
+    std::vector<std::string> bptok;
+    GridCmdOptionCSL(arg, bptok);
+    for(auto& tk : bptok){
+      double lc = std::stod(tk);
+      if(lc <= 0.0){
+        std::cerr << "WARNING: --band_pass lambda_c=" << lc
+                  << " must be > 0 -- ignored" << std::endl;
+        continue;
+      }
+      std::ostringstream ss; ss << lc;
+      std::string lbl = "bp" + ss.str();          // self-documenting, e.g. bp0.1
+      weight_specs.push_back({lbl, false, -lc});  // NEGATIVE mgap_val = window flag
+      std::cout << GridLogMessage << "--band_pass: track '" << lbl
+                << "' Gaussian window lambda_c=" << lc << std::endl;
+    }
+  }
   // m_gap_auto: min_n|mu_n| computed from the --evals text file (mass_f fallback).
   // Must be known before the topo accumulation loop — embedded records only
   // supply per-mode mu_n, not a pre-loop global min.
@@ -627,6 +657,15 @@ int main(int argc, char* argv[])
   // approximation, so it carries NO topological pedestal (int B_bulk = 0 to
   // the +-lambda pairing accuracy).  Requires --n_topo = |Q|.
   LatticeComplexD B_bulk(grid);    B_bulk    = Zero();
+  // q_B^naive(x) = sum_{n=1}^{N_low} chi_n^B(x): the unit-weight bulk-grading
+  // sum over ALL retained modes (zero modes + bulk), no m_gap/|mu_n|
+  // suppression and no Banks-Casher term.  This is the "naive bulk estimator"
+  // discussed in topo_charge.tex §sec:qBnaive: same integral -> Q_ov as the
+  // gap-weighted q_B (zero mode contributes +-1, bulk pairs cancel via the
+  // sum rule for any common weight), but the bulk-mode topological structure
+  // (the I-Ibar pattern of the companion numerics) is preserved at full
+  // amplitude rather than suppressed by m_gap/|mu_n|.  Mass-independent.
+  LatticeComplexD q_B_naive(grid); q_B_naive = Zero();
   if(compute_topo){
     q_eps_all.reserve(ntracks); q_bdy_all.reserve(ntracks); q_mid_all.reserve(ntracks);
     for(int t = 0; t < ntracks; t++){
@@ -651,6 +690,15 @@ int main(int argc, char* argv[])
   // PCF/IP against each gluonic data1[i].  Memory cost: 2 * N_conv * V * 16B
   // ~ 2 * 16 * 16 MB = 512 MB on a 32^4 lattice with N_conv=16.
   bool do_bk_sweep =  GridCmdOptionExists(argv,argv+argc,"--bk_sweep");
+  // Per-mode spectral diagnostics.  Default OFF; enable with --per_mode_out.
+  // When ON, the per-mode loop records, for each retained mode n:
+  //   mu_n, int chi_n^B d^4x, int rho_n, int rho_n^2
+  // and a post-loop block writes them (with IPR_n = V4 * int rho^2 / (int rho)^2)
+  // to <topo_out:{def}->permode>.dat.  Tests 2 & 6 of sp_sum App. window_tests:
+  // |int chi_n^B| vs |mu_n| confirms the R5-symmetry suppression; IPR_n vs |mu_n|
+  // locates the localization (mobility) edge for the --band_pass lambda_c.
+  bool do_per_mode = GridCmdOptionExists(argv,argv+argc,"--per_mode_out");
+  std::vector<double> pm_mu, pm_chiI, pm_rhoI, pm_rho2;
   std::vector<LatticeComplexD> qnaive_partial;
   std::vector<LatticeComplexD> qB_mgap_partial;
 
@@ -792,6 +840,13 @@ int main(int argc, char* argv[])
         const WeightSpec& ws = weight_specs[t];
         if(ws.is_sign)
           track_w[t] = (mu_n > 0.0) ? 1.0 : (mu_n < 0.0) ? -1.0 : 0.0;
+        else if(ws.mgap_val < 0.0) {
+          // Band-pass Gaussian window (--band_pass): lambda_c = -mgap_val.
+          // w(mu)=exp(-mu^2/(2 lc^2)) is even and ->1 at mu=0, so the integer
+          // Q_ov is preserved while heavy modes roll off at the mobility edge lc.
+          double lc = -ws.mgap_val;
+          track_w[t] = std::exp(-(mu_n*mu_n) / (2.0*lc*lc));
+        }
         else {
           double mg = (ws.mgap_val == 0.0) ? m_gap_auto : ws.mgap_val;
           // Default: m_gap/|mu_n| (signed-index-faithful; the chirality chi_n^B
@@ -883,6 +938,10 @@ int main(int argc, char* argv[])
             chi_n = chi_n - eps_s * eps_slice;   // = +chi^B_doc for mode c
           }
           q_naive = q_naive + chi_n + (0.5 * sgn_lambda * lambda_0) * rho_n;
+          // Naive bulk estimator: q_B^naive = sum_n chi_n^B summed over ALL
+          // retained modes (zero modes + bulk), unweighted.  Same chi_n as
+          // q_naive's first sum.  See topo_charge.tex sec:qBnaive.
+          q_B_naive = q_B_naive + chi_n;
           // Direct bulk remainder: the same per-mode chirality density, but
           // accumulated only for the bulk modes (skip the n_topo smallest-|mu|
           // near-zero modes, identified above by |mu_n| -- robust to an
@@ -892,6 +951,16 @@ int main(int argc, char* argv[])
           bool mode_is_bulk = (c < (int)is_bulk.size()) ? (bool)is_bulk[c]
                                                         : (c >= n_topo);
           if(mode_is_bulk) B_bulk = B_bulk + chi_n;
+
+          // Per-mode spectral diagnostics (--per_mode_out): record this mode's
+          // eigenvalue and the integrated densities for tests 2 & 6.  chi_n is
+          // +chi_n^B (doc convention); rho_n is the scalar 4D density.
+          if(do_per_mode){
+            pm_mu.push_back(mu_n);
+            pm_chiI.push_back(real(TensorRemove(sum(chi_n))));
+            pm_rhoI.push_back(real(TensorRemove(sum(rho_n))));
+            pm_rho2.push_back(real(TensorRemove(sum(rho_n*rho_n))));
+          }
         }
 
         // Sigma_low: Banks-Casher Lorentzian-weighted scalar density.
@@ -993,6 +1062,28 @@ int main(int argc, char* argv[])
     std::cout << "Wrote B_bulk    -> " << fill_def(topo_out,"Bbulk")
               << "  intB=" << real(TensorRemove(sum(B_bulk)))
               << "  (n_topo=" << n_topo << ")" << std::endl;
+    writeFile(q_B_naive, fill_def(topo_out,"Bnaive"));
+    std::cout << "Wrote q_B_naive -> " << fill_def(topo_out,"Bnaive")
+              << "  Q=" << real(TensorRemove(sum(q_B_naive))) << std::endl;
+
+    // Per-mode spectral diagnostics (--per_mode_out): write mu_n, int chi_n^B,
+    // int rho_n, int rho_n^2, and IPR_n = V4 * int rho^2 / (int rho)^2 to a text
+    // file <topo_out:{def}->permode>.dat (one row per retained mode).
+    if(do_per_mode && !pm_mu.empty()){
+      double V4 = (double)grid->gSites();
+      std::string pmpath = fill_def(topo_out, "permode") + ".dat";
+      std::ofstream pmf(pmpath);
+      pmf << "# n  mu_n  int_chiB  int_rho  int_rho2  IPR\n";
+      for(size_t n = 0; n < pm_mu.size(); n++){
+        double ipr = (pm_rhoI[n] != 0.0)
+                   ? V4 * pm_rho2[n] / (pm_rhoI[n]*pm_rhoI[n]) : 0.0;
+        pmf << n << " " << pm_mu[n] << " " << pm_chiI[n] << " "
+            << pm_rhoI[n] << " " << pm_rho2[n] << " " << ipr << "\n";
+        std::cout << "PerMode: n=" << n << " mu=" << pm_mu[n]
+                  << " intChiB=" << pm_chiI[n] << " IPR=" << ipr << std::endl;
+      }
+      std::cout << "Wrote per-mode spectral data -> " << pmpath << std::endl;
+    }
   }
   /****** IP & Corr of each fermion TCD definition vs gluonic TCD (--topo_compare) *****/
   // Requires: --files2 + Ls (so q_eps/q_bdy/q_mid accumulate), have_evals (for weights),
@@ -1066,6 +1157,7 @@ int main(int argc, char* argv[])
     qdefs.push_back({"q_naive",   &q_naive});
     qdefs.push_back({"Sigma_low", &Sigma_low});
     qdefs.push_back({"B_bulk",    &B_bulk});
+    qdefs.push_back({"q_B_naive", &q_B_naive});
     for(auto& qd : qdefs){
       if(data_dir.empty()) *topo_log << "# " << qd.name << std::endl;
       for(int i=0; i<(int)data1.size(); i++){
@@ -1391,6 +1483,7 @@ int main(int argc, char* argv[])
       qdefs.push_back({"q_naive",   &q_naive});
       qdefs.push_back({"Sigma_low", &Sigma_low});
       qdefs.push_back({"B_bulk",    &B_bulk});
+      qdefs.push_back({"q_B_naive", &q_B_naive});
     }
 
     // Pre-load all comp files BEFORE printing the header so that LIME/IOobject
