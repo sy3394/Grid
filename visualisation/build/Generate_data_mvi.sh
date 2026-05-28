@@ -388,12 +388,20 @@ for i_conf in "${!CONFS[@]}"; do
             F2s=${F2%?}
 
             ### Gluonic TCD files at TD_tau = 0, 4, 16  (smr hardcoded: actual Frontier naming)
-            F1=""
+            ### Build the TD_tau label list in LOCKSTEP with the files that actually
+            ### exist and pass it as --td_taus below.  --td_taus is POSITIONAL, so a
+            ### missing file (e.g. no Top_dnsty_0 for conf 795) would otherwise
+            ### mislabel the survivors (Top_dnsty_4 tagged "0", Top_dnsty_16 tagged
+            ### "4").  Keeping F1 and TDL in step guarantees every PCF row carries
+            ### its true tau_WG.
+            F1=""; TDL=""
             for TD_tau in 0 4 16; do
                 f=${DATA_DIR_dnsty}/Top_dnsty_${TD_tau}_ckpoint_EODWF_lat_smr.${conf}
-                [[ -f $f ]] && F1+=$f, || echo "Warning: gluonic TCD not found: $f"
+                if [[ -f $f ]]; then F1+=$f,; TDL+=$TD_tau,;
+                else echo "Warning: gluonic TCD not found: $f"; fi
             done
             F1s=${F1%?}
+            TDLs=${TDL%?}
 
             ### qlat reference SCIDAC files (optional; requires comp_file data + ordered evecs)
             ### Conf-aware lookup: prefer topo_field_<idx>_<conf>.scidac so each
@@ -425,7 +433,7 @@ for i_conf in "${!CONFS[@]}"; do
                 FDE \
                     --grid $vol \
                     --files1 $F1s --topo_compare --conf_id $conf \
-                    --tau_wf $tau --td_taus 0,4,16 \
+                    --tau_wf $tau --td_taus ${TDLs:-0,4,16} \
                     --data_dir ${HMC_DIR}/data \
                     $comp_opt
             fi
@@ -471,7 +479,7 @@ for i_conf in "${!CONFS[@]}"; do
                 --files2 $F2s --Ls 48 $eval_opt $weights_opt \
                 --mass $MASS_EVEC --bc_mass $BC_MASS --n_topo $n_topo $smgap_opt \
                 --files1 $F1s --topo_compare --conf_id $conf \
-                --tau_wf $tau --td_taus 0,4,16 \
+                --tau_wf $tau --td_taus ${TDLs:-0,4,16} \
                 --data_dir ${HMC_DIR}/data \
                 $comp_opt $bk_opt $smr_opt $bp_opt
 
