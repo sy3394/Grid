@@ -325,9 +325,12 @@ dfiles+=( ${HMC}/data/bk_sweep.dat )
 >${HMC_DIR}/data/smear_sweep.dat
 dfiles+=( ${HMC}/data/smear_sweep.dat )
 
-# Optional flags for the new diagnostics — set these via env vars to enable.
-#   BK_SWEEP=1            -> pass --bk_sweep to FieldDensityEigen
-#   SMEAR_SWEEP="1,2,3"   -> pass --smear_sweep "<value>" (comma-separated)
+# Optional flags for the new diagnostics — controlled by env vars.
+#   BK_SWEEP (default 1)              -> pass --bk_sweep to FieldDensityEigen;
+#                                        set BK_SWEEP=0 to disable.
+#   SMEAR_SWEEP (default "0.5,1,1.5,2,3,5")
+#                                     -> pass --smear_sweep "<value>" (comma-sep);
+#                                        set SMEAR_SWEEP="" to disable.
 #   SIGNED_MGAP=1         -> pass --signed_mgap (LEGACY signed m_gap/mu_n weight,
 #                           sign-blind to Q; default is the |mu_n| weight). Use
 #                           only for cross-checks.
@@ -339,8 +342,8 @@ dfiles+=( ${HMC}/data/smear_sweep.dat )
 #   PER_MODE_OUT=1        -> pass --per_mode_out: write per-mode mu_n, int chi_n^B,
 #                           int rho_n, int rho_n^2, IPR_n to the Step-2 topo_out
 #                           prefix "...permode.dat" (mobility-edge / R5 tests).
-BK_SWEEP="${BK_SWEEP:-0}"
-SMEAR_SWEEP="${SMEAR_SWEEP:-}"
+BK_SWEEP="${BK_SWEEP:-1}"
+SMEAR_SWEEP="${SMEAR_SWEEP:-0.5,1,1.5,2,3,5}"
 SIGNED_MGAP="${SIGNED_MGAP:-0}"
 BAND_PASS="${BAND_PASS:-}"
 PER_MODE_OUT="${PER_MODE_OUT:-0}"
