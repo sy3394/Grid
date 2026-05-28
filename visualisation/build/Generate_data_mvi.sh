@@ -282,17 +282,27 @@ _q_defs_all="${_q_defs_all% }"   # trim trailing space
 
 # corr_ip_q_*.dat — per-(weight,definition) PCF/IP vs gluonic TCD at each TD_tau.
 # Format: comp_idx  conf  Corr  (one section per TD_tau, separated by labels)
-for q_def in $_q_defs_all q_naive Sigma_low; do
+# B_bulk and q_B_unit are the direct bulk remainder and the unit-weight bulk
+# estimator; FieldDensityEigen writes their corr_ip/comp_ref like the rest, so
+# truncate and register them here too (else they accumulate and miss the tarball).
+for q_def in $_q_defs_all q_naive Sigma_low B_bulk q_B_unit; do
     >${HMC_DIR}/data/corr_ip_${q_def}.dat
     dfiles+=( ${HMC}/data/corr_ip_${q_def}.dat )
 done
 
 # comp_ref_*.dat — per-(weight,definition) comparison vs qlat reference field(s).
 # Format: comp_idx  tau_wf  conf  Q_evec  Q_ref  Corr  IP  rms_diff
-for q_def in $_q_defs_all q_naive Sigma_low; do
+for q_def in $_q_defs_all q_naive Sigma_low B_bulk q_B_unit; do
     >${HMC_DIR}/data/comp_ref_${q_def}.dat
     dfiles+=( ${HMC}/data/comp_ref_${q_def}.dat )
 done
+
+# Band-pass (--band_pass) corr_ip/comp_ref files have dynamic names
+# (q_{A,B,C}_bp<lc>); clear any stale ones so the per-run append starts fresh.
+# They are globbed back into the tarball just before tar (see end of script).
+if [[ -n "$BAND_PASS" ]]; then
+    rm -f ${HMC_DIR}/data/corr_ip_q_*_bp*.dat ${HMC_DIR}/data/comp_ref_q_*_bp*.dat
+fi
 
 # corr_ip_stoch.dat — qlat stochastic field vs gluonic TCD at each TD_tau.
 # Format: comp_idx  TD_tau  tau_wf  conf  Q_ref  Q_gluon  Corr  IP
@@ -1077,6 +1087,21 @@ wait
 ########################################################################################################################
 ####################  §9  Archive to Lustre  ##########################################################################
 ########################################################################################################################
+
+# Register opt-in diagnostic outputs with dynamic names into the tarball.
+#   BAND_PASS: corr_ip_q_{A,B,C}_bp<lc>.dat / comp_ref_*  (PCF of the band-pass
+#              family members vs gluonic/qlat reference).
+#   PER_MODE_OUT: Top_dnsty_q_permode_<tau>_smr.<conf>.dat under eigen/<conf>/.
+if [[ -n "$BAND_PASS" ]]; then
+    for f in ${HMC_DIR}/data/corr_ip_q_*_bp*.dat ${HMC_DIR}/data/comp_ref_q_*_bp*.dat; do
+        [[ -f $f ]] && dfiles+=( ${HMC}/data/$(basename "$f") )
+    done
+fi
+if [[ "$PER_MODE_OUT" == "1" ]]; then
+    for f in ${HMC_DIR}/eigen/*/Top_dnsty_q_permode_*.dat; do
+        [[ -f $f ]] && dfiles+=( ${HMC}/eigen/$(basename "$(dirname "$f")")/$(basename "$f") )
+    done
+fi
 
 tar -cvf ${LDIR}/eigen_data.tar -C ${PDIR} ${dfiles[@]}
 

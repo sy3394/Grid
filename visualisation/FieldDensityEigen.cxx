@@ -657,15 +657,15 @@ int main(int argc, char* argv[])
   // approximation, so it carries NO topological pedestal (int B_bulk = 0 to
   // the +-lambda pairing accuracy).  Requires --n_topo = |Q|.
   LatticeComplexD B_bulk(grid);    B_bulk    = Zero();
-  // q_B^naive(x) = sum_{n=1}^{N_low} chi_n^B(x): the unit-weight bulk-grading
+  // q_B^unit(x) = sum_{n=1}^{N_low} chi_n^B(x): the unit-weight bulk-grading
   // sum over ALL retained modes (zero modes + bulk), no m_gap/|mu_n|
-  // suppression and no Banks-Casher term.  This is the "naive bulk estimator"
-  // discussed in topo_charge.tex §sec:qBnaive: same integral -> Q_ov as the
+  // suppression and no Banks-Casher term.  This is the "unit-weight bulk
+  // estimator" discussed in topo_charge.tex §sec:qBnaive: same integral -> Q_ov as the
   // gap-weighted q_B (zero mode contributes +-1, bulk pairs cancel via the
   // sum rule for any common weight), but the bulk-mode topological structure
   // (the I-Ibar pattern of the companion numerics) is preserved at full
   // amplitude rather than suppressed by m_gap/|mu_n|.  Mass-independent.
-  LatticeComplexD q_B_naive(grid); q_B_naive = Zero();
+  LatticeComplexD q_B_unit(grid); q_B_unit = Zero();
   if(compute_topo){
     q_eps_all.reserve(ntracks); q_bdy_all.reserve(ntracks); q_mid_all.reserve(ntracks);
     for(int t = 0; t < ntracks; t++){
@@ -941,7 +941,7 @@ int main(int argc, char* argv[])
           // Naive bulk estimator: q_B^naive = sum_n chi_n^B summed over ALL
           // retained modes (zero modes + bulk), unweighted.  Same chi_n as
           // q_naive's first sum.  See topo_charge.tex sec:qBnaive.
-          q_B_naive = q_B_naive + chi_n;
+          q_B_unit = q_B_unit + chi_n;
           // Direct bulk remainder: the same per-mode chirality density, but
           // accumulated only for the bulk modes (skip the n_topo smallest-|mu|
           // near-zero modes, identified above by |mu_n| -- robust to an
@@ -1062,9 +1062,9 @@ int main(int argc, char* argv[])
     std::cout << "Wrote B_bulk    -> " << fill_def(topo_out,"Bbulk")
               << "  intB=" << real(TensorRemove(sum(B_bulk)))
               << "  (n_topo=" << n_topo << ")" << std::endl;
-    writeFile(q_B_naive, fill_def(topo_out,"Bnaive"));
-    std::cout << "Wrote q_B_naive -> " << fill_def(topo_out,"Bnaive")
-              << "  Q=" << real(TensorRemove(sum(q_B_naive))) << std::endl;
+    writeFile(q_B_unit, fill_def(topo_out,"Bunit"));
+    std::cout << "Wrote q_B_unit -> " << fill_def(topo_out,"Bunit")
+              << "  Q=" << real(TensorRemove(sum(q_B_unit))) << std::endl;
 
     // Per-mode spectral diagnostics (--per_mode_out): write mu_n, int chi_n^B,
     // int rho_n, int rho_n^2, and IPR_n = V4 * int rho^2 / (int rho)^2 to a text
@@ -1157,7 +1157,7 @@ int main(int argc, char* argv[])
     qdefs.push_back({"q_naive",   &q_naive});
     qdefs.push_back({"Sigma_low", &Sigma_low});
     qdefs.push_back({"B_bulk",    &B_bulk});
-    qdefs.push_back({"q_B_naive", &q_B_naive});
+    qdefs.push_back({"q_B_unit", &q_B_unit});
     for(auto& qd : qdefs){
       if(data_dir.empty()) *topo_log << "# " << qd.name << std::endl;
       for(int i=0; i<(int)data1.size(); i++){
@@ -1483,7 +1483,7 @@ int main(int argc, char* argv[])
       qdefs.push_back({"q_naive",   &q_naive});
       qdefs.push_back({"Sigma_low", &Sigma_low});
       qdefs.push_back({"B_bulk",    &B_bulk});
-      qdefs.push_back({"q_B_naive", &q_B_naive});
+      qdefs.push_back({"q_B_unit", &q_B_unit});
     }
 
     // Pre-load all comp files BEFORE printing the header so that LIME/IOobject
