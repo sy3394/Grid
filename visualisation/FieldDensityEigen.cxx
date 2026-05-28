@@ -684,11 +684,13 @@ int main(int argc, char* argv[])
     else if(weight_specs[t].label == "mgap") mgap_idx = t;
   }
   // Bk-sweep enable flag.  Default OFF (extra memory + IO); enable with
-  // --bk_sweep on the command line.  When ON, the per-mode loop checkpoints
-  // q_naive_partial[k] and q_eps_all[mgap_idx]_partial[k] after each mode k
-  // so a post-loop block can compute B_k = q_naive_k - q_B^mgap_k and
-  // PCF/IP against each gluonic data1[i].  Memory cost: 2 * N_conv * V * 16B
-  // ~ 2 * 16 * 16 MB = 512 MB on a 32^4 lattice with N_conv=16.
+  // --bk_sweep on the command line.  When ON, the per-mode loop checkpoints the
+  // DIRECT cumulative bulk remainder B_bulk_k = sum_{bulk n<=k} chi_n^B (built
+  // straight from the eigenvectors) after each mode k, so a post-loop block can
+  // emit PCF/IP of B_k vs each gluonic data1[i] as a function of the mode cutoff.
+  // (Earlier this used the proxy B_k = q_naive_k - q_B^mgap_k; B is now the same
+  // direct field used everywhere else -- see B_bulk and sp_sum sec:Baxis_bk.)
+  // Memory cost: N_conv * V * 16B ~ 16 * 16 MB = 256 MB on 32^4 with N_conv=16.
   bool do_bk_sweep =  GridCmdOptionExists(argv,argv+argc,"--bk_sweep");
   // Per-mode spectral diagnostics.  Default OFF; enable with --per_mode_out.
   // When ON, the per-mode loop records, for each retained mode n:
@@ -699,8 +701,7 @@ int main(int argc, char* argv[])
   // locates the localization (mobility) edge for the --band_pass lambda_c.
   bool do_per_mode = GridCmdOptionExists(argv,argv+argc,"--per_mode_out");
   std::vector<double> pm_mu, pm_chiI, pm_rhoI, pm_rho2;
-  std::vector<LatticeComplexD> qnaive_partial;
-  std::vector<LatticeComplexD> qB_mgap_partial;
+  std::vector<LatticeComplexD> B_bulk_partial;   // cumulative direct B_bulk(k) for bk_sweep
 
   // Eigenvalues embedded inside each SCIDAC evec_density file (H_DWF_EvalRecord).
   // Populated during data2 loading; takes priority over --evals when available.
@@ -968,15 +969,14 @@ int main(int argc, char* argv[])
       }
 
       /****** Bk sweep checkpoint (sec:bk_sweep) ****************************/
-      // If --bk_sweep, snapshot q_naive and q_eps_all[mgap_idx] AFTER mode c
-      // has been added so a post-loop block can build B_k = q_naive_k -
-      // q_B^mgap_k and emit PCF/IP vs each gluonic data1[i].  We don't
-      // emit here because tau_wf/conf_id/get_td_tau are parsed later in main.
-      if(do_bk_sweep && mgap_idx >= 0){
-        qnaive_partial.emplace_back(grid);
-        qnaive_partial.back() = q_naive;
-        qB_mgap_partial.emplace_back(grid);
-        qB_mgap_partial.back() = q_eps_all[mgap_idx];
+      // If --bk_sweep, snapshot the running DIRECT bulk remainder B_bulk AFTER
+      // mode c has been added (B_bulk already accumulates sum_{bulk n<=c} chi_n^B
+      // straight from the eigenvectors).  A post-loop block emits PCF/IP of
+      // B_k = B_bulk(k) vs each gluonic data1[i].  We don't emit here because
+      // tau_wf/conf_id/get_td_tau are parsed later in main.
+      if(do_bk_sweep){
+        B_bulk_partial.emplace_back(grid);
+        B_bulk_partial.back() = B_bulk;
       }
       /**********************************************************************/
 
@@ -1198,9 +1198,12 @@ int main(int argc, char* argv[])
       else if(weight_specs[t].label == "mgap") mgap_idx = t;
     }
     if(sign_idx >= 0 && mgap_idx >= 0){
-      // B(x) = q_naive(x) - q_B^sign(x) per the eq:Btrunc operational definition
+      // B(x) = B_bulk(x) = sum_{n in bulk} chi_n^B, the DIRECT bulk remainder
+      // (eq:Btrunc) built straight from the eigenvectors -- NOT the old proxy
+      // q_naive - q_B^sign.  Direct B_bulk has int B = 0 to machine precision,
+      // so int q_mix = int q_B^mgap = Q_top holds exactly for every alpha.
       LatticeComplexD B_field(grid);
-      B_field = q_naive - q_eps_all[sign_idx];
+      B_field = B_bulk;
       // Alpha grid (default; --alpha_sweep "0,0.1,..." overrides)
       std::vector<double> alphas = {0.0, 0.1, 0.2, 0.3, 0.5, 0.7, 1.0, 1.5, 2.0};
       if(GridCmdOptionExists(argv,argv+argc,"--alpha_sweep")){
@@ -1244,17 +1247,17 @@ int main(int argc, char* argv[])
 
     /****** Bk sweep emission (sec:bk_sweep) ********************************/
     // Cumulative spectral sum: how concentrated in the lowest modes is the
-    // chirality structure of B?  Use partial sums saved during the per-mode
-    // loop to compute B_k = q_naive_k - q_B^mgap_k and PCF/IP vs q_gluon at
-    // each TD_tau, for each k = 1..N_conv.
+    // chirality structure of B?  Use the direct cumulative bulk remainder
+    // B_k = B_bulk(k) = sum_{bulk n<=k} chi_n^B saved during the per-mode loop,
+    // and emit PCF/IP vs q_gluon at each TD_tau, for each k = 1..N_conv.
     // Output schema (bk_sweep.dat):  k tau_wf TD_tau conf Corr IP
-    if(do_bk_sweep && !qnaive_partial.empty() && !data1.empty()){
+    if(do_bk_sweep && !B_bulk_partial.empty() && !data1.empty()){
       LatticeComplexD oneL(grid); oneL = ComplexD(1.0, 0.0);
-      int nk = (int)qnaive_partial.size();
+      int nk = (int)B_bulk_partial.size();
       std::cout << GridLogMessage << "Bk sweep: " << nk << " modes" << std::endl;
       for(int k = 0; k < nk; k++){
         LatticeComplexD B_k(grid);
-        B_k = qnaive_partial[k] - qB_mgap_partial[k];
+        B_k = B_bulk_partial[k];
         for(int i = 0; i < (int)data1.size(); i++){
           ComplexD avg1 = TensorRemove(sum(data1[i])) / RealD(grid->gSites());
           ComplexD avgB = TensorRemove(sum(B_k))      / RealD(grid->gSites());
@@ -1283,8 +1286,7 @@ int main(int argc, char* argv[])
         }
       }
       // Free partial-sum memory now that PCFs are written
-      qnaive_partial.clear();   qnaive_partial.shrink_to_fit();
-      qB_mgap_partial.clear();  qB_mgap_partial.shrink_to_fit();
+      B_bulk_partial.clear();   B_bulk_partial.shrink_to_fit();
     }
 
     /****** Sigma sweep: density-level Gaussian smearing (sec:smear_sweep) ***/

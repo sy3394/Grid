@@ -355,8 +355,8 @@ dfiles+=( ${HMC}/data/smear_sweep.dat )
 BK_SWEEP="${BK_SWEEP:-1}"
 SMEAR_SWEEP="${SMEAR_SWEEP:-0.5,1,1.5,2,3,5}"
 SIGNED_MGAP="${SIGNED_MGAP:-0}"
-BAND_PASS="${BAND_PASS:-}"
-PER_MODE_OUT="${PER_MODE_OUT:-0}"
+BAND_PASS="${BAND_PASS:-0.05,0.1,0.2}"   # default ON; set BAND_PASS="" to disable
+PER_MODE_OUT="${PER_MODE_OUT:-1}"        # default ON; set PER_MODE_OUT=0 to disable
 bk_opt=""
 smr_opt=""
 smgap_opt=""
