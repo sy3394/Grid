@@ -331,15 +331,29 @@ dfiles+=( ${HMC}/data/smear_sweep.dat )
 #   SIGNED_MGAP=1         -> pass --signed_mgap (LEGACY signed m_gap/mu_n weight,
 #                           sign-blind to Q; default is the |mu_n| weight). Use
 #                           only for cross-checks.
+#   BAND_PASS="0.05,0.1,0.2" -> pass --band_pass "<lc,...>": add Gaussian even-window
+#                           weight tracks w(mu)=exp(-mu^2/2 lc^2), one per lambda_c.
+#                           Integer-exact members of the bulk-estimator family; add
+#                           q_{A,B,C}_bp<lc> rows to the corr_ip PCF output (Step 1)
+#                           and SCIDAC density fields (Step 2).  Empty = off.
+#   PER_MODE_OUT=1        -> pass --per_mode_out: write per-mode mu_n, int chi_n^B,
+#                           int rho_n, int rho_n^2, IPR_n to the Step-2 topo_out
+#                           prefix "...permode.dat" (mobility-edge / R5 tests).
 BK_SWEEP="${BK_SWEEP:-0}"
 SMEAR_SWEEP="${SMEAR_SWEEP:-}"
 SIGNED_MGAP="${SIGNED_MGAP:-0}"
+BAND_PASS="${BAND_PASS:-}"
+PER_MODE_OUT="${PER_MODE_OUT:-0}"
 bk_opt=""
 smr_opt=""
 smgap_opt=""
+bp_opt=""
+pm_opt=""
 [[ "$BK_SWEEP" == "1" ]] && bk_opt="--bk_sweep"
 [[ -n "$SMEAR_SWEEP" ]] && smr_opt="--smear_sweep $SMEAR_SWEEP"
 [[ "$SIGNED_MGAP" == "1" ]] && smgap_opt="--signed_mgap"
+[[ -n "$BAND_PASS" ]] && bp_opt="--band_pass $BAND_PASS"
+[[ "$PER_MODE_OUT" == "1" ]] && pm_opt="--per_mode_out"
 
 for i_conf in "${!CONFS[@]}"; do
     conf=${CONFS[$i_conf]}
@@ -446,7 +460,7 @@ for i_conf in "${!CONFS[@]}"; do
                 --files1 $F1s --topo_compare --conf_id $conf \
                 --tau_wf $tau --td_taus 0,4,16 \
                 --data_dir ${HMC_DIR}/data \
-                $comp_opt $bk_opt $smr_opt
+                $comp_opt $bk_opt $smr_opt $bp_opt
 
             ### Step 2: write topo density SCIDAC fields — binary LIME output.
             ### Redirected to a dedicated per-conf/tau log to keep log_G clean.
@@ -456,6 +470,7 @@ for i_conf in "${!CONFS[@]}"; do
                 --files2 $F2s --Ls 48 $eval_opt $weights_opt \
                 --mass $MASS_EVEC --bc_mass $BC_MASS --n_topo $n_topo $smgap_opt \
                 --topo_out ${DATA_DIR_topo}/Top_dnsty_q_{def}_${tau}_smr.${conf} \
+                $bp_opt $pm_opt \
                 > $topo_write_log 2>&1
 
             # NOTE: the topo-density SCIDAC fields (q_{A,B,C}_{sign,mgap},
