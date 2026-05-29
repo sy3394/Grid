@@ -1395,6 +1395,8 @@ int main(int argc, char* argv[])
     }
     fqd.push_back({"q_naive",   &q_naive});
     fqd.push_back({"Sigma_low", &Sigma_low});
+    fqd.push_back({"q_B_unit",  &q_B_unit});
+    fqd.push_back({"B_bulk",    &B_bulk});
     int nd = (int)fqd.size();
     LatticeComplexD one(grid); one = ComplexField::scalar_type(1.0, 0.0);
 
