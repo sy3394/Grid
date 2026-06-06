@@ -35,6 +35,29 @@ Wilson Dirac Operator* (2026).
 A real `sigma` keeps `(D_W - sigma)` gamma5-Hermitian, so the conjugate-pair
 structure and the block recurrence are preserved.
 
+## Verification & diagnostics
+
+- `--check`: verify each eigenpair against the RAW operator,
+  `||D_W u - lambda u|| / ||u||`, and use that raw residual as the acceptance
+  filter. This is essential in shift-invert: near-`sigma` "ghost" Ritz values
+  can have a deceptively small Lanczos (theta-space) residual but a large raw
+  residual; `--check` rejects them.
+- `--dense`: exact dense diagonalisation of `D_W` (small lattices only) as a
+  reference; writes all `N = 12*Volume` eigenvalues to `<out>.dense`.
+- Performance counters (printed in shift-invert mode): number of inverter
+  solves and total inner CG iterations, quoted against a single common
+  Wilson-inverter solve (the baseline).
+
+## Test configurations
+
+- `--cold`            : free field (analytic spectrum).
+- `--weak eps`        : slight perturbation of the free field,
+  `U_mu = exp(i eps * random algebra)` -- a non-trivial INTERACTING background
+  whose spectrum sits near (but shifted from) the free one. Good middle ground:
+  a fully random (HOT) config has a dense, unseparated spectrum that converges
+  poorly; a weak field keeps modes separated while breaking the free degeneracy.
+- `--config PATH`     : a NERSC gauge configuration.
+
 ## Build (already-built Grid tree)
 
 The example `#include`s the header directly, so no edit to `Algorithms.h` is
