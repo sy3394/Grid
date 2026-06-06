@@ -25,9 +25,6 @@
 # 4 nodes x 8 GCDs = 32 ranks; 32^4 with --mpi 2.2.2.4.
 # ---------------------------------------------------------------------------
 
-CPU_BIND="map_ldom:3,3,1,1,0,0,2,2"
-MEM_BIND="map_mem:3,3,1,1,0,0,2,2"
-
 cat << EOF > ./select_gpu
 #!/bin/bash
 export GPU_MAP=(0 1 2 3 4 5 6 7)
@@ -67,7 +64,10 @@ DEDUPE=1e-5           # merge modes within this distance in C
 STOL=1e-8             # inner normal-equations CG tolerance
 SITER=20000           # inner CG max iterations
 
-srun --cpu-bind=${CPU_BIND} --mem-bind=${MEM_BIND} ./select_gpu ${EXE} \
+# NUMA/CPU binding is handled by numactl inside select_gpu; do NOT pass
+# --cpu-bind=map_ldom to srun (Frontier rejects it unless whole-node, and it
+# conflicts with the numactl binding).
+srun ./select_gpu ${EXE} \
     --grid 32.32.32.32 --mpi 2.2.2.4 \
     --accelerator-threads 8 --comms-overlap --shm 4096 --shm-mpi 0 \
     --config ${CONFIG} --mass ${MASS} \

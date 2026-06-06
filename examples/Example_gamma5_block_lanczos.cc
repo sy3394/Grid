@@ -68,12 +68,17 @@ class ShiftInvertNE : public LinearOperatorBase<Field> {
   MdagMLinearOperator<Matrix,Field> MdagM_;
   ConjugateGradient<Field>&         cg_;
 public:
+  // cost counters: each Op() is one "inverter solve"; nCG accumulates CG iterations
+  long nOp = 0;
+  long nCG = 0;
   ShiftInvertNE(Matrix& D, ConjugateGradient<Field>& cg) : D_(D), MdagM_(D), cg_(cg) {}
   void Op(const Field& in, Field& out) {
     Field Mdagb(in.Grid());
     D_.Mdag(in, Mdagb);          // D^dag b
     out = Zero();
     cg_(MdagM_, Mdagb, out);     // (D^dag D)^{-1} D^dag b = D^{-1} b
+    nOp++;
+    nCG += cg_.IterationsToComplete;
   }
   void AdjOp(const Field& in, Field& out)                            { assert(0); }
   void OpDiag(const Field& in, Field& out)                           { assert(0); }
@@ -82,6 +87,48 @@ public:
   void HermOp(const Field& in, Field& out)                           { assert(0); }
   void HermOpAndNorm(const Field& in, Field& out, RealD& a, RealD& b){ assert(0); }
 };
+
+// ---- exact dense diagonalisation of D_W (small lattices only) ----
+// Builds the full N x N matrix (N = 12*Volume) by applying the operator to each
+// unit basis vector, then diagonalises with Eigen.  Reference for validation on
+// an interacting background where no analytic spectrum exists.
+template<class Field>
+static void denseDiag(LinearOperatorBase<Field>& Op, GridCartesian* grid,
+                      const std::string& fname, const std::string& tag) {
+  int V = 1; for (int d = 0; d < Nd; d++) V *= grid->FullDimensions()[d];
+  int N = Ns * Nc * V;
+  std::cout << GridLogMessage << "denseDiag: building " << N << " x " << N
+            << " matrix (" << N << " matvecs)..." << std::endl;
+  Eigen::MatrixXcd M(N, N);
+  Field ek(grid), Dek(grid);
+  typedef typename Field::scalar_object sobj;
+  std::vector<sobj> col;                    // V entries, lexicographic order
+  for (int k = 0; k < N; k++) {
+    int site = k / (Ns*Nc), sc = k % (Ns*Nc), s = sc / Nc, c = sc % Nc;
+    Coordinate coor(Nd); Lexicographic::CoorFromIndex(coor, site, grid->FullDimensions());
+    ek = Zero();
+    sobj o; o = Zero(); o()(s)(c) = Complex(1.0, 0.0);
+    pokeSite(o, ek, coor);
+    Op.Op(ek, Dek);                         // column k of D_W
+    unvectorizeToLexOrdArray(col, Dek);     // bulk read of the whole column
+    for (int j = 0; j < V; j++)
+      for (int sj = 0; sj < Ns; sj++)
+        for (int cc = 0; cc < Nc; cc++)
+          M(j*(Ns*Nc) + sj*Nc + cc, k) = static_cast<std::complex<double>>(col[j]()(sj)(cc));
+    if ((k % 512) == 0)
+      std::cout << GridLogMessage << "denseDiag: column " << k << "/" << N << std::endl;
+  }
+  Eigen::ComplexEigenSolver<Eigen::MatrixXcd> es(M, false);
+  Eigen::VectorXcd lam = es.eigenvalues();
+  std::vector<std::complex<double>> v(lam.data(), lam.data() + lam.size());
+  std::sort(v.begin(), v.end(), [](auto a, auto b){
+    return std::abs(a.imag()) < std::abs(b.imag()); });
+  std::ofstream f(fname); f << std::setprecision(10);
+  for (auto& z : v) f << tag << "  " << z.real() << "  " << z.imag() << "\n";
+  f.close();
+  std::cout << GridLogMessage << "denseDiag: " << N << " exact eigenvalues written to "
+            << fname << std::endl;
+}
 
 // ---- command-line helpers ----
 static std::string getOpt(int argc, char** argv, const std::string& key,
@@ -144,6 +191,7 @@ int main(int argc, char** argv) {
   bool reorth  = !hasOpt(argc, argv, "--noreorth");
   bool isoOnly = hasOpt(argc, argv, "--isolation-only");
   bool cold    = hasOpt(argc, argv, "--cold");
+  bool check   = hasOpt(argc, argv, "--check");   // verify each eigenpair against raw D_W
 
   // shift list: --shift-sweep lo:hi:n  (sweep)  |  --shift sigma  (single)  |  none (direct)
   std::vector<double> sigmas;
@@ -178,11 +226,22 @@ int main(int argc, char** argv) {
   std::cout << GridLogMessage << "=====================================================" << std::endl;
 
   // ---- gauge ----
+  double weak = hasOpt(argc, argv, "--weak") ? std::stod(getOpt(argc, argv, "--weak", "0.1")) : 0.0;
   LatticeGaugeField  UmuD(UGridD);
   LatticeGaugeFieldF Umu(UGrid);
   if (cold) {
     std::cout << GridLogMessage << "COLD (unit) gauge: free Wilson operator." << std::endl;
     SU<Nc>::ColdConfiguration(UmuD);
+  } else if (weak > 0.0) {
+    std::cout << GridLogMessage << "WEAK gauge: U_mu = exp(i * " << weak
+              << " * random algebra) -- slight perturbation of the free field."
+              << std::endl;
+    GridParallelRNG pRNG(UGridD); pRNG.SeedFixedIntegers({1,2,3,4});
+    LatticeColourMatrix Ulink(UGridD);
+    for (int mu = 0; mu < Nd; mu++) {
+      SU<Nc>::LieRandomize(pRNG, Ulink, weak);
+      PokeIndex<LorentzIndex>(UmuD, Ulink, mu);
+    }
   } else if (cfg.empty()) {
     std::cout << GridLogMessage << "HOT random gauge (smoke test only)." << std::endl;
     GridParallelRNG pRNG(UGridD); pRNG.SeedFixedIntegers({1,2,3,4});
@@ -204,6 +263,13 @@ int main(int argc, char** argv) {
   GridParallelRNG RNG(UGrid); RNG.SeedFixedIntegers({5,6,7,8});
   FermionField v0(UGrid), v1(UGrid);
   random(RNG, v0); random(RNG, v1);
+
+  // exact dense reference (small lattices): writes ALL D_W eigenvalues
+  if (hasOpt(argc, argv, "--dense")) {
+    WilsonOp Dwd(Umu, *UGrid, *UrbGrid, mass, wpar);
+    NonHermitianLinearOperator<WilsonOp, FermionField> Ld(Dwd);
+    denseDiag(Ld, UGrid, out + ".dense", tag);
+  }
 
   // ================= DIRECT mode =================
   if (!shiftMode) {
@@ -228,15 +294,41 @@ int main(int argc, char** argv) {
     if (!isoOnly) {
       std::cout << GridLogMessage << "\n--- THICK RESTART ---" << std::endl;
       Gamma5BlockLanczos<FermionField> g(DLinOp, UGrid, gamma5, tol, 1);
+      GridStopWatch sw; sw.Start();
       g.thickRestart(v0, v1, cycles, steps, wanted, reorth, G5SortAbsImagAscending);
+      sw.Stop();
       collect(g, out);
+      std::cout << GridLogMessage << "DIRECT thick-restart solve time: "
+                << sw.useconds()*1e-6 << " s" << std::endl;
     }
     std::cout << GridLogMessage << "Done." << std::endl;
     Grid_finalize(); return 0;
   }
 
   // ================= SHIFT-INVERT (single or sweep) =================
+  // Direct operator D_W(mass), for the optional raw-operator eigenpair check.
+  WilsonOp Dw_direct(Umu, *UGrid, *UrbGrid, mass, wpar);
+  NonHermitianLinearOperator<WilsonOp, FermionField> DLinDirect(Dw_direct);
+
+  // --- common-inverter baseline: one standard Wilson solve D_W(mass) x = b ---
+  // (normal-equations CG on D^dag D, the usual robust Wilson inverter) so the
+  // eigensolve cost can be quoted in units of a "common inverter" solve.
+  long baseCG = 0;
+  {
+    MdagMLinearOperator<WilsonOp, FermionField> MdagM(Dw_direct);
+    ConjugateGradient<FermionField> cgb(stol, siter, false);
+    FermionField b(UGrid), Mdb(UGrid), x(UGrid);
+    b = v0; Dw_direct.Mdag(b, Mdb); x = Zero();
+    GridStopWatch sw; sw.Start(); cgb(MdagM, Mdb, x); sw.Stop();
+    baseCG = cgb.IterationsToComplete;
+    std::cout << GridLogMessage << "[baseline] one common inverter solve D_W(m="
+              << mass << ") x=b : " << baseCG << " CG iters, "
+              << sw.useconds()*1e-6 << " s" << std::endl;
+  }
+
   std::vector<EvalRes> collected;
+  double tSolve = 0.0;
+  long totOp = 0, totCG = 0;
   for (size_t is = 0; is < sigmas.size(); is++) {
     double sg = sigmas[is];
     std::cout << GridLogMessage << "\n--- SHIFT-INVERT sigma=" << sg
@@ -248,21 +340,50 @@ int main(int argc, char** argv) {
     ShiftInvertNE<WilsonOp, FermionField> SIop(Dshift, cg);
     Gamma5BlockLanczos<FermionField> g(SIop, UGrid, gamma5, tol, 1);
 
+    GridStopWatch sw; sw.Start();
     if (isoOnly) g(v0, v1, steps, reorth, G5SortAbsDescending);
     else         g.thickRestart(v0, v1, cycles, steps, wanted, reorth, G5SortAbsDescending);
+    sw.Stop();
+    tSolve += sw.useconds()*1e-6;
 
     const auto& ev = g.getEvals(); const auto& rs = g.getResiduals();
+    const auto& uv = g.getEvecs();
     int nconv = 0;
+    FermionField w(UGrid);
     for (int i = 0; i < (int)ev.size(); i++) {
-      if (rs[i] >= accept) continue;                 // keep only converged windows modes
       std::complex<double> lam = sg + 1.0/ev(i);     // map back to D_W eigenvalue
-      addDedup(collected, lam, rs[i], dedupe);
+      double resAccept = rs[i];                       // default: Lanczos theta-residual
+      // raw-operator residual ||D_W u - lambda u||/||u|| -- the honest convergence
+      // measure (rejects shift-invert ghosts whose theta-residual looks small).
+      if (check && i < (int)uv.size()) {
+        DLinDirect.Op(uv[i], w);
+        ComplexF lamf((float)lam.real(), (float)lam.imag());
+        w = w - uv[i] * lamf;
+        resAccept = std::sqrt(norm2(w) / norm2(uv[i]));   // use RAW residual to accept
+      }
+      if (resAccept >= accept) continue;
+      addDedup(collected, lam, resAccept, dedupe);
       nconv++;
     }
+    totOp += SIop.nOp; totCG += SIop.nCG;
     std::cout << GridLogMessage << "   sigma=" << sg << ": " << nconv
-              << " converged modes (res<" << accept << "); running total "
-              << collected.size() << std::endl;
+              << " converged modes (res<" << accept << ")"
+              << "   [outer " << (isoOnly?steps:steps*cycles) << " Lanczos steps, "
+              << SIop.nOp << " inverter solves, " << SIop.nCG << " CG iters, "
+              << sw.useconds()*1e-6 << " s]   running total " << collected.size() << std::endl;
   }
+  // --- performance summary, quoted against the common inverter ---
+  std::cout << GridLogMessage << "\n=== performance (shift-invert) ===" << std::endl;
+  std::cout << GridLogMessage << "  shifts            : " << sigmas.size() << std::endl;
+  std::cout << GridLogMessage << "  inverter solves   : " << totOp
+            << "   (each ~ one common inverter solve)" << std::endl;
+  std::cout << GridLogMessage << "  total CG iters    : " << totCG
+            << "   (baseline 1 inverter = " << baseCG << " iters)" << std::endl;
+  std::cout << GridLogMessage << "  ~inverter-equiv   : " << (baseCG>0 ? (double)totCG/baseCG : 0.0)
+            << " common-inverter solves" << std::endl;
+  std::cout << GridLogMessage << "  collected modes   : " << collected.size() << std::endl;
+  std::cout << GridLogMessage << "  total solve time  : " << tSolve << " s"
+            << "   (" << (collected.size()? tSolve/collected.size():0.0) << " s/mode)" << std::endl;
 
   std::cout << GridLogMessage << "\n=== collected " << collected.size()
             << " distinct converged D_W eigenvalues ===" << std::endl;
