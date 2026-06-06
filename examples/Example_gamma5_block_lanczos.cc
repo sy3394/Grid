@@ -192,6 +192,7 @@ int main(int argc, char** argv) {
   bool isoOnly = hasOpt(argc, argv, "--isolation-only");
   bool cold    = hasOpt(argc, argv, "--cold");
   bool check   = hasOpt(argc, argv, "--check");   // verify each eigenpair against raw D_W
+  RealD degen  = std::stod(getOpt(argc, argv, "--degen", "-1")); // override breakdown threshold
 
   // shift list: --shift-sweep lo:hi:n  (sweep)  |  --shift sigma  (single)  |  none (direct)
   std::vector<double> sigmas;
@@ -290,10 +291,12 @@ int main(int argc, char** argv) {
 
     std::cout << GridLogMessage << "\n--- ISOLATION TEST (single pass) ---" << std::endl;
     { Gamma5BlockLanczos<FermionField> g(DLinOp, UGrid, gamma5, tol, 1);
+      if (degen>0) g.setDegenRel(degen);
       g(v0, v1, steps, reorth, G5SortAbsImagAscending); collect(g, out + ".iso"); }
     if (!isoOnly) {
       std::cout << GridLogMessage << "\n--- THICK RESTART ---" << std::endl;
       Gamma5BlockLanczos<FermionField> g(DLinOp, UGrid, gamma5, tol, 1);
+      if (degen>0) g.setDegenRel(degen);
       GridStopWatch sw; sw.Start();
       g.thickRestart(v0, v1, cycles, steps, wanted, reorth, G5SortAbsImagAscending);
       sw.Stop();
@@ -339,6 +342,7 @@ int main(int argc, char** argv) {
     ConjugateGradient<FermionField> cg(stol, siter, /*err_on_no_conv=*/false);
     ShiftInvertNE<WilsonOp, FermionField> SIop(Dshift, cg);
     Gamma5BlockLanczos<FermionField> g(SIop, UGrid, gamma5, tol, 1);
+    if (degen>0) g.setDegenRel(degen);
 
     GridStopWatch sw; sw.Start();
     if (isoOnly) g(v0, v1, steps, reorth, G5SortAbsDescending);

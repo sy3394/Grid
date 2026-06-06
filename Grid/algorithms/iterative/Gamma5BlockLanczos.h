@@ -9,24 +9,19 @@
     Reference: S. Yamamoto, "gamma5-Block Krylov (Block Lanczos) Methods for the
     Wilson Dirac Operator" (2026).
 
-    D_W satisfies D_W^dag = g5 D_W g5, so it is self-adjoint in the indefinite
-    gamma5-inner product (u,v) = u^dag g5 v.  Block size s = 2.  The three-term
-    block recurrence
+    D_W is self-adjoint in the indefinite gamma5-inner product (u,v) = u^dag g5 v.
+    The block recurrence
 
         Q_{k+1} B_{k+1} = D_W Q_k - Q_k A_k - Q_{k-1} C_k,   Q_0 = 0,
 
     builds a block-tridiagonal projected matrix T_m whose eigenvalues approximate
     eigenvalues of D_W directly (NOT those of H_W = g5 D_W).
 
-    This file provides:
-      operator()  : single non-restarted pass (the "isolation test" path).
-      thickRestart: gamma5-metric thick restart with paired locking, which avoids
-                    the noise-normalisation singularity and doubler re-amplification
-                    that wreck explicit restart (see reference, Sec. 9 / App. B).
-
-    Verified inner kernel (lanczosStep / computeRitzPairs / Gram helpers) follows
-    the reference equations directly.  All diagnostic printing is gated by a
-    verbosity level and kept minimal.
+    Block sizes are VARIABLE: nominally 2 (a chiral pair), but a serious breakdown
+    (a non-zero gamma5-neutral residual direction) triggers LOOK-AHEAD -- the
+    residual block is augmented with D_W applied to the neutral direction, which
+    generically escapes the neutral cone, restoring a non-degenerate gamma5-Gram.
+    The block then grows; T_m remains block-tridiagonal with variable block sizes.
 
 *************************************************************************************/
 #ifndef GRID_GAMMA5_BLOCK_LANCZOS_H
@@ -39,11 +34,10 @@
 
 NAMESPACE_BEGIN(Grid);
 
-// Ritz selection criterion for sorting the 2m eigenvalues of T_m.
 enum Gamma5RitzSort {
-  G5SortAbsImagAscending,  // |Im(lambda)| ascending  (near-real-axis / physical modes first)
+  G5SortAbsImagAscending,  // |Im(lambda)| ascending  (near-real-axis modes first)
   G5SortAbsAscending,      // |lambda|     ascending  (smallest magnitude first)
-  G5SortAbsDescending,     // |lambda|     descending (largest magnitude first; shift-invert)
+  G5SortAbsDescending,     // |lambda|     descending (shift-invert: nearest sigma)
   G5SortRealAscending      // Re(lambda)   ascending
 };
 
@@ -64,288 +58,292 @@ private:
   RealD                      tol_;
   int                        verbose_;
 
-  // Per-step 2x2 coefficient blocks.  Storage index k = paper step (k+1):
-  //   A_blk[k] = A_{k+1},  B_blk[k] = B_{k+2},  C_blk[k] = C_{k+1},  G_blk[k] = G_{k+1}.
-  std::vector<CMat2> A_blk, B_blk, C_blk, G_blk;
+  // Variable-size coefficient blocks: A_[k] (s_k x s_k), B_[k] (s_{k+1} x s_k),
+  // C_[k] (s_{k-1} x s_k), G_[k] (s_k x s_k = signature).  s_k = Q_[k].size().
+  std::vector<CMat> A_, B_, C_, G_;
 
-  // Krylov basis: basis_[2k], basis_[2k+1] are the two columns of Q_{k+1}.
-  std::vector<Field> basis_;
+  // Krylov basis: Q_[k] is the list of columns of block k.
+  std::vector<std::vector<Field>> Q_;
   int nSteps_;
 
-  // Locked (converged / retained) 2-D blocks for thick restart / deflation.
-  // Each locked block is a gamma5-non-degenerate 2-space (a conjugate pair).
+  // Locked (converged) 2-D blocks for thick restart / deflation.
   std::vector<Field> lockV_;     // 2 columns per locked block, concatenated
-  std::vector<CMat2> lockG_;     // gamma5-Gram of each locked block (2x2, invertible)
+  std::vector<CMat2> lockG_;     // gamma5-Gram of each locked block (2x2)
   std::vector<Cd>    lockEval_;  // 2 Ritz values per locked block
 
-  // Output (sorted)
   CVec               evals_;
   std::vector<Field> evecs_;
   std::vector<RealD> residuals_;
 
-  // Accept either ComplexD or ComplexF (Grid innerProduct precision depends on Field).
+  long lookaheadCount_ = 0;      // diagnostic: number of look-ahead expansions used
+
   template<class C> static inline Cd toStd(const C& z) {
     return Cd((double)real(z), (double)imag(z));
   }
+
+  // relative threshold for a "degenerate / neutral" gamma5-Gram eigenvalue.
+  // Set ~ sqrt(machine eps) of the working precision; the example runs single
+  // precision (eps ~ 1e-7), so 1e-6 is a safe, precision-aware floor that is
+  // also conservative for a double build.  Configurable via setDegenRel().
+  RealD degenRel_ = 1e-6;
+  RealD degenRel() const { return degenRel_; }
 
 public:
   Gamma5BlockLanczos(LinearOperatorBase<Field>& op, GridBase* grid,
                      Gamma5Func g5, RealD tol = 1e-8, int verbose = 1)
     : Linop_(op), Grid_(grid), g5_(g5), tol_(tol), verbose_(verbose), nSteps_(0) {}
 
-  const CVec&               getEvals()     const { return evals_;     }
-  const std::vector<Field>& getEvecs()     const { return evecs_;     }
-  const std::vector<RealD>& getResiduals() const { return residuals_; }
-  int                       getNumLocked() const { return (int)lockG_.size(); }
+  const CVec&               getEvals()      const { return evals_;     }
+  const std::vector<Field>& getEvecs()      const { return evecs_;     }
+  const std::vector<RealD>& getResiduals()  const { return residuals_; }
+  int                       getNumLocked()  const { return (int)lockG_.size(); }
+  long                      getLookaheads() const { return lookaheadCount_; }
+  void                      setDegenRel(RealD r)   { degenRel_ = r; }
 
   void log(const std::string& s) const {
     if (verbose_ > 0) std::cout << GridLogMessage << "[g5BL] " << s << std::endl;
   }
 
-  // ------------------------------------------------------------------
-  // Single non-restarted pass.  This is the ISOLATION TEST path: the
-  // verified inner kernel, no restart logic.  Builds up to maxSteps blocks
-  // from the starting block Q_1 = [v0', v1'] (gamma5-Gram-Schmidt of v0,v1),
-  // then extracts 2*nSteps Ritz pairs.
-  // ------------------------------------------------------------------
+  // ---------------- single non-restarted pass (isolation test) ----------------
   void operator()(const Field& v0, const Field& v1, int maxSteps,
                   bool reorthog = false, Gamma5RitzSort sort = G5SortAbsImagAscending)
   {
     reset();
     if (!initStartBlock(v0, v1)) return;
-
     for (int step = 0; step < maxSteps; step++) {
-      bool ok = lanczosStep(step, reorthog, /*deflate=*/false);
-      if (!ok) break;
+      if (!lanczosStep(step, reorthog, /*deflate=*/false)) break;
       nSteps_ = step + 1;
-      RealD beta = B_blk[step].norm();
-      if (verbose_ > 1)
-        log("step " + std::to_string(step) + "  ||B|| = " + std::to_string(beta));
-      if (beta < tol_) { log("beta < tol; stopping at step " + std::to_string(step)); break; }
+      if (B_[step].norm() < tol_) { log("beta<tol; stop at step "+std::to_string(step)); break; }
     }
     if (nSteps_ == 0) return;
     computeRitzPairs(nSteps_, sort);
   }
 
-  // ------------------------------------------------------------------
-  // gamma5-metric thick restart.
-  //
-  // Each cycle runs `cycleSteps` block-Lanczos steps (deflated against the
-  // locked blocks), extracts Ritz pairs, and LOCKS converged conjugate pairs.
-  // The next cycle restarts from the live spillover block Q_{m+1} (NOT from a
-  // sum of Ritz vectors), gamma5-deflated against the locked space.  This
-  // preserves the implicit polynomial filter, never applies raw D_W to a
-  // converged Ritz vector, and never divides by a near-zero (noise) residual,
-  // so it avoids the explicit-restart failure modes.
-  //
-  // Returns the number of locked (converged) eigen-pairs found, and leaves the
-  // full sorted Ritz set of the LAST cycle in evals_/evecs_/residuals_ (locked
-  // pairs are spliced to the front, residuals first).
-  // ------------------------------------------------------------------
+  // ---------------- gamma5-metric thick restart with paired locking ----------------
   int thickRestart(const Field& v0, const Field& v1,
                    int maxCycles, int cycleSteps, int nWantedPairs,
                    bool reorthog = true, Gamma5RitzSort sort = G5SortAbsImagAscending)
   {
     lockV_.clear(); lockG_.clear(); lockEval_.clear();
-
-    Field s0(Grid_), s1(Grid_);
-    s0 = v0; s1 = v1;
+    Field s0(Grid_), s1(Grid_); s0 = v0; s1 = v1;
 
     for (int cyc = 0; cyc < maxCycles; cyc++) {
       reset();
-      if (!initStartBlock(s0, s1)) {
-        log("thickRestart: degenerate start block on cycle " + std::to_string(cyc));
-        break;
-      }
+      if (!initStartBlock(s0, s1)) { log("thickRestart: degenerate start, cycle "+std::to_string(cyc)); break; }
 
-      int done = 0;
       for (int step = 0; step < cycleSteps; step++) {
-        bool ok = lanczosStep(step, reorthog, /*deflate=*/true);
-        if (!ok) break;
+        if (!lanczosStep(step, reorthog, /*deflate=*/true)) break;
         nSteps_ = step + 1;
-        done = step + 1;
-        if (B_blk[step].norm() < tol_) break;
+        if (B_[step].norm() < tol_) break;
       }
-      if (nSteps_ == 0) { log("thickRestart: no steps taken; stopping."); break; }
-
+      if (nSteps_ == 0) { log("thickRestart: no steps; stop."); break; }
       computeRitzPairs(nSteps_, sort);
+      int newly = lockConvergedPairs(nWantedPairs);
+      int nLk = (int)lockG_.size();
+      log("cycle "+std::to_string(cyc)+": newly locked "+std::to_string(newly)
+          +"  total "+std::to_string(nLk)+"/"+std::to_string(nWantedPairs));
+      if (nLk >= nWantedPairs) { log("converged "+std::to_string(nLk)+" pairs."); break; }
 
-      // Lock newly-converged conjugate pairs from this cycle's Ritz set.
-      int newlyLocked = lockConvergedPairs(nWantedPairs);
-
-      int nLocked = (int)lockG_.size();
-      log("cycle " + std::to_string(cyc) + ": steps=" + std::to_string(done)
-          + "  newly locked=" + std::to_string(newlyLocked)
-          + "  total locked pairs=" + std::to_string(nLocked)
-          + " / " + std::to_string(nWantedPairs));
-
-      if (nLocked >= nWantedPairs) {
-        log("thickRestart: converged " + std::to_string(nLocked) + " pairs.");
-        break;
-      }
-
-      // Next start = live spillover block Q_{m+1}, deflated against locked space.
-      // Q_{m+1} columns are basis_[2*nSteps_], basis_[2*nSteps_+1].
-      int idx = 2 * nSteps_;
-      if (idx + 1 >= (int)basis_.size()) {
-        log("thickRestart: no spillover block available; stopping.");
-        break;
-      }
-      s0 = basis_[idx];
-      s1 = basis_[idx + 1];
-      deflateBlock(s0, s1);
+      // restart from the live spillover block Q_[nSteps_], deflated against locked
+      if (nSteps_ >= (int)Q_.size() || Q_[nSteps_].size() < 2) { log("no spillover; stop."); break; }
+      s0 = Q_[nSteps_][0];
+      s1 = Q_[nSteps_][1];
+      deflateVec(s0); deflateVec(s1);
     }
-
     spliceLockedToFront();
     return (int)lockG_.size();
   }
 
 private:
-  // ---- setup ----
+  void reset() { Q_.clear(); A_.clear(); B_.clear(); C_.clear(); G_.clear(); nSteps_ = 0; }
 
-  void reset() {
-    basis_.clear();
-    A_blk.clear(); B_blk.clear(); C_blk.clear(); G_blk.clear();
-    nSteps_ = 0;
+  int sz(int k) const { return (int)Q_[k].size(); }
+
+  // --- linear-algebra helpers on column lists ---
+
+  // D_W applied to each column.
+  std::vector<Field> applyOp(const std::vector<Field>& X) {
+    std::vector<Field> Y; Y.reserve(X.size());
+    for (auto& x : X) { Field y(Grid_); Linop_.Op(x, y); Y.push_back(y); }
+    return Y;
   }
 
-  // Build Q_1 = [u0,u1] from (v0,v1): normalise u0, L2-orthogonalise u1 vs u0,
-  // (optionally deflate both against locked space), check G_1 invertible.
+  // M(i,j) = X[i]^dag g5 Y[j]   (|X| x |Y|)
+  CMat g5Inner(const std::vector<Field>& X, const std::vector<Field>& Y) {
+    int m = X.size(), n = Y.size();
+    std::vector<Field> gY; gY.reserve(n);
+    for (auto& y : Y) { Field gy(Grid_); g5_(y, gy); gY.push_back(gy); }
+    CMat M(m, n);
+    for (int i = 0; i < m; i++)
+      for (int j = 0; j < n; j++)
+        M(i, j) = toStd(innerProduct(X[i], gY[j]));
+    return M;
+  }
+
+  // R[j] -= sum_i X[i] * M(i,j)
+  void subtractCombine(std::vector<Field>& R, const std::vector<Field>& X, const CMat& M) {
+    for (int j = 0; j < (int)R.size(); j++)
+      for (int i = 0; i < (int)X.size(); i++)
+        R[j] = R[j] - X[i] * M(i, j);
+  }
+
+  // single linear combination col = sum_i X[i] * c(i).
+  // Take c BY VALUE so an Eigen column expression (U.col(i)) is safely
+  // materialised into a VectorXcd at the call (binding a const ref to the
+  // Block temporary is unsafe).
+  Field combineCol(const std::vector<Field>& X, CVec c) {
+    Field out(Grid_); out = Zero();
+    for (int i = 0; i < (int)X.size(); i++) out = out + X[i] * c(i);
+    return out;
+  }
+
+  // --- setup ---
   bool initStartBlock(const Field& v0, const Field& v1) {
     Field u0(Grid_), u1(Grid_);
     u0 = v0;
     if (!lockG_.empty()) deflateVec(u0);
     RealD n = std::sqrt(norm2(u0));
-    if (n < 1e-14) { log("init: first start vector vanished"); return false; }
+    if (n < 1e-14) { log("init: first vector vanished"); return false; }
     u0 = u0 * (1.0 / n);
-
     u1 = v1;
     if (!lockG_.empty()) deflateVec(u1);
     auto proj = innerProduct(u0, u1);
     u1 = u1 - u0 * proj;
     n = std::sqrt(norm2(u1));
-    if (n < 1e-14) { log("init: second start vector linearly dependent"); return false; }
+    if (n < 1e-14) { log("init: second vector dependent"); return false; }
     u1 = u1 * (1.0 / n);
 
-    CMat2 G1 = gram(u0, u1);
-    Eigen::SelfAdjointEigenSolver<CMat2> es(G1);
+    std::vector<Field> Q0 = {u0, u1};
+    CMat G1 = g5Inner(Q0, Q0);
+    Eigen::SelfAdjointEigenSolver<CMat> es(G1);
     auto ev = es.eigenvalues();
     if (std::abs(ev(0)) < 1e-13 || std::abs(ev(1)) < 1e-13) {
-      log("init: degenerate start (G1 eigenvalue ~ 0); pick a different seed");
-      return false;
+      log("init: degenerate start (G1 ~ singular)"); return false;
     }
-    G_blk.push_back(G1);
-    basis_.push_back(u0);
-    basis_.push_back(u1);
+    G_.push_back(G1); Q_.push_back(Q0);
     return true;
   }
 
-  // ---- core three-term block step (verified kernel) ----
-
-  // One block-Lanczos step.  On success pushes Q_{step+2} and returns true.
-  // If deflate==true, the residual block is gamma5-projected against the locked
-  // space before normalisation.
+  // --- core block step with look-ahead ---
   bool lanczosStep(int step, bool reorthog, bool deflate) {
-    const Field& q1 = basis_[2*step];
-    const Field& q2 = basis_[2*step + 1];
-    CMat2 Gk = G_blk[step];
+    const std::vector<Field>& Qk = Q_[step];
+    int s_k = Qk.size();
+    CMat Gk = G_[step];
 
-    // (i) matvecs P_k = D_W Q_k
-    Field p1(Grid_), p2(Grid_);
-    Linop_.Op(q1, p1);
-    Linop_.Op(q2, p2);
+    std::vector<Field> P = applyOp(Qk);             // D_W Q_k
+    CMat M = g5Inner(Qk, P);                         // s_k x s_k
+    CMat A = Gk.inverse() * M;                       // A_k
+    A_.push_back(A);
 
-    // (ii) M_k = Q_k^dag g5 P_k ;  (iii) A_k = G_k^{-1} M_k
-    CMat2 Mk = g5Block(q1, q2, p1, p2);
-    CMat2 Ak = Gk.inverse() * Mk;
-    A_blk.push_back(Ak);
+    CMat C;                                          // C_k (s_{k-1} x s_k)
+    if (step > 0) C = G_[step-1].inverse() * B_[step-1].adjoint() * Gk;
+    else          C = CMat::Zero(0, s_k);
+    C_.push_back(C);
 
-    // (iv) C_k = G_{k-1}^{-1} B_k^dag G_k  (zero at step 0)
-    CMat2 Ck = CMat2::Zero();
-    if (step > 0) Ck = G_blk[step-1].inverse() * B_blk[step-1].adjoint() * Gk;
-    C_blk.push_back(Ck);
+    // residual R = D_W Q_k - Q_k A_k - Q_{k-1} C_k  (s_k columns)
+    std::vector<Field> R = P;
+    subtractCombine(R, Qk, A);
+    if (step > 0) subtractCombine(R, Q_[step-1], C);
 
-    // (v) residual R_k = P_k - Q_k A_k - Q_{k-1} C_k  (columnwise)
-    Field r1(Grid_), r2(Grid_);
-    r1 = p1 - (q1 * Ak(0,0) + q2 * Ak(1,0));
-    r2 = p2 - (q1 * Ak(0,1) + q2 * Ak(1,1));
-    if (step > 0) {
-      const Field& s1 = basis_[2*(step-1)];
-      const Field& s2 = basis_[2*(step-1)+1];
-      r1 = r1 - (s1 * Ck(0,0) + s2 * Ck(1,0));
-      r2 = r2 - (s1 * Ck(0,1) + s2 * Ck(1,1));
-    }
-
-    // optional full gamma5-reorthogonalisation against all previous blocks
-    if (reorthog) {
+    if (reorthog)
       for (int j = 0; j <= step; j++) {
-        CMat2 Mj = g5Block(basis_[2*j], basis_[2*j+1], r1, r2);
-        CMat2 Hj = G_blk[j].inverse() * Mj;
-        r1 = r1 - (basis_[2*j] * Hj(0,0) + basis_[2*j+1] * Hj(1,0));
-        r2 = r2 - (basis_[2*j] * Hj(0,1) + basis_[2*j+1] * Hj(1,1));
+        CMat Mj = g5Inner(Q_[j], R);
+        CMat Hj = G_[j].inverse() * Mj;
+        subtractCombine(R, Q_[j], Hj);
       }
+    if (deflate && !lockG_.empty()) for (auto& r : R) deflateVec(r);
+
+    // --- look-ahead: augment S with D_W(neutral dir) until no serious breakdown ---
+    const RealD relEps = degenRel();
+    std::vector<Field> S = R;                        // working augmented column set
+    const int maxLA = 3;
+    for (int la = 0; ; la++) {
+      CMat Gamma = g5Inner(S, S);
+      Eigen::SelfAdjointEigenSolver<CMat> es(Gamma);
+      Eigen::VectorXd D = es.eigenvalues();
+      CMat U = es.eigenvectors();
+      RealD dmax = D.cwiseAbs().maxCoeff();
+      std::vector<int> serious;
+      for (int i = 0; i < D.size(); i++) {
+        if (std::abs(D(i)) >= relEps * dmax) continue;   // non-degenerate
+        Field ri = combineCol(S, U.col(i));
+        if (std::sqrt(norm2(ri)) < tol_) continue;        // happy (zero) -> will be dropped
+        serious.push_back(i);                             // neutral but non-zero -> serious
+      }
+      if (serious.empty()) break;                         // no serious breakdown
+      if (la >= maxLA) { log("look-ahead exhausted at step "+std::to_string(step)); break; }
+      // augment with D_W of each serious-neutral direction (escapes the neutral cone)
+      // Collect the new directions from the CURRENT S (U matches this S); append
+      // only AFTER the loop -- growing S mid-loop would desync U/combineCol sizes.
+      std::vector<Field> newdirs;
+      for (int i : serious) {
+        Field ri = combineCol(S, U.col(i));
+        RealD rin = std::sqrt(norm2(ri));
+        if (rin < tol_) continue;
+        ri = ri * (1.0 / rin);
+        Field dri(Grid_); Linop_.Op(ri, dri);
+        // gamma5-orthogonalise the new direction against all previous blocks
+        for (int j = 0; j <= step; j++) {
+          int sj = (int)Q_[j].size();
+          Field g5d(Grid_); g5_(dri, g5d);
+          CVec proj(sj);
+          for (int c = 0; c < sj; c++) proj(c) = toStd(innerProduct(Q_[j][c], g5d));
+          CVec coef = G_[j].inverse() * proj;
+          for (int c = 0; c < sj; c++) dri = dri - Q_[j][c] * coef(c);
+        }
+        RealD dn = std::sqrt(norm2(dri));
+        if (dn < tol_) continue;                 // D_W(neutral) already in span -> skip
+        newdirs.push_back(dri * (1.0 / dn));     // normalised
+      }
+      int added = (int)newdirs.size();
+      for (auto& d : newdirs) S.push_back(d);
+      if (added == 0) break;                      // nothing new to add -> stop expanding
+      lookaheadCount_++;
+      log("look-ahead at step "+std::to_string(step)+": block grown to "+std::to_string((int)S.size()));
     }
 
-    // deflate residual against locked converged blocks
-    if (deflate && !lockG_.empty()) deflateBlock(r1, r2);
+    // --- build Q_{k+1} from the (possibly augmented) set S ---
+    CMat GammaS = g5Inner(S, S);
+    Eigen::SelfAdjointEigenSolver<CMat> es(GammaS);
+    Eigen::VectorXd D = es.eigenvalues();
+    CMat U = es.eigenvectors();
+    RealD dmax = D.cwiseAbs().maxCoeff();
+    if (dmax < tol_ * tol_) { log("happy breakdown at step "+std::to_string(step)); return false; }
+    // keep non-degenerate directions; absolute floor avoids dividing by ~0
+    const RealD dfloor = std::max(relEps * dmax, tol_ * tol_);
+    std::vector<int> keep;
+    for (int i = 0; i < D.size(); i++) if (std::abs(D(i)) >= dfloor) keep.push_back(i);
+    if (keep.empty()) { log("happy breakdown at step "+std::to_string(step)); return false; }
 
-    // (vi) Gamma_k = R_k^dag g5 R_k ; eigendecompose
-    CMat2 Gamma = gram(r1, r2);
-    Eigen::SelfAdjointEigenSolver<CMat2> es(Gamma);
-    Eigen::Vector2d D = es.eigenvalues();
-    CMat2           U = es.eigenvectors();
-
-    // breakdown checks (reference Eq. happy/serious breakdown)
-    const RealD breakdownEps = 1e-14;
-    for (int j = 0; j < 2; j++) {
-      Field rj(Grid_);
-      rj = r1 * U(0,j) + r2 * U(1,j);
-      RealD r2n = norm2(rj);
-      RealD rn  = std::sqrt(r2n);
-      if (rn < tol_) {
-        if (verbose_ > 1) log("happy breakdown at step " + std::to_string(step)
-                              + " dir " + std::to_string(j));
-        return false;
-      }
-      if (std::abs(D(j)) < breakdownEps * r2n) {
-        log("serious breakdown at step " + std::to_string(step) + " dir " + std::to_string(j)
-            + " (neutral residual; look-ahead not implemented)");
-        return false;
-      }
+    int s_kp1 = keep.size();
+    std::vector<Field> Qkp1; Qkp1.reserve(s_kp1);
+    CMat Gkp1 = CMat::Zero(s_kp1, s_kp1);
+    for (int a = 0; a < s_kp1; a++) {
+      int i = keep[a];
+      Field q = combineCol(S, U.col(i)) * (1.0 / std::sqrt(std::abs(D(i))));
+      Qkp1.push_back(q);
+      Gkp1(a, a) = Cd(D(i) > 0 ? 1.0 : -1.0, 0.0);
     }
+    // B_{k+1} = G_{k+1}^{-1} (Q_{k+1}^dag g5 R)   (s_{k+1} x s_k);  R = Q_{k+1} B_{k+1}
+    CMat QtR = g5Inner(Qkp1, R);
+    CMat Bkp1 = Gkp1.inverse() * QtR;
 
-    // (vii) indefinite LDL^dag: G_{k+1}=sign(D), B_{k+1}=|D|^{1/2}U^dag, Q_{k+1}=R U|D|^{-1/2}
-    CMat2 Gkp1 = CMat2::Zero();
-    Gkp1(0,0) = Cd((D(0) > 0.0) ? 1.0 : -1.0, 0.0);
-    Gkp1(1,1) = Cd((D(1) > 0.0) ? 1.0 : -1.0, 0.0);
-    double sq0 = std::sqrt(std::abs(D(0)));
-    double sq1 = std::sqrt(std::abs(D(1)));
-
-    CMat2 Bkp1;
-    Bkp1.row(0) = U.col(0).adjoint() * sq0;
-    Bkp1.row(1) = U.col(1).adjoint() * sq1;
-
-    Field qn1(Grid_), qn2(Grid_);
-    qn1 = (r1 * U(0,0) + r2 * U(1,0)) * (1.0 / sq0);
-    qn2 = (r1 * U(0,1) + r2 * U(1,1)) * (1.0 / sq1);
-
-    G_blk.push_back(Gkp1);
-    B_blk.push_back(Bkp1);
-    basis_.push_back(qn1);
-    basis_.push_back(qn2);
+    G_.push_back(Gkp1); B_.push_back(Bkp1); Q_.push_back(Qkp1);
     return true;
   }
 
-  // ---- Ritz extraction ----
-
+  // --- Ritz extraction (variable block-tridiagonal T_m) ---
   void computeRitzPairs(int m, Gamma5RitzSort sort) {
-    int dim = 2 * m;
+    std::vector<int> off(m + 1, 0);
+    for (int k = 0; k < m; k++) off[k+1] = off[k] + sz(k);
+    int dim = off[m];
+
     CMat Tm = CMat::Zero(dim, dim);
     for (int k = 0; k < m; k++) {
-      Tm.block(2*k, 2*k, 2, 2) = A_blk[k];
+      Tm.block(off[k], off[k], sz(k), sz(k)) = A_[k];
       if (k < m - 1) {
-        Tm.block(2*k+2, 2*k,   2, 2) = B_blk[k];
-        Tm.block(2*k,   2*k+2, 2, 2) = C_blk[k+1];
+        Tm.block(off[k+1], off[k],   sz(k+1), sz(k)) = B_[k];     // sub
+        Tm.block(off[k],   off[k+1], sz(k), sz(k+1)) = C_[k+1];   // super
       }
     }
 
@@ -358,74 +356,60 @@ private:
     std::sort(idx.begin(), idx.end(),
               [&](int a, int b){ return ritzLess(lam(a), lam(b), sort); });
 
-    const CMat2& Bm1 = B_blk[m-1];  // B_{m+1}
-    evals_.resize(dim);
-    evecs_.clear();
-    residuals_.clear();
-    evecs_.reserve(dim);
-    residuals_.reserve(dim);
+    const CMat& Bm1 = B_[m-1];      // s_m x s_{m-1}
+    int s_last = sz(m-1);
+    evals_.resize(dim); evecs_.clear(); residuals_.clear();
+    evecs_.reserve(dim); residuals_.reserve(dim);
 
     for (int ji = 0; ji < dim; ji++) {
       int j = idx[ji];
       evals_(ji) = lam(j);
       CVec yj = Y.col(j);
 
-      // Ritz vector u_j = V_m y_j
       Field uj(Grid_); uj = Zero();
-      for (int k = 0; k < m; k++) {
-        uj = uj + basis_[2*k]   * yj(2*k);
-        uj = uj + basis_[2*k+1] * yj(2*k+1);
-      }
+      for (int k = 0; k < m; k++)
+        for (int c = 0; c < sz(k); c++)
+          uj = uj + Q_[k][c] * yj(off[k] + c);
       evecs_.push_back(uj);
 
-      // true residual r_j = Q_{m+1} B_{m+1} tau_j, tau_j = last 2 entries of y_j
-      Eigen::Vector2cd tau(yj(dim-2), yj(dim-1));
-      Eigen::Vector2cd Bt = Bm1 * tau;
-      Field rj(Grid_);
-      rj = basis_[2*m] * Bt(0) + basis_[2*m+1] * Bt(1);
+      // residual r_j = Q_{m} B_{m-1} tau_j,  tau_j = last-block entries of y_j
+      CVec tau(s_last);
+      for (int c = 0; c < s_last; c++) tau(c) = yj(off[m-1] + c);
+      CVec Bt = Bm1 * tau;                  // length s_m
+      Field rj(Grid_); rj = Zero();
+      for (int c = 0; c < (int)Q_[m].size(); c++) rj = rj + Q_[m][c] * Bt(c);
       residuals_.push_back(std::sqrt(norm2(rj)));
     }
   }
 
-  // ---- locking / deflation for thick restart ----
-
-  // Lock conjugate pairs from the current Ritz set that have converged (both
-  // members residual < tol) and that are not already locked.  Returns count.
+  // --- locking / deflation (converged conjugate pairs) ---
   int lockConvergedPairs(int nWantedPairs) {
     int dim = (int)evecs_.size();
     int locked = 0;
     std::vector<bool> used(dim, false);
-
     for (int i = 0; i < dim; i++) {
       if ((int)lockG_.size() >= nWantedPairs) break;
       if (used[i] || residuals_[i] >= tol_) continue;
-      // find conjugate partner j with closest conj(lambda_i) and small residual
-      Cd li = toStd(ComplexD(real(evals_(i)), imag(evals_(i))));
-      int best = -1; double bestd = 1e30;
+      Cd li(real(evals_(i)), imag(evals_(i)));
+      int best = -1; double bd = 1e30;
       for (int j = 0; j < dim; j++) {
         if (j == i || used[j] || residuals_[j] >= tol_) continue;
-        Cd lj = toStd(ComplexD(real(evals_(j)), imag(evals_(j))));
+        Cd lj(real(evals_(j)), imag(evals_(j)));
         double d = std::abs(lj - std::conj(li));
-        if (d < bestd) { bestd = d; best = j; }
+        if (d < bd) { bd = d; best = j; }
       }
-      if (best < 0) continue;  // no partner; skip (single real mode handled below)
+      if (best < 0) continue;
       if (isAlreadyLocked(li)) { used[i] = used[best] = true; continue; }
-
-      // Build the 2-column locked block from Ritz vectors i and best.
-      Field w0(Grid_), w1(Grid_);
-      w0 = evecs_[i];
-      w1 = evecs_[best];
-      CMat2 G = gram(w0, w1);
-      // require gamma5-non-degenerate
+      Field w0 = evecs_[i], w1 = evecs_[best];
+      CMat2 G; std::vector<Field> blk = {w0, w1};
+      CMat Gg = g5Inner(blk, blk);
+      G << Gg(0,0), Gg(0,1), Gg(1,0), Gg(1,1);
       if (std::abs(G.determinant()) < 1e-12) { used[i] = used[best] = true; continue; }
-
-      lockV_.push_back(w0);
-      lockV_.push_back(w1);
+      lockV_.push_back(w0); lockV_.push_back(w1);
       lockG_.push_back(G);
-      lockEval_.push_back(toStd(ComplexD(real(evals_(i)),    imag(evals_(i)))));
-      lockEval_.push_back(toStd(ComplexD(real(evals_(best)), imag(evals_(best)))));
-      used[i] = used[best] = true;
-      locked++;
+      lockEval_.push_back(Cd(real(evals_(i)),    imag(evals_(i))));
+      lockEval_.push_back(Cd(real(evals_(best)), imag(evals_(best))));
+      used[i] = used[best] = true; locked++;
     }
     return locked;
   }
@@ -436,12 +420,10 @@ private:
     return false;
   }
 
-  // gamma5-oblique projection of a single vector onto the complement of the
-  // locked space:  x <- x - sum_b V_b G_b^{-1} (V_b^dag g5 x).
+  // x <- x - sum_b V_b G_b^{-1} (V_b^dag g5 x)
   void deflateVec(Field& x) {
     for (size_t b = 0; b < lockG_.size(); b++) {
-      const Field& w0 = lockV_[2*b];
-      const Field& w1 = lockV_[2*b+1];
+      const Field& w0 = lockV_[2*b]; const Field& w1 = lockV_[2*b+1];
       Field g5x(Grid_); g5_(x, g5x);
       Eigen::Vector2cd c;
       c(0) = toStd(innerProduct(w0, g5x));
@@ -451,12 +433,6 @@ private:
     }
   }
 
-  void deflateBlock(Field& x0, Field& x1) {
-    deflateVec(x0);
-    deflateVec(x1);
-  }
-
-  // Put locked pairs (residual 0, exact) at the front of the output arrays.
   void spliceLockedToFront() {
     if (lockG_.empty()) return;
     int nl = 2 * (int)lockG_.size();
@@ -466,41 +442,13 @@ private:
     for (size_t b = 0; b < lockG_.size(); b++) {
       ev(2*b)   = ComplexD(lockEval_[2*b].real(),   lockEval_[2*b].imag());
       ev(2*b+1) = ComplexD(lockEval_[2*b+1].real(), lockEval_[2*b+1].imag());
-      ec.push_back(lockV_[2*b]);
-      ec.push_back(lockV_[2*b+1]);
-      rs.push_back(0.0);
-      rs.push_back(0.0);
+      ec.push_back(lockV_[2*b]); ec.push_back(lockV_[2*b+1]);
+      rs.push_back(0.0); rs.push_back(0.0);
     }
     for (int i = 0; i < (int)evals_.size(); i++) ev(nl + i) = evals_(i);
     for (auto& v : evecs_)    ec.push_back(v);
     for (auto& r : residuals_) rs.push_back(r);
     evals_ = ev; evecs_ = ec; residuals_ = rs;
-  }
-
-  // ---- gamma5 Gram helpers ----
-
-  // G[i,j] = q^(i)^dag g5 q^(j) for block [q1,q2].
-  CMat2 gram(const Field& q1, const Field& q2) {
-    Field g1(Grid_), g2(Grid_);
-    g5_(q1, g1); g5_(q2, g2);
-    CMat2 G;
-    G(0,0) = toStd(innerProduct(q1, g1));
-    G(0,1) = toStd(innerProduct(q1, g2));
-    G(1,0) = toStd(innerProduct(q2, g1));
-    G(1,1) = toStd(innerProduct(q2, g2));
-    return G;
-  }
-
-  // M[i,j] = q^(i)^dag g5 p^(j).
-  CMat2 g5Block(const Field& q1, const Field& q2, const Field& p1, const Field& p2) {
-    Field g1(Grid_), g2(Grid_);
-    g5_(p1, g1); g5_(p2, g2);
-    CMat2 M;
-    M(0,0) = toStd(innerProduct(q1, g1));
-    M(0,1) = toStd(innerProduct(q1, g2));
-    M(1,0) = toStd(innerProduct(q2, g1));
-    M(1,1) = toStd(innerProduct(q2, g2));
-    return M;
   }
 
   static bool ritzLess(const ComplexD& a, const ComplexD& b, Gamma5RitzSort sort) {
