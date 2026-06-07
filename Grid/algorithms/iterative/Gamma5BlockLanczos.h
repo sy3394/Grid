@@ -77,6 +77,12 @@ private:
 
   long lookaheadCount_ = 0;      // diagnostic: number of look-ahead expansions used
 
+  // per-step diagnostics (manuscript Sec. 8): oblique-projector conditioning and
+  // loss of gamma5-orthogonality.
+  std::vector<double> kappaGamma_;   // kappa(Gamma_k) = max|d|/min|d| of residual Gram
+  std::vector<double> etaLoss_;      // ||Q_1^dag g5 Q_{k+1}||_F  (should be ~0)
+  std::vector<double> cycleBestRes_; // best (smallest) Ritz residual at end of each restart cycle
+
   template<class C> static inline Cd toStd(const C& z) {
     return Cd((double)real(z), (double)imag(z));
   }
@@ -99,6 +105,9 @@ public:
   int                       getNumLocked()  const { return (int)lockG_.size(); }
   long                      getLookaheads() const { return lookaheadCount_; }
   void                      setDegenRel(RealD r)   { degenRel_ = r; }
+  const std::vector<double>& getKappaGamma() const { return kappaGamma_; }
+  const std::vector<double>& getEtaLoss()    const { return etaLoss_;    }
+  const std::vector<double>& getCycleBestRes() const { return cycleBestRes_; }
 
   void log(const std::string& s) const {
     if (verbose_ > 0) std::cout << GridLogMessage << "[g5BL] " << s << std::endl;
@@ -124,7 +133,7 @@ public:
                    int maxCycles, int cycleSteps, int nWantedPairs,
                    bool reorthog = true, Gamma5RitzSort sort = G5SortAbsImagAscending)
   {
-    lockV_.clear(); lockG_.clear(); lockEval_.clear();
+    lockV_.clear(); lockG_.clear(); lockEval_.clear(); cycleBestRes_.clear();
     Field s0(Grid_), s1(Grid_); s0 = v0; s1 = v1;
 
     for (int cyc = 0; cyc < maxCycles; cyc++) {
@@ -138,6 +147,8 @@ public:
       }
       if (nSteps_ == 0) { log("thickRestart: no steps; stop."); break; }
       computeRitzPairs(nSteps_, sort);
+      { double best = 1e300; for (auto r : residuals_) best = std::min(best, r);
+        cycleBestRes_.push_back(best); }
       int newly = lockConvergedPairs(nWantedPairs);
       int nLk = (int)lockG_.size();
       log("cycle "+std::to_string(cyc)+": newly locked "+std::to_string(newly)
@@ -155,7 +166,8 @@ public:
   }
 
 private:
-  void reset() { Q_.clear(); A_.clear(); B_.clear(); C_.clear(); G_.clear(); nSteps_ = 0; }
+  void reset() { Q_.clear(); A_.clear(); B_.clear(); C_.clear(); G_.clear();
+                 kappaGamma_.clear(); etaLoss_.clear(); nSteps_ = 0; }
 
   int sz(int k) const { return (int)Q_[k].size(); }
 
@@ -315,6 +327,11 @@ private:
     for (int i = 0; i < D.size(); i++) if (std::abs(D(i)) >= dfloor) keep.push_back(i);
     if (keep.empty()) { log("happy breakdown at step "+std::to_string(step)); return false; }
 
+    // diagnostic: residual-Gram condition number kappa(Gamma_k) (oblique proj. blow-up)
+    { double dmx = 0, dmn = 1e300;
+      for (int i : keep) { double a = std::abs(D(i)); dmx = std::max(dmx,a); dmn = std::min(dmn,a); }
+      kappaGamma_.push_back(dmn > 0 ? dmx/dmn : 1e300); }
+
     int s_kp1 = keep.size();
     std::vector<Field> Qkp1; Qkp1.reserve(s_kp1);
     CMat Gkp1 = CMat::Zero(s_kp1, s_kp1);
@@ -329,6 +346,9 @@ private:
     CMat Bkp1 = Gkp1.inverse() * QtR;
 
     G_.push_back(Gkp1); B_.push_back(Bkp1); Q_.push_back(Qkp1);
+
+    // diagnostic: loss of gamma5-orthogonality, ||Q_1^dag g5 Q_{k+1}||_F (~0 ideally)
+    { CMat e = g5Inner(Q_[0], Qkp1); etaLoss_.push_back(e.norm()); }
     return true;
   }
 

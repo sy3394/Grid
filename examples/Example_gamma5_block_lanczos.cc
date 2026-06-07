@@ -368,6 +368,84 @@ int main(int argc, char** argv) {
   // ===== apples-to-apples head-to-head: g5bl vs plain Arnoldi, same operator =====
   // Both invert the SAME (D_W - sigma)^{-1} (same inner CG) and target the same
   // complex eigenvalues; only the outer eigensolver differs.  Equal matvec budget.
+  // ===== diagnostic: pinpoint the g5bl bottleneck (manuscript Sec. 8) =====
+  // Tracks per-step kappa(Gamma_k) (oblique-projector conditioning) and
+  // eta=||Q_1^dag g5 Q_k|| (loss of gamma5-orthogonality); per-Ritz compares the
+  // gamma5-space residual g5bl uses to declare convergence against the RAW
+  // Euclidean residual (false convergence => oblique projection is the culprit);
+  // checks conjugate-pair symmetry (ghosts); and tracks the best residual per
+  // restart cycle (does it worsen each restart?).
+  if (hasOpt(argc, argv, "--diag")) {
+    double sg = sigmas[0];
+    WilsonOp Dsh(Umu, *UGrid, *UrbGrid, mass - sg, wpar);
+    ConjugateGradient<FermionField> cgd(stol, siter, false);
+    ShiftInvertNE<WilsonOp, FermionField> SI(Dsh, cgd);
+    FermionField w(UGrid);
+    auto rawRes = [&](const FermionField& u, std::complex<double> lam)->double {
+      DLinDirect.Op(u, w); ComplexD lf(lam.real(), lam.imag());
+      FermionField t(UGrid); t = w - u * lf; return std::sqrt(norm2(t)/norm2(u)); };
+
+    std::cout << GridLogMessage << "\n===== g5bl DIAGNOSTIC (sigma="<<sg<<") =====" << std::endl;
+    Gamma5BlockLanczos<FermionField> g(SI, UGrid, gamma5, tol, 0);
+    if (degen > 0) g.setDegenRel(degen);
+    g(v0, v1, steps, reorth, G5SortAbsDescending);
+
+    // (A) per-step trajectories
+    auto kap = g.getKappaGamma(); auto eta = g.getEtaLoss();
+    std::cout << GridLogMessage << "[A] per-step diagnostics:" << std::endl;
+    std::cout << GridLogMessage << "   step   kappa(Gamma_k)   eta=||Q1^dag g5 Qk||" << std::endl;
+    for (int k = 0; k < (int)kap.size(); k++)
+      std::cout << GridLogMessage << "   " << std::setw(4) << k
+                << std::setw(16) << kap[k] << std::setw(22) << (k<(int)eta.size()?eta[k]:0.0) << std::endl;
+
+    // (B) gamma5-residual (what g5bl uses) vs raw Euclidean residual, per Ritz pair
+    const auto& ev = g.getEvals(); const auto& rs = g.getResiduals(); const auto& uv = g.getEvecs();
+    std::cout << GridLogMessage << "[B] per-Ritz: gamma5-residual vs RAW residual "
+              << "(false convergence => oblique projection):" << std::endl;
+    std::cout << GridLogMessage << std::setw(34) << "lambda"
+              << std::setw(13) << "res_g5" << std::setw(13) << "res_raw"
+              << std::setw(10) << "raw/g5" << std::setw(8) << "ghost?" << std::endl;
+    int nfalse = 0, nshow = std::min((int)ev.size(), 4*std::max(1,wanted));
+    for (int i = 0; i < nshow; i++) {
+      std::complex<double> lam = sg + 1.0/ev(i);
+      double rg = rs[i], rr = rawRes(uv[i], lam);
+      bool ghost = (rg < accept && rr >= accept);     // g5 says converged, raw says no
+      if (ghost) nfalse++;
+      std::cout << GridLogMessage << "  ("<<std::setw(9)<<lam.real()<<","<<std::setw(11)<<lam.imag()<<")"
+                << std::setw(13) << rg << std::setw(13) << rr
+                << std::setw(10) << rr/std::max(rg,1e-30) << std::setw(8) << (ghost?"YES":"-") << std::endl;
+    }
+    std::cout << GridLogMessage << "   false-convergence count (res_g5<acc but res_raw>=acc): "
+              << nfalse << " / " << nshow << std::endl;
+
+    // (C) conjugate-pair symmetry of the spectrum (broken => spurious modes)
+    int unpaired = 0;
+    for (int i = 0; i < (int)ev.size(); i++) {
+      std::complex<double> li = sg + 1.0/ev(i);
+      double best = 1e30;
+      for (int j = 0; j < (int)ev.size(); j++) if (j!=i) {
+        std::complex<double> lj = sg + 1.0/ev(j);
+        best = std::min(best, std::abs(lj - std::conj(li)));
+      }
+      if (best > 1e-3) unpaired++;
+    }
+    std::cout << GridLogMessage << "[C] conjugate-pair symmetry: " << unpaired
+              << " / " << ev.size() << " eigenvalues lack a conjugate partner (within 1e-3)" << std::endl;
+
+    // (D) does the residual worsen across restart cycles?
+    Gamma5BlockLanczos<FermionField> gr(SI, UGrid, gamma5, tol, 0);
+    if (degen > 0) gr.setDegenRel(degen);
+    gr.thickRestart(v0, v1, cycles, steps, wanted, reorth, G5SortAbsDescending);
+    auto cb = gr.getCycleBestRes();
+    std::cout << GridLogMessage << "[D] best gamma5-residual per restart cycle "
+              << "(increasing => restart degrades):" << std::endl;
+    for (int c = 0; c < (int)cb.size(); c++)
+      std::cout << GridLogMessage << "   cycle " << std::setw(3) << c
+                << "   best res_g5 = " << cb[c] << std::endl;
+    std::cout << GridLogMessage << "   locked pairs: " << gr.getNumLocked() << std::endl;
+    Grid_finalize(); return 0;
+  }
+
   if (hasOpt(argc, argv, "--compare")) {
     double sg = sigmas[0];
     WilsonOp Dsh(Umu, *UGrid, *UrbGrid, mass - sg, wpar);
