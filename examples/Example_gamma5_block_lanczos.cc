@@ -58,8 +58,10 @@
 using namespace std;
 using namespace Grid;
 
-typedef WilsonFermionF                         WilsonOp;
-typedef typename WilsonFermionF::FermionField  FermionField;
+// Double precision (run on a cluster with adequate memory; no precision-change
+// dance, and the breakdown thresholds sit well above the double noise floor).
+typedef WilsonFermionD                         WilsonOp;
+typedef typename WilsonFermionD::FermionField  FermionField;
 
 // ---- shift-invert operator: Op(in) = (D_W - sigma)^{-1} in via normal-eq CG ----
 template<class Matrix, class Field>
@@ -128,6 +130,44 @@ static void denseDiag(LinearOperatorBase<Field>& Op, GridCartesian* grid,
   f.close();
   std::cout << GridLogMessage << "denseDiag: " << N << " exact eigenvalues written to "
             << fname << std::endl;
+}
+
+// ---- plain Euclidean Arnoldi on a given operator (apples-to-apples baseline) ----
+// Same shift-invert operator Op = (D_W - sigma)^{-1} as g5bl, but the OUTER
+// eigensolver is standard Arnoldi (full Euclidean orthogonalisation, upper
+// Hessenberg).  Returns (lambda = sigma + 1/theta, residual) per Ritz value and
+// the Arnoldi residual estimate.  matvecs = m (one Op per step).
+template<class Field>
+static void arnoldiShiftInvert(LinearOperatorBase<Field>& Op, GridBase* grid,
+                               const Field& v0, int m, double sigma,
+                               std::vector<std::complex<double>>& lambdas,
+                               std::vector<Field>& evecs) {
+  std::vector<Field> V;
+  Field v(grid); v = v0;
+  v = v * (1.0 / std::sqrt(norm2(v)));
+  V.push_back(v);
+  Eigen::MatrixXcd H = Eigen::MatrixXcd::Zero(m + 1, m);
+  int mdone = m;
+  for (int j = 0; j < m; j++) {
+    Field w(grid); Op.Op(V[j], w);
+    for (int i = 0; i <= j; i++) {
+      auto h = innerProduct(V[i], w);
+      H(i, j) = std::complex<double>((double)real(h), (double)imag(h));
+      w = w - V[i] * h;
+    }
+    double hn = std::sqrt(norm2(w));
+    if (j + 1 <= m) H(j + 1, j) = hn;
+    if (hn < 1e-12) { mdone = j + 1; break; }
+    if (j + 1 < m) V.push_back(w * (1.0 / hn));
+  }
+  Eigen::ComplexEigenSolver<Eigen::MatrixXcd> es(H.block(0, 0, mdone, mdone));
+  auto lam = es.eigenvalues(); auto Y = es.eigenvectors();
+  for (int j = 0; j < mdone; j++) {
+    lambdas.push_back(sigma + 1.0 / lam(j));
+    Field uj(grid); uj = Zero();
+    for (int k = 0; k < mdone && k < (int)V.size(); k++) uj = uj + V[k] * Y(k, j);
+    evecs.push_back(uj);
+  }
 }
 
 // ---- command-line helpers ----
@@ -202,10 +242,8 @@ int main(int argc, char** argv) {
   else if (singleShift) sigmas = { std::stod(getOpt(argc, argv, "--shift", "0")) };
   bool shiftMode = !sigmas.empty();
 
-  GridCartesian* UGridD = SpaceTimeGrid::makeFourDimGrid(
-      GridDefaultLatt(), GridDefaultSimd(Nd, vComplexD::Nsimd()), GridDefaultMpi());
   GridCartesian* UGrid = SpaceTimeGrid::makeFourDimGrid(
-      GridDefaultLatt(), GridDefaultSimd(Nd, vComplexF::Nsimd()), GridDefaultMpi());
+      GridDefaultLatt(), GridDefaultSimd(Nd, vComplexD::Nsimd()), GridDefaultMpi());
   GridRedBlackCartesian* UrbGrid = SpaceTimeGrid::makeFourDimRedBlackGrid(UGrid);
 
   std::cout << GridLogMessage << "=====================================================" << std::endl;
@@ -228,32 +266,30 @@ int main(int argc, char** argv) {
 
   // ---- gauge ----
   double weak = hasOpt(argc, argv, "--weak") ? std::stod(getOpt(argc, argv, "--weak", "0.1")) : 0.0;
-  LatticeGaugeField  UmuD(UGridD);
-  LatticeGaugeFieldF Umu(UGrid);
+  LatticeGaugeField Umu(UGrid);
   if (cold) {
     std::cout << GridLogMessage << "COLD (unit) gauge: free Wilson operator." << std::endl;
-    SU<Nc>::ColdConfiguration(UmuD);
+    SU<Nc>::ColdConfiguration(Umu);
   } else if (weak > 0.0) {
     std::cout << GridLogMessage << "WEAK gauge: U_mu = exp(i * " << weak
               << " * random algebra) -- slight perturbation of the free field."
               << std::endl;
-    GridParallelRNG pRNG(UGridD); pRNG.SeedFixedIntegers({1,2,3,4});
-    LatticeColourMatrix Ulink(UGridD);
+    GridParallelRNG pRNG(UGrid); pRNG.SeedFixedIntegers({1,2,3,4});
+    LatticeColourMatrix Ulink(UGrid);
     for (int mu = 0; mu < Nd; mu++) {
       SU<Nc>::LieRandomize(pRNG, Ulink, weak);
-      PokeIndex<LorentzIndex>(UmuD, Ulink, mu);
+      PokeIndex<LorentzIndex>(Umu, Ulink, mu);
     }
   } else if (cfg.empty()) {
     std::cout << GridLogMessage << "HOT random gauge (smoke test only)." << std::endl;
-    GridParallelRNG pRNG(UGridD); pRNG.SeedFixedIntegers({1,2,3,4});
-    SU<Nc>::HotConfiguration(pRNG, UmuD);
+    GridParallelRNG pRNG(UGrid); pRNG.SeedFixedIntegers({1,2,3,4});
+    SU<Nc>::HotConfiguration(pRNG, Umu);
   } else {
     FieldMetaData header;
-    NerscIO::readConfiguration(UmuD, header, cfg);
+    NerscIO::readConfiguration(Umu, header, cfg);
     std::cout << GridLogMessage << "Loaded NERSC config: " << cfg
               << "  plaquette=" << header.plaquette << std::endl;
   }
-  precisionChange(Umu, UmuD);
 
   Gamma G5(Gamma::Algebra::Gamma5);
   auto gamma5 = [&G5](const FermionField& in, FermionField& out){ out = G5 * in; };
@@ -329,6 +365,63 @@ int main(int argc, char** argv) {
               << sw.useconds()*1e-6 << " s" << std::endl;
   }
 
+  // ===== apples-to-apples head-to-head: g5bl vs plain Arnoldi, same operator =====
+  // Both invert the SAME (D_W - sigma)^{-1} (same inner CG) and target the same
+  // complex eigenvalues; only the outer eigensolver differs.  Equal matvec budget.
+  if (hasOpt(argc, argv, "--compare")) {
+    double sg = sigmas[0];
+    WilsonOp Dsh(Umu, *UGrid, *UrbGrid, mass - sg, wpar);
+    ConjugateGradient<FermionField> cgc(stol, siter, false);
+    ShiftInvertNE<WilsonOp, FermionField> SI(Dsh, cgc);
+    FermionField w(UGrid);
+    auto rawRes = [&](const FermionField& u, std::complex<double> lam)->double {
+      DLinDirect.Op(u, w);
+      ComplexD lf(lam.real(), lam.imag());
+      FermionField t(UGrid); t = w - u * lf;
+      return std::sqrt(norm2(t) / norm2(u));
+    };
+    int budget = 2 * steps;   // g5bl block-2 does 2 matvecs/step; match Arnoldi steps
+
+    // --- g5bl (gamma5-block Lanczos) ---
+    SI.nOp = SI.nCG = 0;
+    Gamma5BlockLanczos<FermionField> gg(SI, UGrid, gamma5, tol, 0);
+    if (degen > 0) gg.setDegenRel(degen);
+    GridStopWatch sw1; sw1.Start();
+    gg(v0, v1, steps, reorth, G5SortAbsDescending);
+    sw1.Stop();
+    long g_nOp = SI.nOp, g_nCG = SI.nCG;
+    int g_conv = 0;
+    { const auto& ev = gg.getEvals(); const auto& uv = gg.getEvecs();
+      for (int i = 0; i < (int)ev.size() && i < (int)uv.size(); i++) {
+        std::complex<double> lam = sg + 1.0 / ev(i);   // theta -> D_W eigenvalue
+        if (rawRes(uv[i], lam) < accept) g_conv++;
+      } }
+
+    // --- plain Arnoldi, equal matvec budget ---
+    SI.nOp = SI.nCG = 0;
+    std::vector<std::complex<double>> a_lam; std::vector<FermionField> a_vec;
+    GridStopWatch sw2; sw2.Start();
+    arnoldiShiftInvert(SI, UGrid, v0, budget, sg, a_lam, a_vec);
+    sw2.Stop();
+    long a_nOp = SI.nOp, a_nCG = SI.nCG;
+    int a_conv = 0;
+    for (int i = 0; i < (int)a_lam.size(); i++)
+      if (rawRes(a_vec[i], a_lam[i]) < accept) a_conv++;
+
+    std::cout << GridLogMessage << "\n===== HEAD-TO-HEAD (same D_W, same shift-invert, sigma="
+              << sg << ", accept=" << accept << ") =====" << std::endl;
+    std::cout << GridLogMessage << std::setw(22) << "method"
+              << std::setw(12) << "matvecs" << std::setw(12) << "CG iters"
+              << std::setw(10) << "time(s)" << std::setw(14) << "conv(raw<acc)" << std::endl;
+    std::cout << GridLogMessage << std::setw(22) << "g5-block Lanczos"
+              << std::setw(12) << g_nOp << std::setw(12) << g_nCG
+              << std::setw(10) << sw1.useconds()*1e-6 << std::setw(14) << g_conv << std::endl;
+    std::cout << GridLogMessage << std::setw(22) << "plain Arnoldi"
+              << std::setw(12) << a_nOp << std::setw(12) << a_nCG
+              << std::setw(10) << sw2.useconds()*1e-6 << std::setw(14) << a_conv << std::endl;
+    Grid_finalize(); return 0;
+  }
+
   std::vector<EvalRes> collected;
   double tSolve = 0.0;
   long totOp = 0, totCG = 0;
@@ -361,7 +454,7 @@ int main(int argc, char** argv) {
       // measure (rejects shift-invert ghosts whose theta-residual looks small).
       if (check && i < (int)uv.size()) {
         DLinDirect.Op(uv[i], w);
-        ComplexF lamf((float)lam.real(), (float)lam.imag());
+        ComplexD lamf(lam.real(), lam.imag());
         w = w - uv[i] * lamf;
         resAccept = std::sqrt(norm2(w) / norm2(uv[i]));   // use RAW residual to accept
       }
