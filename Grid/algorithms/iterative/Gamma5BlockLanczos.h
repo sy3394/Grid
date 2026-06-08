@@ -100,6 +100,15 @@ private:
   // while remaining g5bl (same subspace, same short recurrence).
   bool refined_ = false;
 
+  // Optional RAW convergence check: judge convergence by the Euclidean residual
+  // of the true operator D_W, ||D_W u - lambda u||/||u||, rather than the
+  // operator g5bl runs on.  In shift-invert g5bl runs on M=(D_W-sigma)^{-1}, so
+  // lambda = sigma + 1/mu; set rawShift_=true and rawSigma_=sigma.  This is the
+  // metric-correct convergence criterion (gamma5 is only for the recurrence).
+  LinearOperatorBase<Field>* rawOp_ = nullptr;
+  double rawSigma_   = 0.0;
+  bool   rawShift_   = false;
+
 public:
   Gamma5BlockLanczos(LinearOperatorBase<Field>& op, GridBase* grid,
                      Gamma5Func g5, RealD tol = 1e-8, int verbose = 1)
@@ -112,6 +121,11 @@ public:
   long                      getLookaheads() const { return lookaheadCount_; }
   void                      setDegenRel(RealD r)   { degenRel_ = r; }
   void                      setRefined(bool b)      { refined_ = b; }
+  // Judge convergence by the raw D_W Euclidean residual.  rawOp = D_W; for
+  // shift-invert pass shiftInvert=true and sigma so lambda = sigma + 1/mu.
+  void setRawCheck(LinearOperatorBase<Field>* rawOp, double sigma, bool shiftInvert) {
+    rawOp_ = rawOp; rawSigma_ = sigma; rawShift_ = shiftInvert;
+  }
   const std::vector<double>& getKappaGamma() const { return kappaGamma_; }
   const std::vector<double>& getEtaLoss()    const { return etaLoss_;    }
   const std::vector<double>& getCycleBestRes() const { return cycleBestRes_; }
@@ -413,6 +427,22 @@ private:
       for (int c = 0; c < (int)Q_[m].size(); c++) rj = rj + Q_[m][c] * Bt(c);
       residuals_.push_back(std::sqrt(norm2(rj)));
     }
+    applyRawCheck();
+  }
+
+  // Overwrite residuals_ with the RAW D_W Euclidean residual ||D_W u - lambda u||/||u||
+  // (lambda = sigma + 1/mu in shift-invert).  Metric-correct convergence criterion.
+  void applyRawCheck() {
+    if (!rawOp_) return;
+    Field w(Grid_);
+    for (int i = 0; i < (int)evecs_.size(); i++) {
+      Cd mu(real(evals_(i)), imag(evals_(i)));
+      Cd lam = rawShift_ ? (rawSigma_ + 1.0/mu) : mu;
+      rawOp_->Op(evecs_[i], w);
+      typename Field::scalar_type lf(lam.real(), lam.imag());
+      Field t(Grid_); t = w - evecs_[i] * lf;
+      residuals_[i] = std::sqrt(norm2(t) / norm2(evecs_[i]));
+    }
   }
 
   // Refined Ritz: for each Ritz value mu_j (from T_m), the refined vector is the
@@ -463,6 +493,7 @@ private:
       evecs_.push_back(uj);
       residuals_.push_back(std::sqrt(std::max(0.0, theta)));  // ||(M-mu)u||/||u||
     }
+    applyRawCheck();
   }
 
   // --- locking / deflation (converged conjugate pairs) ---

@@ -630,6 +630,7 @@ int main(int argc, char** argv) {
     Gamma5BlockLanczos<FermionField> g(SIop, UGrid, gamma5, tol, 1);
     if (degen>0) g.setDegenRel(degen);
     if (refined) g.setRefined(true);
+    g.setRawCheck(&DLinDirect, sg, /*shiftInvert=*/true);  // lock on raw D_W residual
 
     GridStopWatch sw; sw.Start();
     if (isoOnly) g(v0, v1, steps, reorth, G5SortAbsDescending);
