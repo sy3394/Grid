@@ -38,6 +38,7 @@
 
 #include <Grid/Grid.h>
 #include <Grid/algorithms/iterative/Gamma5BlockLanczos.h>
+#include <functional>
 
 using namespace std;
 using namespace Grid;
@@ -111,6 +112,67 @@ static void arnoldi(LinearOperatorBase<Field>& Op, GridBase* grid, const Field& 
     double hn = std::sqrt(norm2(w)); H(j + 1, j) = hn;
     if (hn < 1e-12) { mdone = j + 1; break; }
     if (j + 1 < m) V.push_back(w * (1.0/hn));
+  }
+}
+
+// ---- Block Arnoldi (block size 2) seeded with [v, g5 v]; Euclidean-orthonormal ----
+// Spans the SAME block Krylov subspace as g5bl, but in the Euclidean metric (so the
+// basis is perfectly conditioned and the Ritz extraction has no oblique penalty).
+// Returns the flat column basis V (p*(nblk+1) columns) and the block upper-Hessenberg
+// H of size p*(nblk+1) x p*nblk.  Orthogonalisation is done twice for stability.
+template<class Field>
+static void blockArnoldiG5(LinearOperatorBase<Field>& Op, GridBase* grid, const Field& v0,
+                           std::function<void(const Field&, Field&)> g5, int nblk,
+                           std::vector<Field>& V, Eigen::MatrixXcd& H) {
+  const int p = 2;
+  auto cd = [](ComplexD z){ return std::complex<double>((double)real(z), (double)imag(z)); };
+  GridParallelRNG rng(grid); rng.SeedFixedIntegers({9,8,7,6});
+  V.clear();
+  Field a(grid), b(grid), w(grid);
+  a = v0; a = a * (1.0/std::sqrt(norm2(a)));
+  g5(v0, b); { ComplexD h = innerProduct(a, b); b = b - a*h; }   // [v, g5 v], orthonormal
+  b = b * (1.0/std::sqrt(norm2(b)));
+  V.push_back(a); V.push_back(b);
+  H = Eigen::MatrixXcd::Zero(p*(nblk+1), p*nblk);
+  for (int j = 0; j < nblk; j++) {
+    for (int c = 0; c < p; c++) {
+      Op.Op(V[p*j + c], w);
+      int prev = (int)V.size();                  // all columns already orthonormal
+      for (int pass = 0; pass < 2; pass++)
+        for (int i = 0; i < prev; i++) {
+          ComplexD h = innerProduct(V[i], w);
+          H(i, p*j + c) += cd(h); w = w - V[i]*h;
+        }
+      double nrm = std::sqrt(norm2(w));
+      if (nrm < 1e-10) {                          // breakdown: continue with a fresh dir
+        gaussian(rng, w);
+        for (int i = 0; i < prev; i++) { ComplexD h = innerProduct(V[i], w); w = w - V[i]*h; }
+        nrm = std::sqrt(norm2(w));
+      }
+      H(prev, p*j + c) = nrm;
+      V.push_back(w * (1.0/nrm));
+    }
+  }
+}
+
+// ---- Refined Ritz extraction from an (block) Arnoldi factorisation A V_m = V_{m+1} Hbar.
+// For each Ritz value theta of H[0:pm,0:pm], the refined vector minimises the Euclidean
+// residual ||A u - theta u|| over span(V_m): the smallest right singular vector of
+// (Hbar - theta [I;0]).  lamOf maps theta back to the D_W eigenvalue. ----
+template<class Field>
+static void refinedRitz(const std::vector<Field>& V, const Eigen::MatrixXcd& H, int p, int m,
+                        GridBase* grid, std::function<std::complex<double>(std::complex<double>)> lamOf,
+                        std::vector<std::complex<double>>& L, std::vector<Field>& U) {
+  int pm = p*m;
+  Eigen::ComplexEigenSolver<Eigen::MatrixXcd> es(H.block(0, 0, pm, pm), false);
+  Eigen::MatrixXcd Hbar = H.block(0, 0, p*(m+1), pm);
+  for (int j = 0; j < pm; j++) {
+    std::complex<double> th = es.eigenvalues()(j);
+    Eigen::MatrixXcd C = Hbar; for (int i = 0; i < pm; i++) C(i, i) -= th;
+    Eigen::JacobiSVD<Eigen::MatrixXcd> svd(C, Eigen::ComputeThinV);
+    Eigen::VectorXcd y = svd.matrixV().col(pm - 1);
+    Field u(grid); u = Zero(); for (int k = 0; k < pm; k++) u = u + V[k]*y(k);
+    L.push_back(lamOf(th)); U.push_back(u);
   }
 }
 
@@ -293,7 +355,23 @@ int main(int argc, char** argv) {
       auto s = rawStats(L, U);
       fa << m << " " << gmin << " " << s[0] << " " << (int)s[1] << " " << (int)s[2] << "\n";
     }
-    std::cout << GridLogMessage << "histories -> " << out << ".{g5bl,arnoldi}.hist" << std::endl;
+    std::cout << GridLogMessage << "arnoldi (single-vector): " << adone << " steps" << std::endl;
+
+    // block Arnoldi seeded with [v, g5 v], refined extraction -- the real competitor.
+    std::vector<FermionField> Vb; Eigen::MatrixXcd Hb;
+    std::function<std::complex<double>(std::complex<double>)> lamFn =
+        [&](std::complex<double> mu){ return lamOf(mu); };
+    blockArnoldiG5<FermionField>(M, UGrid, v0, gamma5, steps, Vb, Hb);
+    std::ofstream fb(out + ".blockarnoldi.hist");
+    fb << "# krylov_dim min_refined_raw n_refined_1e-2 n_refined_1e-4\n";
+    for (int m = 1; m <= steps; m++) {
+      std::vector<std::complex<double>> L; std::vector<FermionField> U;
+      refinedRitz<FermionField>(Vb, Hb, 2, m, UGrid, lamFn, L, U);
+      auto s = rawStats(L, U);
+      fb << 2*m << " " << s[0] << " " << (int)s[1] << " " << (int)s[2] << "\n";
+    }
+    std::cout << GridLogMessage << "histories -> " << out
+              << ".{g5bl,arnoldi,blockarnoldi}.hist" << std::endl;
     Grid_finalize(); return 0;
   }
 
@@ -329,13 +407,27 @@ int main(int argc, char** argv) {
     }
     long a_app = SI.nApply, a_cg = SI.nCG; int a_c = nconv(La, Ua);
 
-    std::cout << GridLogMessage << "HEAD-TO-HEAD sigma=" << sg << " accept=" << accept << std::endl;
-    std::cout << GridLogMessage << std::setw(18) << "method" << std::setw(12) << "krylov_dim"
-              << std::setw(12) << "CG_iters" << std::setw(10) << "time(s)" << std::setw(10) << "conv" << std::endl;
-    std::cout << GridLogMessage << std::setw(18) << "g5bl" << std::setw(12) << g_app << std::setw(12) << g_cg
-              << std::setw(10) << t1.useconds()*1e-6 << std::setw(10) << g_c << std::endl;
-    std::cout << GridLogMessage << std::setw(18) << "arnoldi" << std::setw(12) << a_app << std::setw(12) << a_cg
-              << std::setw(10) << t2.useconds()*1e-6 << std::setw(10) << a_c << std::endl;
+    SI.nApply = SI.nCG = 0;
+    std::vector<FermionField> Vb; Eigen::MatrixXcd Hb;
+    std::function<std::complex<double>(std::complex<double>)> lamFn =
+        [&](std::complex<double> mu){ return sg + 1.0/mu; };
+    GridStopWatch t3; t3.Start();
+    blockArnoldiG5<FermionField>(SI, UGrid, v0, gamma5, steps, Vb, Hb);
+    std::vector<std::complex<double>> Lb; std::vector<FermionField> Ub;
+    refinedRitz<FermionField>(Vb, Hb, 2, steps, UGrid, lamFn, Lb, Ub);
+    t3.Stop();
+    long b_app = SI.nApply, b_cg = SI.nCG; int b_c = nconv(Lb, Ub);
+
+    std::cout << GridLogMessage << "HEAD-TO-HEAD sigma=" << sg << " accept=" << accept
+              << " (Krylov dim = 2*steps = " << budget << ")" << std::endl;
+    std::cout << GridLogMessage << std::setw(20) << "method" << std::setw(12) << "krylov_dim"
+              << std::setw(12) << "CG_iters" << std::setw(10) << "time(s)" << std::setw(8) << "conv" << std::endl;
+    auto row = [&](const std::string& nm, long app, long cg, double tm, int cv){
+      std::cout << GridLogMessage << std::setw(20) << nm << std::setw(12) << app << std::setw(12) << cg
+                << std::setw(10) << tm << std::setw(8) << cv << std::endl; };
+    row("g5bl (refined)",        g_app, g_cg, t1.useconds()*1e-6, g_c);
+    row("arnoldi (1-vec std)",   a_app, a_cg, t2.useconds()*1e-6, a_c);
+    row("blockArnoldi [v,g5v]",  b_app, b_cg, t3.useconds()*1e-6, b_c);
     Grid_finalize(); return 0;
   }
 
