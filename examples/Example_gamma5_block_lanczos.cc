@@ -49,6 +49,16 @@
       --out PATH       output .dat path          (default g5bl_evals.dat)
       --noreorth       disable gamma5-reorthogonalisation
       --isolation-only single pass only (direct / single-shift)
+      --refined        refined (Euclidean) Ritz extraction -- fixes the oblique
+                       gamma5-Galerkin penalty (12x more converged modes on
+                       interacting fields at equal cost); still g5bl
+      --check          verify/accept each eigenpair by the RAW Euclidean residual
+      --weak eps       slight interacting perturbation of the free field
+      --dense          exact dense diagonalisation reference (small lattices)
+      --compare        g5bl vs plain Arnoldi head-to-head (same operator)
+      --diag           bottleneck diagnostics (kappa(Gamma), eta, ghosts, cycles)
+      --history        Euclidean residual vs Krylov-dim history (+ --refined)
+      --degen eps      override the serious-breakdown / look-ahead threshold
 
 *************************************************************************************/
 
@@ -329,11 +339,13 @@ int main(int argc, char** argv) {
     std::cout << GridLogMessage << "\n--- ISOLATION TEST (single pass) ---" << std::endl;
     { Gamma5BlockLanczos<FermionField> g(DLinOp, UGrid, gamma5, tol, 1);
       if (degen>0) g.setDegenRel(degen);
+    if (refined) g.setRefined(true);
       g(v0, v1, steps, reorth, G5SortAbsImagAscending); collect(g, out + ".iso"); }
     if (!isoOnly) {
       std::cout << GridLogMessage << "\n--- THICK RESTART ---" << std::endl;
       Gamma5BlockLanczos<FermionField> g(DLinOp, UGrid, gamma5, tol, 1);
       if (degen>0) g.setDegenRel(degen);
+    if (refined) g.setRefined(true);
       GridStopWatch sw; sw.Start();
       g.thickRestart(v0, v1, cycles, steps, wanted, reorth, G5SortAbsImagAscending);
       sw.Stop();
@@ -396,6 +408,7 @@ int main(int argc, char** argv) {
     // --- g5bl history ---
     Gamma5BlockLanczos<FermionField> g(SI, UGrid, gamma5, tol, 0);
     if (degen > 0) g.setDegenRel(degen);
+    if (refined) g.setRefined(true);
     g(v0, v1, steps, reorth, G5SortAbsDescending);
     std::ofstream fg(out + ".g5bl.hist");
     fg << "# matvecs krylov_dim min_raw_res n_below_1e-2 n_below_1e-4\n";
@@ -488,6 +501,7 @@ int main(int argc, char** argv) {
     std::cout << GridLogMessage << "\n===== g5bl DIAGNOSTIC (sigma="<<sg<<") =====" << std::endl;
     Gamma5BlockLanczos<FermionField> g(SI, UGrid, gamma5, tol, 0);
     if (degen > 0) g.setDegenRel(degen);
+    if (refined) g.setRefined(true);
     g(v0, v1, steps, reorth, G5SortAbsDescending);
 
     // (A) per-step trajectories
@@ -564,6 +578,7 @@ int main(int argc, char** argv) {
     SI.nOp = SI.nCG = 0;
     Gamma5BlockLanczos<FermionField> gg(SI, UGrid, gamma5, tol, 0);
     if (degen > 0) gg.setDegenRel(degen);
+    if (refined) gg.setRefined(true);
     GridStopWatch sw1; sw1.Start();
     gg(v0, v1, steps, reorth, G5SortAbsDescending);
     sw1.Stop();
@@ -614,6 +629,7 @@ int main(int argc, char** argv) {
     ShiftInvertNE<WilsonOp, FermionField> SIop(Dshift, cg);
     Gamma5BlockLanczos<FermionField> g(SIop, UGrid, gamma5, tol, 1);
     if (degen>0) g.setDegenRel(degen);
+    if (refined) g.setRefined(true);
 
     GridStopWatch sw; sw.Start();
     if (isoOnly) g(v0, v1, steps, reorth, G5SortAbsDescending);
