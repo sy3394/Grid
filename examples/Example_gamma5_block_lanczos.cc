@@ -357,10 +357,22 @@ int main(int argc, char** argv) {
     }
     std::cout << GridLogMessage << "arnoldi (single-vector): " << adone << " steps" << std::endl;
 
-    // block Arnoldi seeded with [v, g5 v], refined extraction -- the real competitor.
-    std::vector<FermionField> Vb; Eigen::MatrixXcd Hb;
     std::function<std::complex<double>(std::complex<double>)> lamFn =
         [&](std::complex<double> mu){ return lamOf(mu); };
+
+    // single-vector Arnoldi with REFINED extraction: isolates the refined-extraction
+    // effect from the block-seeding effect (same basis as arnoldi.hist above).
+    std::ofstream fr(out + ".arnoldiref.hist");
+    fr << "# krylov_dim min_refined_raw n_refined_1e-2 n_refined_1e-4\n";
+    for (int m = 1; m <= adone; m++) {
+      std::vector<std::complex<double>> L; std::vector<FermionField> U;
+      refinedRitz<FermionField>(Va, H, 1, m, UGrid, lamFn, L, U);
+      auto s = rawStats(L, U);
+      fr << m << " " << s[0] << " " << (int)s[1] << " " << (int)s[2] << "\n";
+    }
+
+    // block Arnoldi seeded with [v, g5 v], refined extraction -- the real competitor.
+    std::vector<FermionField> Vb; Eigen::MatrixXcd Hb;
     blockArnoldiG5<FermionField>(M, UGrid, v0, gamma5, steps, Vb, Hb);
     std::ofstream fb(out + ".blockarnoldi.hist");
     fb << "# krylov_dim min_refined_raw n_refined_1e-2 n_refined_1e-4\n";
@@ -371,7 +383,7 @@ int main(int argc, char** argv) {
       fb << 2*m << " " << s[0] << " " << (int)s[1] << " " << (int)s[2] << "\n";
     }
     std::cout << GridLogMessage << "histories -> " << out
-              << ".{g5bl,arnoldi,blockarnoldi}.hist" << std::endl;
+              << ".{g5bl,arnoldi,arnoldiref,blockarnoldi}.hist" << std::endl;
     Grid_finalize(); return 0;
   }
 
@@ -382,8 +394,12 @@ int main(int argc, char** argv) {
     ConjugateGradient<FermionField> cg(stol, siter, false);
     ShiftInvertNE<WilsonOp, FermionField> SI(Dsh, cg);
     int budget = 2 * steps;
+    // count DISTINCT converged modes (dedup nearby eigenvalues so duplicate refined
+    // Ritz vectors don't inflate the breadth count).
     auto nconv = [&](const std::vector<std::complex<double>>& L, const std::vector<FermionField>& U){
-      int n = 0; for (int i = 0; i < (int)L.size(); i++) if (rawRes(U[i], L[i]) < accept) n++; return n; };
+      std::vector<EvalRes> C;
+      for (int i = 0; i < (int)L.size(); i++) { double r = rawRes(U[i], L[i]); if (r < accept) addDedup(C, L[i], r, dedupe); }
+      return (int)C.size(); };
 
     SI.nApply = SI.nCG = 0;
     Gamma5BlockLanczos<FermionField> g(SI, UGrid, gamma5, tol, 0);
@@ -407,10 +423,14 @@ int main(int argc, char** argv) {
     }
     long a_app = SI.nApply, a_cg = SI.nCG; int a_c = nconv(La, Ua);
 
-    SI.nApply = SI.nCG = 0;
-    std::vector<FermionField> Vb; Eigen::MatrixXcd Hb;
     std::function<std::complex<double>(std::complex<double>)> lamFn =
         [&](std::complex<double> mu){ return sg + 1.0/mu; };
+    std::vector<std::complex<double>> Lar; std::vector<FermionField> Uar;
+    refinedRitz<FermionField>(Va, H, 1, adone, UGrid, lamFn, Lar, Uar);   // single-vec REFINED
+    int ar_c = nconv(Lar, Uar);
+
+    SI.nApply = SI.nCG = 0;
+    std::vector<FermionField> Vb; Eigen::MatrixXcd Hb;
     GridStopWatch t3; t3.Start();
     blockArnoldiG5<FermionField>(SI, UGrid, v0, gamma5, steps, Vb, Hb);
     std::vector<std::complex<double>> Lb; std::vector<FermionField> Ub;
@@ -425,8 +445,10 @@ int main(int argc, char** argv) {
     auto row = [&](const std::string& nm, long app, long cg, double tm, int cv){
       std::cout << GridLogMessage << std::setw(20) << nm << std::setw(12) << app << std::setw(12) << cg
                 << std::setw(10) << tm << std::setw(8) << cv << std::endl; };
+    std::cout << GridLogMessage << "(conv = DISTINCT modes with raw residual < accept)" << std::endl;
     row("g5bl (refined)",        g_app, g_cg, t1.useconds()*1e-6, g_c);
     row("arnoldi (1-vec std)",   a_app, a_cg, t2.useconds()*1e-6, a_c);
+    row("arnoldi (1-vec refed)", a_app, a_cg, t2.useconds()*1e-6, ar_c);
     row("blockArnoldi [v,g5v]",  b_app, b_cg, t3.useconds()*1e-6, b_c);
     Grid_finalize(); return 0;
   }
