@@ -405,10 +405,10 @@ int main(int argc, char** argv) {
       }
       return {mn, (double)b2, (double)b4}; };
 
-    // --- g5bl history ---
+    // --- g5bl history (ALWAYS standard gamma5-Galerkin extraction; the refined
+    //     curve is a separate file below, so this stays the honest baseline) ---
     Gamma5BlockLanczos<FermionField> g(SI, UGrid, gamma5, tol, 0);
     if (degen > 0) g.setDegenRel(degen);
-    if (refined) g.setRefined(true);
     g(v0, v1, steps, reorth, G5SortAbsDescending);
     std::ofstream fg(out + ".g5bl.hist");
     fg << "# matvecs krylov_dim min_raw_res n_below_1e-2 n_below_1e-4\n";
