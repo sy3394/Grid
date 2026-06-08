@@ -13,16 +13,19 @@
 
 # ---------------------------------------------------------------------------
 # Performance analysis on 32^4: Euclidean residual & #converged-modes vs Krylov
-# dimension for g5bl and plain Arnoldi on the SAME shift-inverted operator
-# (D_W - sigma)^{-1}.  No SLEPc needed.
+# dimension for three methods on the SAME shift-inverted operator (D_W-sigma)^{-1}:
+#   g5bl         - gamma5-Block Lanczos (gamma5 metric, refined extraction)
+#   blockarnoldi - block Arnoldi seeded with [v, gamma5 v] (Euclidean, refined)
+#   arnoldi      - single-vector Arnoldi, standard Ritz (baseline)
+# No SLEPc needed.
 #
-# Writes <out>.g5bl.hist, <out>.arnoldi.hist with
-#   krylov_dim  min_raw_res  n_below_1e-2  n_below_1e-4
-# All residuals are the RAW Euclidean D_W residual ||D_W u - lambda u||/||u||.
+# Writes <out>.{g5bl,blockarnoldi,arnoldi}.hist.  The honest raw Euclidean residual
+# ||D_W u - lambda u||/||u|| is column 'min_refined_raw' (g5bl, blockarnoldi) or
+# 'min_raw_res' (arnoldi); see each file's header line.
 # Krylov dim = number of (D_W - sigma)^{-1} applications.
 #
-# Pull the .hist files back to ~/BNL/G5BL/data and plot with
-# g5bl_performance.ipynb.
+# Pull the .hist files back to ~/BNL/G5BL/data and plot with g5bl_performance.ipynb.
+# The --compare run prints a 3-row head-to-head (g5bl / arnoldi / blockArnoldi).
 # ---------------------------------------------------------------------------
 
 cat << EOF > select_gpu
@@ -65,4 +68,4 @@ srun ./select_gpu ${EXE} --grid 32.32.32.32 --mpi 1.2.2.2 ${GRIDOPT} \
     --config ${CONFIG} --mass ${MASS} --shift ${SIGMA} \
     --stol ${STOL} --siter ${SITER} --steps 30 --accept 1e-2 --compare
 
-echo "Done.  Copy ${OUT}.*.hist to ~/BNL/G5BL/data and run g5bl_performance.ipynb"
+echo "Done.  Copy ${OUT}.{g5bl,blockarnoldi,arnoldi}.hist to ~/BNL/G5BL/data and run g5bl_performance.ipynb"

@@ -56,8 +56,9 @@ converged conjugate pairs and deflates them.
 --out PATH        output .dat
 --isolation-only  single non-restarted pass
 --dense           exact dense diagonalisation (small lattices)
---compare         head-to-head vs plain Arnoldi (same operator, equal Krylov dim)
---history         residual & #converged vs Krylov dim, g5bl and Arnoldi
+--compare         head-to-head: g5bl vs single-vector Arnoldi vs block Arnoldi
+                  seeded with [v, g5 v] (same operator, equal Krylov dim)
+--history         residual & #converged vs Krylov dim for all three methods
 ```
 
 ## Cost reporting
@@ -77,8 +78,20 @@ Place the two source files, then either register the example via
 - Free field (cold): D_W eigenvalues match the analytic free-Wilson spectrum.
 - Shift-invert (cold): recovers the eigenvalue nearest `sigma` to ~8 digits.
 
+## Comparison with Euclidean Arnoldi
+
+Grid has no non-Hermitian Arnoldi/Krylov-Schur eigensolver, so the driver also
+implements a **block Arnoldi seeded with `[v, g5 v]`** (`blockArnoldiG5`) plus
+**refined Ritz extraction** (`refinedRitz`). This spans the *same* block Krylov
+subspace as g5bl but in the Euclidean metric — a perfectly-conditioned orthonormal
+basis, no oblique-projection penalty, standard restart. On weak 8^4 (shift-invert,
+interior modes) it converges *identically* to g5bl, confirming the g5 metric buys
+nothing for interior modes: the smooth convergence comes from refined extraction
+plus block seeding, not the metric. The Euclidean version is the simpler, more
+robust production choice.
+
 ## Performance analysis
 
-Run `--history` to write `<out>.g5bl.hist` and `<out>.arnoldi.hist`
-(`krylov_dim  min_raw_res  n_below_1e-2  n_below_1e-4`); plot with
-`~/BNL/G5BL/g5bl_performance.ipynb`.
+Run `--history` to write `<out>.{g5bl,blockarnoldi,arnoldi}.hist` (the honest raw
+Euclidean residual is `min_refined_raw` for g5bl/blockarnoldi, `min_raw_res` for
+arnoldi; see each file header); plot with `~/BNL/G5BL/g5bl_performance.ipynb`.
