@@ -1,13 +1,19 @@
-# gamma5-Block Lanczos for the Wilson Dirac operator
+# Interior eigenvalues of the Wilson Dirac operator
 
-Computes complex eigenvalues of `D_W` directly (not `H_W = g5 D_W`) using the
-gamma5-Block Lanczos algorithm in the indefinite gamma5 inner product
-`(u,v) = u^dag g5 v`.
+Computes complex eigenvalues of `D_W` directly (not `H_W = g5 D_W`).
+
+Two solvers are provided (see "Comparison" below):
+
+- **RefinedArnoldi** (`Grid/algorithms/iterative/RefinedArnoldi.h`) — single-vector
+  Arnoldi + refined Ritz extraction. **The default**, and the better method for
+  interior modes.
+- **gamma5-Block Lanczos** (`Grid/algorithms/iterative/Gamma5BlockLanczos.h`) — the
+  gamma5-metric block method (`--g5bl`); kept for comparison and for the manuscript.
 
 Reference: S. Yamamoto, *gamma5-Block Krylov (Block Lanczos) Methods for the
 Wilson Dirac Operator* (2026).
 
-## Algorithm
+## Algorithm (gamma5-Block Lanczos)
 
 `D_W` is self-adjoint in the gamma5 inner product, so the block Krylov recurrence
 is three-term (block-tridiagonal `T_m`) at block size 2 — targeting conjugate
@@ -47,9 +53,11 @@ converged conjugate pairs and deflates them.
 --mass m          Wilson bare mass
 --shift sigma     single shift-invert about real sigma
 --shift-sweep lo:hi:n   sweep n shifts
---steps N         Lanczos steps per pass
---wanted N        wanted conjugate pairs
---cycles N        thick-restart cycles
+--steps N         base step count (default Krylov dim = 2*N)
+--krylov N        RefinedArnoldi Krylov dimension (default 2*steps)
+--g5bl            use gamma5-block Lanczos instead of the default RefinedArnoldi
+--wanted N        (--g5bl only) wanted conjugate pairs
+--cycles N        (--g5bl only) thick-restart cycles
 --tol eps         convergence/locking tolerance (raw Euclidean residual)
 --accept eps      keep sweep modes with raw residual < eps
 --stol eps        inner CG tolerance
