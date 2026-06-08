@@ -72,7 +72,7 @@ class RefinedArnoldi {
   }
 
 public:
-  RefinedArnoldi(LinearOperatorBase<Field>& M, GridBase* grid, RealD tol = 1e-8, int verbose = 1)
+  RefinedArnoldi(LinearOperatorBase<Field>& M, GridBase* grid, RealD tol = 1e-10, int verbose = 1)
     : M_(M), Grid_(grid), tol_(tol), verbose_(verbose) {}
 
   // Judge convergence on the raw operator dW (lambda = sigma + 1/mu if shiftInvert).

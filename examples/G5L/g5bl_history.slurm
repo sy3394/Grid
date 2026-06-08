@@ -12,16 +12,15 @@
 #SBATCH -o g5bl_hist_%j.out
 
 # ---------------------------------------------------------------------------
-# Performance analysis on 32^4: Euclidean residual & #converged-modes vs Krylov
-# dimension for three methods on the SAME shift-inverted operator (D_W-sigma)^{-1}:
-#   g5bl         - gamma5-Block Lanczos (gamma5 metric, refined extraction)
-#   blockarnoldi - block Arnoldi seeded with [v, gamma5 v] (Euclidean, refined)
-#   arnoldi      - single-vector Arnoldi, standard Ritz (baseline)
+# Performance analysis on 32^4: raw Euclidean residual & #converged-modes vs Krylov
+# dimension for the two Grid solvers on the SAME shift-inverted operator
+# (D_W - sigma)^{-1}:
+#   refinedarnoldi - RefinedArnoldi (single-vector Arnoldi + refined Ritz)
+#   g5bl           - Gamma5BlockLanczos (gamma5-metric block method)
 # No SLEPc needed.
 #
-# Writes <out>.{g5bl,blockarnoldi,arnoldi}.hist.  The honest raw Euclidean residual
-# ||D_W u - lambda u||/||u|| is column 'min_refined_raw' (g5bl, blockarnoldi) or
-# 'min_raw_res' (arnoldi); see each file's header line.
+# Writes <out>.{refinedarnoldi,g5bl}.hist with columns
+#   krylov_dim  min_raw_res  n_below_1e-6  n_below_1e-10
 # Krylov dim = number of (D_W - sigma)^{-1} applications.
 #
 # Pull the .hist files back to ~/BNL/G5BL/data and plot with g5bl_performance.ipynb.
@@ -51,21 +50,22 @@ OUT=hist702                                          # tag for the .hist files
 
 SIGMA=0.78        # centre of the reference cluster Re in [0.749,0.812]
 MASS=0
-STEPS=40          # Krylov dim up to 2*STEPS=80 for g5bl, up to 2*STEPS for Arnoldi
-STOL=1e-9         # inner CG tolerance
-SITER=20000
+STEPS=40          # RefinedArnoldi Krylov dim = 2*STEPS = 80; g5bl block steps = 40
+KRYLOV=80
+STOL=1e-11        # inner CG tolerance (double precision)
+SITER=30000
 
 GRIDOPT="--accelerator-threads 8 --comms-overlap --shm 4096 --shm-mpi 0"
 
-# Residual-vs-Krylov-dim history for g5bl and Arnoldi.
+# Residual-vs-Krylov-dim history for RefinedArnoldi and Gamma5BlockLanczos.
 srun ./select_gpu ${EXE} --grid 32.32.32.32 --mpi 1.2.2.2 ${GRIDOPT} \
     --config ${CONFIG} --mass ${MASS} --shift ${SIGMA} \
-    --stol ${STOL} --siter ${SITER} --steps ${STEPS} \
+    --stol ${STOL} --siter ${SITER} --steps ${STEPS} --krylov ${KRYLOV} \
     --history --out ${OUT}
 
-# (optional) one-shot head-to-head summary at a fixed budget:
+# (optional) one-shot head-to-head summary at equal Krylov dim:
 srun ./select_gpu ${EXE} --grid 32.32.32.32 --mpi 1.2.2.2 ${GRIDOPT} \
     --config ${CONFIG} --mass ${MASS} --shift ${SIGMA} \
-    --stol ${STOL} --siter ${SITER} --steps 30 --accept 1e-2 --compare
+    --stol ${STOL} --siter ${SITER} --steps ${STEPS} --krylov ${KRYLOV} --accept 1e-6 --compare
 
-echo "Done.  Copy ${OUT}.{g5bl,blockarnoldi,arnoldi}.hist to ~/BNL/G5BL/data and run g5bl_performance.ipynb"
+echo "Done.  Copy ${OUT}.{refinedarnoldi,g5bl}.hist to ~/BNL/G5BL/data and run g5bl_performance.ipynb"

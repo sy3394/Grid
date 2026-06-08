@@ -84,29 +84,27 @@ Place the two source files, then either register the example via
 ## Validation
 
 - Free field (cold): D_W eigenvalues match the analytic free-Wilson spectrum.
-- Shift-invert (cold): recovers the eigenvalue nearest `sigma` to ~8 digits.
+- Shift-invert (cold): recovers the eigenvalue nearest `sigma` to ~12 digits (e.g.
+  `lambda = (1-cos(pi/8)) + i sin(pi/8) = 0.076120 + 0.382683 i`).
 
-## Comparison with Euclidean Arnoldi (decomposition)
+## Why RefinedArnoldi is the default
 
-Grid has no non-Hermitian Arnoldi/Krylov-Schur eigensolver, so the driver also
-implements `blockArnoldiG5` (block Arnoldi seeded with `[v, g5 v]`), single-vector
-Arnoldi, and `refinedRitz` (refined Ritz extraction = smallest singular vector of
-`Hbar - theta [I;0]`).  `--history` and `--compare` decompose where g5bl's behaviour
-comes from.  On weak 8^4, shift-invert, interior modes (sigma in {0.1, 1.0}), equal
-Krylov dim and equal inner-CG cost:
+Run `--compare` / `--history` to see it directly. On weak 8^4, shift-invert, interior
+modes, at **equal Krylov dim and equal inner-CG cost**, RefinedArnoldi dominates
+Gamma5BlockLanczos (e.g. Krylov dim 80, sigma=0.1: 24 distinct modes converged to 1e-6
+and best residual 2e-12, vs g5bl's 5 modes and best 2e-7).  The reasons (established by
+the decomposition runs, see git history):
 
-- **Oblique projection is the killer.** Standard g5-Galerkin Ritz vectors have raw
-  Euclidean residual that never drops below ~0.1 (vs ~3e-4 for refined): a 100-400x
-  penalty. Refined extraction removes it.
-- **The g5 metric then buys nothing:** g5bl(refined) == blockArnoldi`[v,g5 v]`(refined)
-  (same subspace).
-- **The `[v, g5 v]` block seed is a liability,** not a help: it halves the Krylov depth
-  at fixed dim. Plain single-vector Arnoldi + refined extraction wins on distinct
-  converged modes (18 vs 12 at sigma=0.1, 12 vs 4 at sigma=1.0).
+- **Oblique projection hurts g5bl.** The standard g5-Galerkin Ritz vectors are
+  Euclidean-suboptimal; refined extraction (used by both solvers here) is what gives
+  good vectors.
+- **The g5 metric then buys nothing** over a Euclidean Krylov space of the same
+  dimension, and its indefinite basis is worse-conditioned.
+- **Block seeding is a liability** for non-degenerate D_W: it halves the Krylov depth
+  at fixed dimension, so single-vector Arnoldi resolves more interior modes.
 
-**Conclusion:** the only thing that mattered is **refined extraction**. The best
-method for interior D_W modes is **single-vector Euclidean Arnoldi + refined Ritz +
-shift-invert** — simpler than g5bl and better on both best-mode accuracy and breadth.
+The decisive ingredient is **refined extraction**; `RefinedArnoldi` packages it on a
+well-conditioned Euclidean basis.
 (Block seeding may still help a genuinely near-degenerate cluster; confirm on the
 real 32^4 config before deciding.)
 

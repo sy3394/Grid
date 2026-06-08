@@ -64,11 +64,11 @@ STEPS=40              # base step count; default Krylov dim = 2*STEPS
 KRYLOV=80             # RefinedArnoldi Krylov dimension (memory is ample on Frontier)
 WANTED=12             # (--g5bl only) wanted conjugate pairs per window
 CYCLES=6              # (--g5bl only) thick-restart cycles per shift
-TOL=1e-7              # convergence tolerance (raw Euclidean residual)
-ACCEPT=1e-4           # keep modes with raw residual < ACCEPT
-DEDUPE=1e-5           # merge modes within this distance in C
-STOL=1e-8             # inner normal-equations CG tolerance
-SITER=20000           # inner CG max iterations
+TOL=1e-10             # convergence tolerance (raw Euclidean residual; double precision)
+ACCEPT=1e-8           # keep modes with raw residual < ACCEPT
+DEDUPE=1e-6           # merge modes within this distance in C
+STOL=1e-11            # inner normal-equations CG tolerance (< ACCEPT)
+SITER=30000           # inner CG max iterations
 
 # NUMA/CPU binding is handled by numactl inside select_gpu; do NOT pass
 # --cpu-bind=map_ldom to srun (Frontier rejects it unless whole-node, and it
