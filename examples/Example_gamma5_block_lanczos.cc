@@ -206,8 +206,8 @@ int main(int argc, char** argv) {
     DW.Op(u, wbuf); ComplexD lf(lam.real(), lam.imag());
     FermionField t(UGrid); t = wbuf - u * lf; return std::sqrt(norm2(t)/norm2(u)); };
 
-  // ================= DIRECT mode =================
-  if (!shiftMode) {
+  // ================= DIRECT mode (eigenvalue computation) =================
+  if (!shiftMode && !hasOpt(argc, argv, "--history")) {
     auto report = [&](Gamma5BlockLanczos<FermionField>& g, const std::string& fn){
       const auto& ev = g.getEvals(); const auto& rs = g.getResiduals();
       std::vector<EvalRes> v;
@@ -227,49 +227,72 @@ int main(int argc, char** argv) {
     std::cout << GridLogMessage << "Done." << std::endl; Grid_finalize(); return 0;
   }
 
-  // ================= --history (g5bl vs Arnoldi, residual & #conv vs Krylov dim) =================
+  // ===== --history: internal residual vs RAW Euclidean residual, vs Krylov dim =====
+  // Works in DIRECT (M=D_W, lambda=mu) and SHIFT-INVERT (M=(D_W-sigma)^-1,
+  // lambda=sigma+1/mu) regimes.  Columns:
+  //   krylov_dim  min_internal_res  min_raw_res  n_raw<1e-2  n_raw<1e-4
+  // internal_res = the residual the method reports natively (g5bl: gamma5-Galerkin
+  // ||Q_{m+1}B_{m+1}tau||; Arnoldi: Hessenberg estimate).  raw_res = honest
+  // ||D_W u - lambda u||/||u||.  A fast-dropping internal residual with a lagging
+  // raw residual = optimistic convergence.
   if (hasOpt(argc, argv, "--history")) {
-    double sg = sigmas[0];
-    WilsonOp Dsh(Umu, *UGrid, *UrbGrid, mass - sg, wpar);
+    bool shift = shiftMode; double sg = shift ? sigmas[0] : 0.0;
+    WilsonOp Dsh(Umu, *UGrid, *UrbGrid, shift ? mass - sg : mass, wpar);
     ConjugateGradient<FermionField> cg(stol, siter, false);
     ShiftInvertNE<WilsonOp, FermionField> SI(Dsh, cg);
-    auto stats = [&](const std::vector<std::complex<double>>& L, const std::vector<FermionField>& U){
+    LinearOperatorBase<FermionField>& M = shift
+        ? static_cast<LinearOperatorBase<FermionField>&>(SI)
+        : static_cast<LinearOperatorBase<FermionField>&>(DW);
+    auto lamOf = [&](std::complex<double> mu){ return shift ? (sg + 1.0/mu) : mu; };
+    auto rawStats = [&](const std::vector<std::complex<double>>& L, const std::vector<FermionField>& U){
       double mn = 1e30; int b2 = 0, b4 = 0;
-      for (int i = 0; i < (int)L.size(); i++) { double r = rawRes(U[i], L[i]); mn = std::min(mn, r); if (r<1e-2) b2++; if (r<1e-4) b4++; }
-      return std::array<double,3>{mn, (double)b2, (double)b4}; };
+      for (int i = 0; i < (int)L.size(); i++) { double r = rawRes(U[i], L[i]); mn = std::min(mn,r); if(r<1e-2)b2++; if(r<1e-4)b4++; }
+      return std::array<double,3>{mn,(double)b2,(double)b4}; };
+    Gamma5RitzSort sort = shift ? G5SortAbsDescending : G5SortAbsImagAscending;
 
-    Gamma5BlockLanczos<FermionField> g(SI, UGrid, gamma5, tol, 0);
-    g.setRawCheck(&DW, sg, true);
-    g(v0, v1, steps, reorth, G5SortAbsDescending);
-    std::ofstream fg(out + ".g5bl.hist"); fg << "# krylov_dim min_raw_res n_below_1e-2 n_below_1e-4\n";
+    Gamma5BlockLanczos<FermionField> g(M, UGrid, gamma5, tol, 0);
+    if (shift) g.setRawCheck(&DW, sg, true);
+    g(v0, v1, steps, reorth, sort);
+    // Columns: galerkin_res = ||Q_{m+1}B_{m+1}tau|| of the standard V_m y vector (the
+    // metric the original code reported); galerkin_raw = the RAW residual of that
+    // SAME standard vector; refined_raw = the RAW residual of the refined vector.
+    std::ofstream fg(out + ".g5bl.hist");
+    fg << "# krylov_dim min_galerkin_res min_galerkin_raw min_refined_raw n_refined_1e-2 n_refined_1e-4\n";
     for (int m = 1; m <= g.getNumSteps(); m++) {
-      g.extractRitzAt(m, G5SortAbsDescending);
+      g.extractRitzAt(m, sort);
       const auto& ev = g.getEvals(); const auto& uv = g.getEvecs();
+      const auto& gr = g.getGalerkinResiduals(); const auto& grr = g.getGalerkinRawResiduals();
       std::vector<std::complex<double>> L; std::vector<FermionField> U;
-      for (int i = 0; i < (int)ev.size(); i++) { L.push_back(sg + 1.0/ev(i)); U.push_back(uv[i]); }
-      auto s = stats(L, U);
-      fg << (int)ev.size() << " " << s[0] << " " << (int)s[1] << " " << (int)s[2] << "\n";
+      double gmin = 1e30, grmin = 1e30;
+      for (int i = 0; i < (int)ev.size(); i++) {
+        L.push_back(lamOf(ev(i))); U.push_back(uv[i]);
+        if (i < (int)gr.size())  gmin  = std::min(gmin,  (double)gr[i]);
+        if (i < (int)grr.size()) grmin = std::min(grmin, (double)grr[i]);
+      }
+      auto s = rawStats(L, U);
+      fg << (int)ev.size() << " " << gmin << " " << grmin << " " << s[0] << " " << (int)s[1] << " " << (int)s[2] << "\n";
     }
-    std::cout << GridLogMessage << "g5bl: " << SI.nApply << " applications, " << SI.nCG << " total CG iters" << std::endl;
+    std::cout << GridLogMessage << "g5bl: " << g.getNumSteps() << " steps" << std::endl;
 
-    SI.nApply = SI.nCG = 0;
     std::vector<FermionField> Va; Eigen::MatrixXcd H; int adone;
-    arnoldi(SI, UGrid, v0, 2*steps, Va, H, adone);
-    std::ofstream fa(out + ".arnoldi.hist"); fa << "# krylov_dim min_raw_res n_below_1e-2 n_below_1e-4\n";
+    arnoldi(M, UGrid, v0, 2*steps, Va, H, adone);
+    std::ofstream fa(out + ".arnoldi.hist");
+    fa << "# krylov_dim min_internal_res min_raw_res n_raw_1e-2 n_raw_1e-4\n";
     for (int m = 1; m <= adone; m++) {
       Eigen::ComplexEigenSolver<Eigen::MatrixXcd> es(H.block(0, 0, m, m));
       auto lam = es.eigenvalues(); auto Y = es.eigenvectors();
+      double hsub = (m < (int)H.rows()) ? std::abs(H(m, m-1)) : 0.0, gmin = 1e30;
       std::vector<std::complex<double>> L; std::vector<FermionField> U;
       for (int j = 0; j < m; j++) {
-        L.push_back(sg + 1.0/lam(j));
+        L.push_back(lamOf(es.eigenvalues()(j)));
         FermionField u(UGrid); u = Zero();
         for (int k = 0; k < m && k < (int)Va.size(); k++) u = u + Va[k] * Y(k, j);
         U.push_back(u);
+        gmin = std::min(gmin, hsub * std::abs(Y(m-1, j)));   // Arnoldi internal estimate
       }
-      auto s = stats(L, U);
-      fa << m << " " << s[0] << " " << (int)s[1] << " " << (int)s[2] << "\n";
+      auto s = rawStats(L, U);
+      fa << m << " " << gmin << " " << s[0] << " " << (int)s[1] << " " << (int)s[2] << "\n";
     }
-    std::cout << GridLogMessage << "arnoldi: " << SI.nApply << " applications, " << SI.nCG << " total CG iters" << std::endl;
     std::cout << GridLogMessage << "histories -> " << out << ".{g5bl,arnoldi}.hist" << std::endl;
     Grid_finalize(); return 0;
   }

@@ -82,7 +82,9 @@ private:
 
   CVec               evals_;
   std::vector<Field> evecs_;
-  std::vector<RealD> residuals_;
+  std::vector<RealD> residuals_;     // raw Euclidean D_W residual (convergence metric)
+  std::vector<RealD> galerkinRes_;     // diagnostic: gamma5-Galerkin residual ||Q_{m+1}B_{m+1}tau|| of V_m y
+  std::vector<RealD> galerkinRawRes_;  // diagnostic: RAW Euclidean residual of the SAME vector V_m y
 
   // relative floor for a degenerate / neutral gamma5-Gram eigenvalue
   RealD degenRel_ = 1e-6;
@@ -102,7 +104,9 @@ public:
 
   const CVec&               getEvals()     const { return evals_;     }
   const std::vector<Field>& getEvecs()     const { return evecs_;     }
-  const std::vector<RealD>& getResiduals() const { return residuals_; }
+  const std::vector<RealD>& getResiduals()      const { return residuals_; }
+  const std::vector<RealD>& getGalerkinResiduals()    const { return galerkinRes_; }
+  const std::vector<RealD>& getGalerkinRawResiduals() const { return galerkinRawRes_; }
   int                       getNumLocked() const { return (int)lockG_.size(); }
   int                       getNumSteps()  const { return nSteps_; }
   long                      getLookaheads()const { return lookaheads_; }
@@ -303,6 +307,7 @@ private:
     }
     Eigen::ComplexEigenSolver<CMat> ces(Tm);
     CVec lam = ces.eigenvalues();
+    CMat Y   = ces.eigenvectors();        // for the diagnostic gamma5-Galerkin residual
     std::vector<int> idx(dim); std::iota(idx.begin(), idx.end(), 0);
     std::sort(idx.begin(), idx.end(), [&](int a, int b){ return ritzLess(lam(a), lam(b), sort); });
 
@@ -318,9 +323,26 @@ private:
     Blink.block(0, off[m-1], s_m, sz(m-1)) = B_[m-1];      // B_{m-1} E^T
 
     evals_.resize(dim); evecs_.clear(); residuals_.clear();
+    galerkinRes_.clear(); galerkinRawRes_.clear();
     evecs_.reserve(dim); residuals_.reserve(dim);
+    LinearOperatorBase<Field>* rop = dW_ ? dW_ : &M_;
+    Field rw(Grid_);
     for (int ji = 0; ji < dim; ji++) {
       Cd mu = lam(idx[ji]);
+      Cd lamD = (dW_ && shift_) ? (sigma_ + 1.0/mu) : mu;
+      // diagnostic: standard gamma5-Galerkin vector V_m y, its gamma5-residual and its RAW residual
+      { CVec yj = Y.col(idx[ji]);
+        CVec tau(sz(m-1)); for (int c = 0; c < sz(m-1); c++) tau(c) = yj(off[m-1] + c);
+        CVec Bt = B_[m-1] * tau;
+        Field rg(Grid_); rg = Zero();
+        for (int c = 0; c < s_m; c++) rg = rg + Q_[m][c] * Bt(c);
+        galerkinRes_.push_back(std::sqrt(norm2(rg)));
+        Field us(Grid_); us = Zero();
+        for (int k = 0; k < m; k++) for (int c = 0; c < sz(k); c++) us = us + Q_[k][c] * yj(off[k] + c);
+        rop->Op(us, rw);
+        typename Field::scalar_type lf(lamD.real(), lamD.imag());
+        Field t(Grid_); t = rw - us * lf;
+        galerkinRawRes_.push_back(std::sqrt(norm2(t) / norm2(us))); }
       // refined vector: min ||(M-mu) V_m z||/||V_m z||  =  smallest gen-eigpair (Krec^dag GE Krec, VE)
       CMat Krec(dim + s_m, dim);
       Krec.topRows(dim)    = Tm - mu * CMat::Identity(dim, dim);
