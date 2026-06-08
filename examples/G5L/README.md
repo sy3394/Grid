@@ -26,8 +26,11 @@ converged conjugate pairs and deflates them.
 
 ## Files
 
-- `Grid/algorithms/iterative/Gamma5BlockLanczos.h` — the algorithm (header only).
-- `examples/Example_gamma5_block_lanczos.cc` — driver (double precision).
+- `Grid/algorithms/iterative/RefinedArnoldi.h` — the default solver (header only).
+- `Grid/algorithms/iterative/Gamma5BlockLanczos.h` — the gamma5-block solver (header only).
+- `examples/Example_gamma5_block_lanczos.cc` — demonstrator/comparison driver.
+- `examples/Wilson_DW_spectrum.cc` — production driver: D_W eigenvalues in Re in [lo,hi].
+- `examples/G5L/dw_spectrum_0to2.slurm` — Frontier job: D_W spectrum in [0,2] per config.
 - `examples/G5L/g5bl_702_sweep.slurm` — Frontier shift-invert sweep.
 - `examples/G5L/g5bl_history.slurm`   — Frontier residual-vs-Krylov-dim history.
 - `examples/G5L/compare_evals.py`     — compare output vs a reference eval file.

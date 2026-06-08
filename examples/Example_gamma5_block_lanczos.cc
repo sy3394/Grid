@@ -85,12 +85,9 @@ static void denseDiag(LinearOperatorBase<Field>& Op, GridCartesian* grid,
   std::cout << GridLogMessage << "denseDiag -> " << fname << std::endl;
 }
 
-// ---- CLI helpers ----
-static std::string getOpt(int c, char** v, const std::string& k, const std::string& d="") {
-  for (int i = 1; i < c-1; i++) if (k == v[i]) return v[i+1]; return d;
-}
-static bool hasOpt(int c, char** v, const std::string& k) {
-  for (int i = 1; i < c; i++) if (k == v[i]) return true; return false;
+// ---- option parsing: Grid's CLI helpers (Grid/util/Init.h) + a default-valued wrapper ----
+static std::string argOr(int argc, char** argv, const std::string& k, const std::string& d) {
+  return GridCmdOptionExists(argv, argv + argc, k) ? GridCmdOptionPayload(argv, argv + argc, k) : d;
 }
 static std::vector<double> parseSweep(const std::string& s) {
   std::vector<double> r; double lo, hi; int n;
@@ -115,28 +112,28 @@ static void writeEvals(const std::string& fn, const std::string& tag, std::vecto
 int main(int argc, char** argv) {
   Grid_init(&argc, &argv);
 
-  RealD mass   = std::stod(getOpt(argc, argv, "--mass",   "0"));
-  int   steps  = std::stoi(getOpt(argc, argv, "--steps",  "30"));
-  int   kdim   = std::stoi(getOpt(argc, argv, "--krylov", std::to_string(2*steps)));
-  int   wanted = std::stoi(getOpt(argc, argv, "--wanted", "10"));
-  int   cycles = std::stoi(getOpt(argc, argv, "--cycles", "8"));
-  RealD tol    = std::stod(getOpt(argc, argv, "--tol",    "1e-10"));  // double precision
-  RealD stol   = std::stod(getOpt(argc, argv, "--stol",   "1e-11"));  // inner CG < accept
-  int   siter  = std::stoi(getOpt(argc, argv, "--siter",  "30000"));
-  RealD accept = std::stod(getOpt(argc, argv, "--accept", "1e-8"));   // converged if raw res < accept
-  RealD dedupe = std::stod(getOpt(argc, argv, "--dedupe", "1e-6"));
-  double weak  = hasOpt(argc, argv, "--weak") ? std::stod(getOpt(argc, argv, "--weak", "0.1")) : 0.0;
-  std::string cfg = getOpt(argc, argv, "--config", "");
-  std::string out = getOpt(argc, argv, "--out",    "g5bl_evals.dat");
-  std::string tag = getOpt(argc, argv, "--tag",    std::to_string(mass));
-  bool reorth  = !hasOpt(argc, argv, "--noreorth");
-  bool iso     = hasOpt(argc, argv, "--isolation-only");
-  bool cold    = hasOpt(argc, argv, "--cold");
-  bool useG5bl = hasOpt(argc, argv, "--g5bl");
+  RealD mass   = std::stod(argOr(argc, argv, "--mass",   "0"));
+  int   steps  = std::stoi(argOr(argc, argv, "--steps",  "30"));
+  int   kdim   = std::stoi(argOr(argc, argv, "--krylov", std::to_string(2*steps)));
+  int   wanted = std::stoi(argOr(argc, argv, "--wanted", "10"));
+  int   cycles = std::stoi(argOr(argc, argv, "--cycles", "8"));
+  RealD tol    = std::stod(argOr(argc, argv, "--tol",    "1e-10"));  // double precision
+  RealD stol   = std::stod(argOr(argc, argv, "--stol",   "1e-11"));  // inner CG < accept
+  int   siter  = std::stoi(argOr(argc, argv, "--siter",  "30000"));
+  RealD accept = std::stod(argOr(argc, argv, "--accept", "1e-8"));   // converged if raw res < accept
+  RealD dedupe = std::stod(argOr(argc, argv, "--dedupe", "1e-6"));
+  double weak  = GridCmdOptionExists(argv, argv+argc, "--weak") ? std::stod(argOr(argc, argv, "--weak", "0.1")) : 0.0;
+  std::string cfg = argOr(argc, argv, "--config", "");
+  std::string out = argOr(argc, argv, "--out",    "g5bl_evals.dat");
+  std::string tag = argOr(argc, argv, "--tag",    std::to_string(mass));
+  bool reorth  = !GridCmdOptionExists(argv, argv+argc, "--noreorth");
+  bool iso     = GridCmdOptionExists(argv, argv+argc, "--isolation-only");
+  bool cold    = GridCmdOptionExists(argv, argv+argc, "--cold");
+  bool useG5bl = GridCmdOptionExists(argv, argv+argc, "--g5bl");
 
   std::vector<double> sigmas;
-  if      (hasOpt(argc, argv, "--shift-sweep")) sigmas = parseSweep(getOpt(argc, argv, "--shift-sweep", ""));
-  else if (hasOpt(argc, argv, "--shift"))       sigmas = { std::stod(getOpt(argc, argv, "--shift", "0")) };
+  if      (GridCmdOptionExists(argv, argv+argc, "--shift-sweep")) sigmas = parseSweep(argOr(argc, argv, "--shift-sweep", ""));
+  else if (GridCmdOptionExists(argv, argv+argc, "--shift"))       sigmas = { std::stod(argOr(argc, argv, "--shift", "0")) };
   bool shiftMode = !sigmas.empty();
 
   GridCartesian* UGrid = SpaceTimeGrid::makeFourDimGrid(
@@ -171,7 +168,7 @@ int main(int argc, char** argv) {
   GridParallelRNG RNG(UGrid); RNG.SeedFixedIntegers({5,6,7,8});
   FermionField v0(UGrid), v1(UGrid); random(RNG, v0); random(RNG, v1);
 
-  if (hasOpt(argc, argv, "--dense")) { denseDiag(DW, UGrid, out + ".dense", tag); Grid_finalize(); return 0; }
+  if (GridCmdOptionExists(argv, argv+argc, "--dense")) { denseDiag(DW, UGrid, out + ".dense", tag); Grid_finalize(); return 0; }
 
   auto g5sort = shiftMode ? G5SortAbsDescending : G5SortAbsImagAscending;  // nearest-sigma / near-real
   auto rasort = shiftMode ? RASortAbsDescending : RASortAbsImagAscending;
@@ -184,7 +181,7 @@ int main(int argc, char** argv) {
     FermionField t(UGrid); t = wbuf - u * lf; return std::sqrt(norm2(t)/norm2(u)); };
 
   // ============================ --compare (equal Krylov dim) ============================
-  if (hasOpt(argc, argv, "--compare")) {
+  if (GridCmdOptionExists(argv, argv+argc, "--compare")) {
     double sg = shiftMode ? sigmas[0] : 0.0;
     WilsonOp Dsh(Umu, *UGrid, *UrbGrid, shiftMode ? mass - sg : mass, wpar);
     ConjugateGradient<FermionField> cg(stol, siter, false);
@@ -223,7 +220,7 @@ int main(int argc, char** argv) {
   }
 
   // ===================== --history (residual & #converged vs Krylov dim) =====================
-  if (hasOpt(argc, argv, "--history")) {
+  if (GridCmdOptionExists(argv, argv+argc, "--history")) {
     double sg = shiftMode ? sigmas[0] : 0.0;
     WilsonOp Dsh(Umu, *UGrid, *UrbGrid, shiftMode ? mass - sg : mass, wpar);
     ConjugateGradient<FermionField> cg(stol, siter, false);
