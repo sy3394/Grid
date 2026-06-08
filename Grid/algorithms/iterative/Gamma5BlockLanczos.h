@@ -4,24 +4,29 @@
 
     Source file: ./Grid/algorithms/iterative/Gamma5BlockLanczos.h
 
-    gamma5-Block Lanczos for gamma5-Hermitian operators (Wilson Dirac D_W).
+    gamma5-Block Lanczos for the Wilson Dirac operator D_W.
 
-    Reference: S. Yamamoto, "gamma5-Block Krylov (Block Lanczos) Methods for the
-    Wilson Dirac Operator" (2026).
+    D_W is self-adjoint in the indefinite gamma5 inner product (u,v) = u^dag g5 v.
+    This makes the block Krylov recurrence three-term (block-tridiagonal T_m) at
+    block size 2, building span{ [v,w], M[v,w], M^2[v,w], ... } and targeting
+    conjugate eigenvalue pairs together.  M is the operator supplied (D_W, or a
+    shift-invert (D_W - sigma)^{-1} for interior eigenvalues).
 
-    D_W is self-adjoint in the indefinite gamma5-inner product (u,v) = u^dag g5 v.
-    The block recurrence
+    Ritz VALUES come from T_m.  Ritz VECTORS are extracted by REFINED Ritz: each
+    vector is the EUCLIDEAN-residual minimiser over the Krylov subspace (a small
+    generalised eigenproblem), which avoids the suboptimality of the gamma5
+    (oblique) Galerkin projection while keeping the cheap gamma5 recurrence and the
+    conjugate-pair block structure.  Convergence is judged by the raw Euclidean
+    residual ||D_W u - lambda u|| / ||u|| (set via setRawCheck).
 
-        Q_{k+1} B_{k+1} = D_W Q_k - Q_k A_k - Q_{k-1} C_k,   Q_0 = 0,
+    A serious breakdown (a non-zero gamma5-neutral residual direction) is handled
+    by look-ahead: the residual block is augmented with M applied to the neutral
+    direction, restoring a non-degenerate gamma5-Gram; the block grows and T_m
+    stays block-tridiagonal with variable block sizes.
 
-    builds a block-tridiagonal projected matrix T_m whose eigenvalues approximate
-    eigenvalues of D_W directly (NOT those of H_W = g5 D_W).
-
-    Block sizes are VARIABLE: nominally 2 (a chiral pair), but a serious breakdown
-    (a non-zero gamma5-neutral residual direction) triggers LOOK-AHEAD -- the
-    residual block is augmented with D_W applied to the neutral direction, which
-    generically escapes the neutral cone, restoring a non-degenerate gamma5-Gram.
-    The block then grows; T_m remains block-tridiagonal with variable block sizes.
+    thickRestart() locks converged conjugate pairs, deflates them, and restarts
+    from the live spillover block (never re-applying the raw operator to converged
+    vectors, never dividing by a noise-level residual).
 
 *************************************************************************************/
 #ifndef GRID_GAMMA5_BLOCK_LANCZOS_H
@@ -29,7 +34,6 @@
 
 #include <functional>
 #include <numeric>
-#include <iomanip>
 #include <vector>
 
 NAMESPACE_BEGIN(Grid);
@@ -52,138 +56,100 @@ private:
   typedef Eigen::VectorXcd CVec;
   typedef std::complex<double> Cd;
 
-  LinearOperatorBase<Field>& Linop_;
+  LinearOperatorBase<Field>& M_;       // operator the Krylov space is built on
   GridBase*                  Grid_;
   Gamma5Func                 g5_;
   RealD                      tol_;
   int                        verbose_;
 
+  // Raw convergence operator: D_W and (for shift-invert) sigma, so the residual
+  // is judged on the true operator, lambda = sigma + 1/mu.  Always set in use.
+  LinearOperatorBase<Field>* dW_   = nullptr;
+  double                     sigma_ = 0.0;
+  bool                       shift_ = false;
+
   // Variable-size coefficient blocks: A_[k] (s_k x s_k), B_[k] (s_{k+1} x s_k),
-  // C_[k] (s_{k-1} x s_k), G_[k] (s_k x s_k = signature).  s_k = Q_[k].size().
+  // C_[k] (s_{k-1} x s_k), G_[k] (s_k x s_k = +-1 signature).  s_k = Q_[k].size().
   std::vector<CMat> A_, B_, C_, G_;
+  std::vector<std::vector<Field>> Q_;  // Q_[k] = columns of block k
+  int  nSteps_ = 0;
+  long lookaheads_ = 0;
 
-  // Krylov basis: Q_[k] is the list of columns of block k.
-  std::vector<std::vector<Field>> Q_;
-  int nSteps_;
-
-  // Locked (converged) 2-D blocks for thick restart / deflation.
-  std::vector<Field> lockV_;     // 2 columns per locked block, concatenated
-  std::vector<CMat2> lockG_;     // gamma5-Gram of each locked block (2x2)
-  std::vector<Cd>    lockEval_;  // 2 Ritz values per locked block
+  // Locked converged conjugate pairs (2-D blocks) for restart / deflation.
+  std::vector<Field> lockV_;     // 2 columns per locked block
+  std::vector<CMat2> lockG_;     // gamma5-Gram of each locked block
+  std::vector<Cd>    lockEval_;  // 2 eigenvalues per locked block
 
   CVec               evals_;
   std::vector<Field> evecs_;
   std::vector<RealD> residuals_;
 
-  long lookaheadCount_ = 0;      // diagnostic: number of look-ahead expansions used
-
-  // per-step diagnostics (manuscript Sec. 8): oblique-projector conditioning and
-  // loss of gamma5-orthogonality.
-  std::vector<double> kappaGamma_;   // kappa(Gamma_k) = max|d|/min|d| of residual Gram
-  std::vector<double> etaLoss_;      // ||Q_1^dag g5 Q_{k+1}||_F  (should be ~0)
-  std::vector<double> cycleBestRes_; // best (smallest) Ritz residual at end of each restart cycle
-
-  template<class C> static inline Cd toStd(const C& z) {
-    return Cd((double)real(z), (double)imag(z));
-  }
-
-  // relative threshold for a "degenerate / neutral" gamma5-Gram eigenvalue.
-  // Set ~ sqrt(machine eps) of the working precision; the example runs single
-  // precision (eps ~ 1e-7), so 1e-6 is a safe, precision-aware floor that is
-  // also conservative for a double build.  Configurable via setDegenRel().
+  // relative floor for a degenerate / neutral gamma5-Gram eigenvalue
   RealD degenRel_ = 1e-6;
-  RealD degenRel() const { return degenRel_; }
 
-  // Refined Ritz extraction: keep the gamma5-built Krylov subspace, but extract
-  // each Ritz vector as the EUCLIDEAN-residual minimiser over that subspace, and
-  // report the Euclidean residual.  Fixes the oblique gamma5-Galerkin penalty
-  // while remaining g5bl (same subspace, same short recurrence).
-  bool refined_ = false;
-
-  // Optional RAW convergence check: judge convergence by the Euclidean residual
-  // of the true operator D_W, ||D_W u - lambda u||/||u||, rather than the
-  // operator g5bl runs on.  In shift-invert g5bl runs on M=(D_W-sigma)^{-1}, so
-  // lambda = sigma + 1/mu; set rawShift_=true and rawSigma_=sigma.  This is the
-  // metric-correct convergence criterion (gamma5 is only for the recurrence).
-  LinearOperatorBase<Field>* rawOp_ = nullptr;
-  double rawSigma_   = 0.0;
-  bool   rawShift_   = false;
+  template<class C> static Cd toStd(const C& z) { return Cd((double)real(z), (double)imag(z)); }
 
 public:
-  Gamma5BlockLanczos(LinearOperatorBase<Field>& op, GridBase* grid,
+  Gamma5BlockLanczos(LinearOperatorBase<Field>& M, GridBase* grid,
                      Gamma5Func g5, RealD tol = 1e-8, int verbose = 1)
-    : Linop_(op), Grid_(grid), g5_(g5), tol_(tol), verbose_(verbose), nSteps_(0) {}
+    : M_(M), Grid_(grid), g5_(g5), tol_(tol), verbose_(verbose) {}
 
-  const CVec&               getEvals()      const { return evals_;     }
-  const std::vector<Field>& getEvecs()      const { return evecs_;     }
-  const std::vector<RealD>& getResiduals()  const { return residuals_; }
-  int                       getNumLocked()  const { return (int)lockG_.size(); }
-  long                      getLookaheads() const { return lookaheadCount_; }
-  void                      setDegenRel(RealD r)   { degenRel_ = r; }
-  void                      setRefined(bool b)      { refined_ = b; }
-  // Judge convergence by the raw D_W Euclidean residual.  rawOp = D_W; for
-  // shift-invert pass shiftInvert=true and sigma so lambda = sigma + 1/mu.
-  void setRawCheck(LinearOperatorBase<Field>* rawOp, double sigma, bool shiftInvert) {
-    rawOp_ = rawOp; rawSigma_ = sigma; rawShift_ = shiftInvert;
+  // Judge convergence on the raw operator dW (lambda = sigma + 1/mu if shiftInvert).
+  void setRawCheck(LinearOperatorBase<Field>* dW, double sigma, bool shiftInvert) {
+    dW_ = dW; sigma_ = sigma; shift_ = shiftInvert;
   }
-  const std::vector<double>& getKappaGamma() const { return kappaGamma_; }
-  const std::vector<double>& getEtaLoss()    const { return etaLoss_;    }
-  const std::vector<double>& getCycleBestRes() const { return cycleBestRes_; }
-  int getNumSteps() const { return nSteps_; }
-  // Re-extract Ritz pairs using only the first m completed steps (the Krylov
-  // subspaces are nested), for residual-vs-Krylov-dimension histories.
-  void extractRitzAt(int m, Gamma5RitzSort sort) { if (m >= 1 && m <= nSteps_) computeRitzPairs(m, sort); }
+  void setDegenRel(RealD r) { degenRel_ = r; }
 
-  void log(const std::string& s) const {
-    if (verbose_ > 0) std::cout << GridLogMessage << "[g5BL] " << s << std::endl;
-  }
+  const CVec&               getEvals()     const { return evals_;     }
+  const std::vector<Field>& getEvecs()     const { return evecs_;     }
+  const std::vector<RealD>& getResiduals() const { return residuals_; }
+  int                       getNumLocked() const { return (int)lockG_.size(); }
+  int                       getNumSteps()  const { return nSteps_; }
+  long                      getLookaheads()const { return lookaheads_; }
 
-  // ---------------- single non-restarted pass (isolation test) ----------------
+  // Single non-restarted pass (isolation test).
   void operator()(const Field& v0, const Field& v1, int maxSteps,
-                  bool reorthog = false, Gamma5RitzSort sort = G5SortAbsImagAscending)
-  {
+                  bool reorthog = true, Gamma5RitzSort sort = G5SortAbsImagAscending) {
     reset();
     if (!initStartBlock(v0, v1)) return;
     for (int step = 0; step < maxSteps; step++) {
       if (!lanczosStep(step, reorthog, /*deflate=*/false)) break;
       nSteps_ = step + 1;
-      if (B_[step].norm() < tol_) { log("beta<tol; stop at step "+std::to_string(step)); break; }
+      if (B_[step].norm() < tol_) break;
     }
-    if (nSteps_ == 0) return;
-    computeRitzPairs(nSteps_, sort);
+    if (nSteps_ > 0) computeRitzPairs(nSteps_, sort);
   }
 
-  // ---------------- gamma5-metric thick restart with paired locking ----------------
+  // Re-extract Ritz pairs from the first m completed steps (nested subspaces).
+  void extractRitzAt(int m, Gamma5RitzSort sort) {
+    if (m >= 1 && m <= nSteps_) computeRitzPairs(m, sort);
+  }
+
+  // gamma5-metric thick restart with paired locking + deflation.  Returns the
+  // number of converged conjugate pairs; locked pairs are spliced to the front
+  // of the output arrays.
   int thickRestart(const Field& v0, const Field& v1,
                    int maxCycles, int cycleSteps, int nWantedPairs,
-                   bool reorthog = true, Gamma5RitzSort sort = G5SortAbsImagAscending)
-  {
-    lockV_.clear(); lockG_.clear(); lockEval_.clear(); cycleBestRes_.clear();
+                   bool reorthog = true, Gamma5RitzSort sort = G5SortAbsImagAscending) {
+    lockV_.clear(); lockG_.clear(); lockEval_.clear();
     Field s0(Grid_), s1(Grid_); s0 = v0; s1 = v1;
-
     for (int cyc = 0; cyc < maxCycles; cyc++) {
       reset();
-      if (!initStartBlock(s0, s1)) { log("thickRestart: degenerate start, cycle "+std::to_string(cyc)); break; }
-
+      if (!initStartBlock(s0, s1)) break;
       for (int step = 0; step < cycleSteps; step++) {
         if (!lanczosStep(step, reorthog, /*deflate=*/true)) break;
         nSteps_ = step + 1;
         if (B_[step].norm() < tol_) break;
       }
-      if (nSteps_ == 0) { log("thickRestart: no steps; stop."); break; }
+      if (nSteps_ == 0) break;
       computeRitzPairs(nSteps_, sort);
-      { double best = 1e300; for (auto r : residuals_) best = std::min(best, r);
-        cycleBestRes_.push_back(best); }
       int newly = lockConvergedPairs(nWantedPairs);
-      int nLk = (int)lockG_.size();
-      log("cycle "+std::to_string(cyc)+": newly locked "+std::to_string(newly)
-          +"  total "+std::to_string(nLk)+"/"+std::to_string(nWantedPairs));
-      if (nLk >= nWantedPairs) { log("converged "+std::to_string(nLk)+" pairs."); break; }
-
-      // restart from the live spillover block Q_[nSteps_], deflated against locked
-      if (nSteps_ >= (int)Q_.size() || Q_[nSteps_].size() < 2) { log("no spillover; stop."); break; }
-      s0 = Q_[nSteps_][0];
-      s1 = Q_[nSteps_][1];
+      if (verbose_ > 0)
+        std::cout << GridLogMessage << "[g5BL] cycle " << cyc << ": +" << newly
+                  << " pairs, total " << lockG_.size() << "/" << nWantedPairs << std::endl;
+      if ((int)lockG_.size() >= nWantedPairs) break;
+      if (nSteps_ >= (int)Q_.size() || Q_[nSteps_].size() < 2) break;
+      s0 = Q_[nSteps_][0]; s1 = Q_[nSteps_][1];
       deflateVec(s0); deflateVec(s1);
     }
     spliceLockedToFront();
@@ -191,315 +157,203 @@ public:
   }
 
 private:
-  void reset() { Q_.clear(); A_.clear(); B_.clear(); C_.clear(); G_.clear();
-                 kappaGamma_.clear(); etaLoss_.clear(); nSteps_ = 0; }
+  void reset() { Q_.clear(); A_.clear(); B_.clear(); C_.clear(); G_.clear(); nSteps_ = 0; }
+  int  sz(int k) const { return (int)Q_[k].size(); }
 
-  int sz(int k) const { return (int)Q_[k].size(); }
-
-  // --- linear-algebra helpers on column lists ---
-
-  // D_W applied to each column.
   std::vector<Field> applyOp(const std::vector<Field>& X) {
     std::vector<Field> Y; Y.reserve(X.size());
-    for (auto& x : X) { Field y(Grid_); Linop_.Op(x, y); Y.push_back(y); }
+    for (auto& x : X) { Field y(Grid_); M_.Op(x, y); Y.push_back(y); }
     return Y;
   }
-
-  // M(i,j) = X[i]^dag g5 Y[j]   (|X| x |Y|)
+  // M(i,j) = X[i]^dag g5 Y[j]
   CMat g5Inner(const std::vector<Field>& X, const std::vector<Field>& Y) {
     int m = X.size(), n = Y.size();
     std::vector<Field> gY; gY.reserve(n);
     for (auto& y : Y) { Field gy(Grid_); g5_(y, gy); gY.push_back(gy); }
-    CMat M(m, n);
-    for (int i = 0; i < m; i++)
-      for (int j = 0; j < n; j++)
-        M(i, j) = toStd(innerProduct(X[i], gY[j]));
-    return M;
+    CMat O(m, n);
+    for (int i = 0; i < m; i++) for (int j = 0; j < n; j++) O(i, j) = toStd(innerProduct(X[i], gY[j]));
+    return O;
   }
-
-  // R[j] -= sum_i X[i] * M(i,j)
-  void subtractCombine(std::vector<Field>& R, const std::vector<Field>& X, const CMat& M) {
+  // R[j] -= sum_i X[i] * O(i,j)
+  void subtractCombine(std::vector<Field>& R, const std::vector<Field>& X, const CMat& O) {
     for (int j = 0; j < (int)R.size(); j++)
-      for (int i = 0; i < (int)X.size(); i++)
-        R[j] = R[j] - X[i] * M(i, j);
+      for (int i = 0; i < (int)X.size(); i++) R[j] = R[j] - X[i] * O(i, j);
   }
-
-  // single linear combination col = sum_i X[i] * c(i).
-  // Take c BY VALUE so an Eigen column expression (U.col(i)) is safely
-  // materialised into a VectorXcd at the call (binding a const ref to the
-  // Block temporary is unsafe).
-  Field combineCol(const std::vector<Field>& X, CVec c) {
+  Field combineCol(const std::vector<Field>& X, CVec c) {  // by value: materialises Eigen cols safely
     Field out(Grid_); out = Zero();
     for (int i = 0; i < (int)X.size(); i++) out = out + X[i] * c(i);
     return out;
   }
 
-  // --- setup ---
   bool initStartBlock(const Field& v0, const Field& v1) {
     Field u0(Grid_), u1(Grid_);
     u0 = v0;
     if (!lockG_.empty()) deflateVec(u0);
     RealD n = std::sqrt(norm2(u0));
-    if (n < 1e-14) { log("init: first vector vanished"); return false; }
+    if (n < 1e-14) return false;
     u0 = u0 * (1.0 / n);
     u1 = v1;
     if (!lockG_.empty()) deflateVec(u1);
     auto proj = innerProduct(u0, u1);
     u1 = u1 - u0 * proj;
     n = std::sqrt(norm2(u1));
-    if (n < 1e-14) { log("init: second vector dependent"); return false; }
+    if (n < 1e-14) return false;
     u1 = u1 * (1.0 / n);
-
     std::vector<Field> Q0 = {u0, u1};
     CMat G1 = g5Inner(Q0, Q0);
     Eigen::SelfAdjointEigenSolver<CMat> es(G1);
-    auto ev = es.eigenvalues();
-    if (std::abs(ev(0)) < 1e-13 || std::abs(ev(1)) < 1e-13) {
-      log("init: degenerate start (G1 ~ singular)"); return false;
-    }
+    if (std::abs(es.eigenvalues()(0)) < 1e-13 || std::abs(es.eigenvalues()(1)) < 1e-13) return false;
     G_.push_back(G1); Q_.push_back(Q0);
     return true;
   }
 
-  // --- core block step with look-ahead ---
+  // One block step: build Q_{k+1} from the residual block, with look-ahead.
   bool lanczosStep(int step, bool reorthog, bool deflate) {
     const std::vector<Field>& Qk = Q_[step];
     int s_k = Qk.size();
     CMat Gk = G_[step];
 
-    std::vector<Field> P = applyOp(Qk);             // D_W Q_k
-    CMat M = g5Inner(Qk, P);                         // s_k x s_k
-    CMat A = Gk.inverse() * M;                       // A_k
+    std::vector<Field> P = applyOp(Qk);
+    CMat A = Gk.inverse() * g5Inner(Qk, P);                  // A_k
     A_.push_back(A);
-
-    CMat C;                                          // C_k (s_{k-1} x s_k)
-    if (step > 0) C = G_[step-1].inverse() * B_[step-1].adjoint() * Gk;
-    else          C = CMat::Zero(0, s_k);
+    CMat C = (step > 0) ? CMat(G_[step-1].inverse() * B_[step-1].adjoint() * Gk)
+                        : CMat(CMat::Zero(0, s_k));          // C_k
     C_.push_back(C);
 
-    // residual R = D_W Q_k - Q_k A_k - Q_{k-1} C_k  (s_k columns)
-    std::vector<Field> R = P;
+    std::vector<Field> R = P;                               // residual = M Q_k - Q_k A_k - Q_{k-1} C_k
     subtractCombine(R, Qk, A);
     if (step > 0) subtractCombine(R, Q_[step-1], C);
-
     if (reorthog)
       for (int j = 0; j <= step; j++) {
-        CMat Mj = g5Inner(Q_[j], R);
-        CMat Hj = G_[j].inverse() * Mj;
-        subtractCombine(R, Q_[j], Hj);
+        CMat H = G_[j].inverse() * g5Inner(Q_[j], R);
+        subtractCombine(R, Q_[j], H);
       }
     if (deflate && !lockG_.empty()) for (auto& r : R) deflateVec(r);
 
-    // --- look-ahead: augment S with D_W(neutral dir) until no serious breakdown ---
-    const RealD relEps = degenRel();
-    std::vector<Field> S = R;                        // working augmented column set
-    const int maxLA = 3;
-    for (int la = 0; ; la++) {
-      CMat Gamma = g5Inner(S, S);
-      Eigen::SelfAdjointEigenSolver<CMat> es(Gamma);
-      Eigen::VectorXd D = es.eigenvalues();
-      CMat U = es.eigenvectors();
+    // Look-ahead: while the residual block has a non-zero gamma5-neutral
+    // direction, augment with M applied to it (escapes the neutral cone).
+    const RealD relEps = degenRel_;
+    std::vector<Field> S = R;
+    for (int la = 0; la <= 3; la++) {
+      Eigen::SelfAdjointEigenSolver<CMat> es(g5Inner(S, S));
+      Eigen::VectorXd D = es.eigenvalues(); CMat U = es.eigenvectors();
       RealD dmax = D.cwiseAbs().maxCoeff();
-      std::vector<int> serious;
-      for (int i = 0; i < D.size(); i++) {
-        if (std::abs(D(i)) >= relEps * dmax) continue;   // non-degenerate
+      std::vector<int> neutral;
+      for (int i = 0; i < D.size(); i++)
+        if (std::abs(D(i)) < relEps * dmax && std::sqrt(norm2(combineCol(S, U.col(i)))) >= tol_)
+          neutral.push_back(i);
+      if (neutral.empty() || la == 3) break;
+      std::vector<Field> add;
+      for (int i : neutral) {
         Field ri = combineCol(S, U.col(i));
-        if (std::sqrt(norm2(ri)) < tol_) continue;        // happy (zero) -> will be dropped
-        serious.push_back(i);                             // neutral but non-zero -> serious
-      }
-      if (serious.empty()) break;                         // no serious breakdown
-      if (la >= maxLA) { log("look-ahead exhausted at step "+std::to_string(step)); break; }
-      // augment with D_W of each serious-neutral direction (escapes the neutral cone)
-      // Collect the new directions from the CURRENT S (U matches this S); append
-      // only AFTER the loop -- growing S mid-loop would desync U/combineCol sizes.
-      std::vector<Field> newdirs;
-      for (int i : serious) {
-        Field ri = combineCol(S, U.col(i));
-        RealD rin = std::sqrt(norm2(ri));
-        if (rin < tol_) continue;
-        ri = ri * (1.0 / rin);
-        Field dri(Grid_); Linop_.Op(ri, dri);
-        // gamma5-orthogonalise the new direction against all previous blocks
-        for (int j = 0; j <= step; j++) {
-          int sj = (int)Q_[j].size();
-          Field g5d(Grid_); g5_(dri, g5d);
-          CVec proj(sj);
-          for (int c = 0; c < sj; c++) proj(c) = toStd(innerProduct(Q_[j][c], g5d));
-          CVec coef = G_[j].inverse() * proj;
-          for (int c = 0; c < sj; c++) dri = dri - Q_[j][c] * coef(c);
+        ri = ri * (1.0 / std::sqrt(norm2(ri)));
+        Field d(Grid_); M_.Op(ri, d);
+        for (int j = 0; j <= step; j++) {                  // gamma5-orthogonalise vs history
+          int sj = sz(j);
+          Field g5d(Grid_); g5_(d, g5d);
+          CVec pr(sj); for (int c = 0; c < sj; c++) pr(c) = toStd(innerProduct(Q_[j][c], g5d));
+          CVec co = G_[j].inverse() * pr;
+          for (int c = 0; c < sj; c++) d = d - Q_[j][c] * co(c);
         }
-        RealD dn = std::sqrt(norm2(dri));
-        if (dn < tol_) continue;                 // D_W(neutral) already in span -> skip
-        newdirs.push_back(dri * (1.0 / dn));     // normalised
+        RealD dn = std::sqrt(norm2(d));
+        if (dn >= tol_) add.push_back(d * (1.0 / dn));
       }
-      int added = (int)newdirs.size();
-      for (auto& d : newdirs) S.push_back(d);
-      if (added == 0) break;                      // nothing new to add -> stop expanding
-      lookaheadCount_++;
-      log("look-ahead at step "+std::to_string(step)+": block grown to "+std::to_string((int)S.size()));
+      if (add.empty()) break;
+      for (auto& a : add) S.push_back(a);
+      lookaheads_++;
     }
 
-    // --- build Q_{k+1} from the (possibly augmented) set S ---
-    CMat GammaS = g5Inner(S, S);
-    Eigen::SelfAdjointEigenSolver<CMat> es(GammaS);
-    Eigen::VectorXd D = es.eigenvalues();
-    CMat U = es.eigenvectors();
+    // Build Q_{k+1}: gamma5-orthonormal basis of the (augmented) residual block.
+    Eigen::SelfAdjointEigenSolver<CMat> es(g5Inner(S, S));
+    Eigen::VectorXd D = es.eigenvalues(); CMat U = es.eigenvectors();
     RealD dmax = D.cwiseAbs().maxCoeff();
-    if (dmax < tol_ * tol_) { log("happy breakdown at step "+std::to_string(step)); return false; }
-    // keep non-degenerate directions; absolute floor avoids dividing by ~0
-    const RealD dfloor = std::max(relEps * dmax, tol_ * tol_);
+    if (dmax < tol_ * tol_) return false;                  // happy breakdown
+    RealD floor = std::max(relEps * dmax, tol_ * tol_);
     std::vector<int> keep;
-    for (int i = 0; i < D.size(); i++) if (std::abs(D(i)) >= dfloor) keep.push_back(i);
-    if (keep.empty()) { log("happy breakdown at step "+std::to_string(step)); return false; }
-
-    // diagnostic: residual-Gram condition number kappa(Gamma_k) (oblique proj. blow-up)
-    { double dmx = 0, dmn = 1e300;
-      for (int i : keep) { double a = std::abs(D(i)); dmx = std::max(dmx,a); dmn = std::min(dmn,a); }
-      kappaGamma_.push_back(dmn > 0 ? dmx/dmn : 1e300); }
+    for (int i = 0; i < D.size(); i++) if (std::abs(D(i)) >= floor) keep.push_back(i);
+    if (keep.empty()) return false;
 
     int s_kp1 = keep.size();
     std::vector<Field> Qkp1; Qkp1.reserve(s_kp1);
     CMat Gkp1 = CMat::Zero(s_kp1, s_kp1);
     for (int a = 0; a < s_kp1; a++) {
       int i = keep[a];
-      Field q = combineCol(S, U.col(i)) * (1.0 / std::sqrt(std::abs(D(i))));
-      Qkp1.push_back(q);
+      Qkp1.push_back(combineCol(S, U.col(i)) * (1.0 / std::sqrt(std::abs(D(i)))));
       Gkp1(a, a) = Cd(D(i) > 0 ? 1.0 : -1.0, 0.0);
     }
-    // B_{k+1} = G_{k+1}^{-1} (Q_{k+1}^dag g5 R)   (s_{k+1} x s_k);  R = Q_{k+1} B_{k+1}
-    CMat QtR = g5Inner(Qkp1, R);
-    CMat Bkp1 = Gkp1.inverse() * QtR;
-
+    CMat Bkp1 = Gkp1.inverse() * g5Inner(Qkp1, R);         // R = Q_{k+1} B_{k+1}
     G_.push_back(Gkp1); B_.push_back(Bkp1); Q_.push_back(Qkp1);
-
-    // diagnostic: loss of gamma5-orthogonality, ||Q_1^dag g5 Q_{k+1}||_F (~0 ideally)
-    { CMat e = g5Inner(Q_[0], Qkp1); etaLoss_.push_back(e.norm()); }
     return true;
   }
 
-  // --- Ritz extraction (variable block-tridiagonal T_m) ---
+  // Ritz values from T_m; Ritz vectors by refined (Euclidean) extraction;
+  // residuals by the raw D_W Euclidean residual.
   void computeRitzPairs(int m, Gamma5RitzSort sort) {
     std::vector<int> off(m + 1, 0);
     for (int k = 0; k < m; k++) off[k+1] = off[k] + sz(k);
-    int dim = off[m];
+    int dim = off[m], s_m = sz(m);
 
     CMat Tm = CMat::Zero(dim, dim);
     for (int k = 0; k < m; k++) {
       Tm.block(off[k], off[k], sz(k), sz(k)) = A_[k];
       if (k < m - 1) {
-        Tm.block(off[k+1], off[k],   sz(k+1), sz(k)) = B_[k];     // sub
-        Tm.block(off[k],   off[k+1], sz(k), sz(k+1)) = C_[k+1];   // super
+        Tm.block(off[k+1], off[k],   sz(k+1), sz(k)) = B_[k];
+        Tm.block(off[k],   off[k+1], sz(k), sz(k+1)) = C_[k+1];
       }
     }
-
     Eigen::ComplexEigenSolver<CMat> ces(Tm);
     CVec lam = ces.eigenvalues();
-    CMat Y   = ces.eigenvectors();
+    std::vector<int> idx(dim); std::iota(idx.begin(), idx.end(), 0);
+    std::sort(idx.begin(), idx.end(), [&](int a, int b){ return ritzLess(lam(a), lam(b), sort); });
 
-    std::vector<int> idx(dim);
-    std::iota(idx.begin(), idx.end(), 0);
-    std::sort(idx.begin(), idx.end(),
-              [&](int a, int b){ return ritzLess(lam(a), lam(b), sort); });
+    // Euclidean Grams of the augmented basis U = [V_m, Q_m] and of V_m.
+    std::vector<const Field*> cols;
+    for (int k = 0; k <= m; k++) for (int c = 0; c < sz(k); c++) cols.push_back(&Q_[k][c]);
+    int dimA = (int)cols.size();
+    CMat GE(dimA, dimA);
+    for (int a = 0; a < dimA; a++)
+      for (int b = a; b < dimA; b++) { Cd v = toStd(innerProduct(*cols[a], *cols[b])); GE(a,b)=v; GE(b,a)=std::conj(v); }
+    CMat VE = GE.topLeftCorner(dim, dim);
+    CMat Blink = CMat::Zero(s_m, dim);
+    Blink.block(0, off[m-1], s_m, sz(m-1)) = B_[m-1];      // B_{m-1} E^T
 
-    const CMat& Bm1 = B_[m-1];      // s_m x s_{m-1}
-    int s_last = sz(m-1);
     evals_.resize(dim); evecs_.clear(); residuals_.clear();
     evecs_.reserve(dim); residuals_.reserve(dim);
-
-    if (refined_) { computeRefined(m, off, dim, Tm, lam, idx); return; }
-
     for (int ji = 0; ji < dim; ji++) {
-      int j = idx[ji];
-      evals_(ji) = lam(j);
-      CVec yj = Y.col(j);
-
-      Field uj(Grid_); uj = Zero();
-      for (int k = 0; k < m; k++)
-        for (int c = 0; c < sz(k); c++)
-          uj = uj + Q_[k][c] * yj(off[k] + c);
-      evecs_.push_back(uj);
-
-      // residual r_j = Q_{m} B_{m-1} tau_j,  tau_j = last-block entries of y_j
-      CVec tau(s_last);
-      for (int c = 0; c < s_last; c++) tau(c) = yj(off[m-1] + c);
-      CVec Bt = Bm1 * tau;                  // length s_m
-      Field rj(Grid_); rj = Zero();
-      for (int c = 0; c < (int)Q_[m].size(); c++) rj = rj + Q_[m][c] * Bt(c);
-      residuals_.push_back(std::sqrt(norm2(rj)));
+      Cd mu = lam(idx[ji]);
+      // refined vector: min ||(M-mu) V_m z||/||V_m z||  =  smallest gen-eigpair (Krec^dag GE Krec, VE)
+      CMat Krec(dim + s_m, dim);
+      Krec.topRows(dim)    = Tm - mu * CMat::Identity(dim, dim);
+      Krec.bottomRows(s_m) = Blink;
+      CMat Pm = Krec.adjoint() * GE * Krec; Pm = 0.5 * (Pm + Pm.adjoint());
+      Eigen::GeneralizedSelfAdjointEigenSolver<CMat> ges(Pm, VE);
+      CVec z = ges.eigenvectors().col(0);
+      Field u(Grid_); u = Zero();
+      for (int k = 0; k < m; k++) for (int c = 0; c < sz(k); c++) u = u + Q_[k][c] * z(off[k] + c);
+      evals_(ji) = ComplexD(mu.real(), mu.imag());
+      evecs_.push_back(u);
+      residuals_.push_back(0.0);   // filled by rawResidual below
     }
-    applyRawCheck();
+    rawResidual();
   }
 
-  // Overwrite residuals_ with the RAW D_W Euclidean residual ||D_W u - lambda u||/||u||
-  // (lambda = sigma + 1/mu in shift-invert).  Metric-correct convergence criterion.
-  void applyRawCheck() {
-    if (!rawOp_) return;
+  // residual = ||D_W u - lambda u|| / ||u||  (lambda = sigma + 1/mu in shift-invert)
+  void rawResidual() {
+    LinearOperatorBase<Field>* op = dW_ ? dW_ : &M_;
     Field w(Grid_);
     for (int i = 0; i < (int)evecs_.size(); i++) {
       Cd mu(real(evals_(i)), imag(evals_(i)));
-      Cd lam = rawShift_ ? (rawSigma_ + 1.0/mu) : mu;
-      rawOp_->Op(evecs_[i], w);
+      Cd lam = (dW_ && shift_) ? (sigma_ + 1.0/mu) : mu;
+      op->Op(evecs_[i], w);
       typename Field::scalar_type lf(lam.real(), lam.imag());
       Field t(Grid_); t = w - evecs_[i] * lf;
       residuals_[i] = std::sqrt(norm2(t) / norm2(evecs_[i]));
     }
   }
 
-  // Refined Ritz: for each Ritz value mu_j (from T_m), the refined vector is the
-  // minimiser of ||(M-mu_j) V_m z|| / ||V_m z|| over z (Euclidean).  Using the
-  // recurrence  (M-mu)V_m = [V_m, Q_m] * [ T_m-mu ; B_{m-1} E^T ] =: U_aug Krec,
-  // this is the smallest generalised eigenpair of  (Krec^dag GE Krec,  VE),
-  // where GE = U_aug^dag U_aug (Euclidean Gram) and VE = V_m^dag V_m.
-  void computeRefined(int m, const std::vector<int>& off, int dim,
-                      const CMat& Tm, const CVec& lam, const std::vector<int>& idx) {
-    // augmented basis U_aug = [Q_0..Q_{m-1}, Q_m]  (V_m plus the spillover block)
-    std::vector<const Field*> cols;
-    for (int k = 0; k <= m; k++) for (int c = 0; c < sz(k); c++) cols.push_back(&Q_[k][c]);
-    int dimA = (int)cols.size();                 // dim + s_m
-    int s_m  = sz(m);
-
-    // Euclidean Grams GE (dimA x dimA, Hermitian) and VE = GE[0:dim,0:dim]
-    CMat GE(dimA, dimA);
-    for (int a = 0; a < dimA; a++)
-      for (int b = a; b < dimA; b++) {
-        Cd v = toStd(innerProduct(*cols[a], *cols[b]));
-        GE(a,b) = v; GE(b,a) = std::conj(v);
-      }
-    CMat VE = GE.topLeftCorner(dim, dim);
-
-    // linking block B_{m-1} E^T  (s_m x dim): places B_[m-1] on the last block's cols
-    CMat Blink = CMat::Zero(s_m, dim);
-    Blink.block(0, off[m-1], s_m, sz(m-1)) = B_[m-1];
-
-    for (int ji = 0; ji < dim; ji++) {
-      Cd mu = lam(idx[ji]);
-      // Krec = [ T_m - mu I ; Blink ]   ((dim+s_m) x dim)
-      CMat Krec(dim + s_m, dim);
-      Krec.topRows(dim)    = Tm - mu * CMat::Identity(dim, dim);
-      Krec.bottomRows(s_m) = Blink;
-      CMat P = Krec.adjoint() * GE * Krec;        // dim x dim Hermitian
-      P = 0.5 * (P + P.adjoint());                // symmetrise (rounding)
-
-      Eigen::GeneralizedSelfAdjointEigenSolver<CMat> ges(P, VE);
-      double theta = ges.eigenvalues()(0);        // smallest -> min Euclidean residual^2
-      CVec z = ges.eigenvectors().col(0);
-
-      Field uj(Grid_); uj = Zero();
-      for (int k = 0; k < m; k++)
-        for (int c = 0; c < sz(k); c++)
-          uj = uj + Q_[k][c] * z(off[k] + c);
-
-      evals_(ji) = ComplexD(mu.real(), mu.imag());
-      evecs_.push_back(uj);
-      residuals_.push_back(std::sqrt(std::max(0.0, theta)));  // ||(M-mu)u||/||u||
-    }
-    applyRawCheck();
-  }
-
-  // --- locking / deflation (converged conjugate pairs) ---
+  // Lock converged conjugate pairs (both members residual < tol).
   int lockConvergedPairs(int nWantedPairs) {
-    int dim = (int)evecs_.size();
-    int locked = 0;
+    int dim = (int)evecs_.size(), locked = 0;
     std::vector<bool> used(dim, false);
     for (int i = 0; i < dim; i++) {
       if ((int)lockG_.size() >= nWantedPairs) break;
@@ -512,55 +366,44 @@ private:
         double d = std::abs(lj - std::conj(li));
         if (d < bd) { bd = d; best = j; }
       }
-      if (best < 0) continue;
-      if (isAlreadyLocked(li)) { used[i] = used[best] = true; continue; }
-      Field w0 = evecs_[i], w1 = evecs_[best];
-      CMat2 G; std::vector<Field> blk = {w0, w1};
+      if (best < 0 || isAlreadyLocked(li)) { used[i] = (best>=0); continue; }
+      std::vector<Field> blk = {evecs_[i], evecs_[best]};
       CMat Gg = g5Inner(blk, blk);
-      G << Gg(0,0), Gg(0,1), Gg(1,0), Gg(1,1);
+      CMat2 G; G << Gg(0,0), Gg(0,1), Gg(1,0), Gg(1,1);
       if (std::abs(G.determinant()) < 1e-12) { used[i] = used[best] = true; continue; }
-      lockV_.push_back(w0); lockV_.push_back(w1);
+      lockV_.push_back(evecs_[i]); lockV_.push_back(evecs_[best]);
       lockG_.push_back(G);
-      lockEval_.push_back(Cd(real(evals_(i)),    imag(evals_(i))));
-      lockEval_.push_back(Cd(real(evals_(best)), imag(evals_(best))));
+      lockEval_.push_back(li); lockEval_.push_back(Cd(real(evals_(best)), imag(evals_(best))));
       used[i] = used[best] = true; locked++;
     }
     return locked;
   }
-
   bool isAlreadyLocked(const Cd& lam) const {
-    for (size_t b = 0; b < lockEval_.size(); b++)
-      if (std::abs(lockEval_[b] - lam) < 10.0 * tol_) return true;
+    for (auto& e : lockEval_) if (std::abs(e - lam) < 10.0 * tol_) return true;
     return false;
   }
-
   // x <- x - sum_b V_b G_b^{-1} (V_b^dag g5 x)
   void deflateVec(Field& x) {
     for (size_t b = 0; b < lockG_.size(); b++) {
       const Field& w0 = lockV_[2*b]; const Field& w1 = lockV_[2*b+1];
       Field g5x(Grid_); g5_(x, g5x);
-      Eigen::Vector2cd c;
-      c(0) = toStd(innerProduct(w0, g5x));
-      c(1) = toStd(innerProduct(w1, g5x));
+      Eigen::Vector2cd c; c(0) = toStd(innerProduct(w0, g5x)); c(1) = toStd(innerProduct(w1, g5x));
       Eigen::Vector2cd a = lockG_[b].inverse() * c;
       x = x - (w0 * a(0) + w1 * a(1));
     }
   }
-
   void spliceLockedToFront() {
     if (lockG_.empty()) return;
     int nl = 2 * (int)lockG_.size();
     CVec ev(nl + evals_.size());
-    std::vector<Field> ec; ec.reserve(nl + evecs_.size());
-    std::vector<RealD> rs; rs.reserve(nl + residuals_.size());
+    std::vector<Field> ec; std::vector<RealD> rs;
     for (size_t b = 0; b < lockG_.size(); b++) {
       ev(2*b)   = ComplexD(lockEval_[2*b].real(),   lockEval_[2*b].imag());
       ev(2*b+1) = ComplexD(lockEval_[2*b+1].real(), lockEval_[2*b+1].imag());
-      ec.push_back(lockV_[2*b]); ec.push_back(lockV_[2*b+1]);
-      rs.push_back(0.0); rs.push_back(0.0);
+      ec.push_back(lockV_[2*b]); ec.push_back(lockV_[2*b+1]); rs.push_back(0.0); rs.push_back(0.0);
     }
     for (int i = 0; i < (int)evals_.size(); i++) ev(nl + i) = evals_(i);
-    for (auto& v : evecs_)    ec.push_back(v);
+    for (auto& v : evecs_) ec.push_back(v);
     for (auto& r : residuals_) rs.push_back(r);
     evals_ = ev; evecs_ = ec; residuals_ = rs;
   }
