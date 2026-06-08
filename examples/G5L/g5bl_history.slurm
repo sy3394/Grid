@@ -13,12 +13,13 @@
 
 # ---------------------------------------------------------------------------
 # Performance analysis on 32^4: Euclidean residual & #converged-modes vs Krylov
-# dimension for g5bl (standard), g5bl --refined, and plain Arnoldi, all on the
-# SAME shift-inverted operator (D_W - sigma)^{-1}.  No SLEPc needed.
+# dimension for g5bl and plain Arnoldi on the SAME shift-inverted operator
+# (D_W - sigma)^{-1}.  No SLEPc needed.
 #
-# Writes <out>.g5bl.hist, <out>.g5bl_refined.hist, <out>.arnoldi.hist with
-#   krylov_dim(=matvecs=#CG-solves)  min_raw_res  n_below_1e-2  n_below_1e-4
+# Writes <out>.g5bl.hist, <out>.arnoldi.hist with
+#   krylov_dim  min_raw_res  n_below_1e-2  n_below_1e-4
 # All residuals are the RAW Euclidean D_W residual ||D_W u - lambda u||/||u||.
+# Krylov dim = number of (D_W - sigma)^{-1} applications.
 #
 # Pull the .hist files back to ~/BNL/G5BL/data and plot with
 # g5bl_performance.ipynb.
@@ -53,11 +54,11 @@ SITER=20000
 
 GRIDOPT="--accelerator-threads 8 --comms-overlap --shm 4096 --shm-mpi 0"
 
-# Residual-vs-Krylov-dim history for g5bl (std), g5bl_refined, Arnoldi.
+# Residual-vs-Krylov-dim history for g5bl and Arnoldi.
 srun ./select_gpu ${EXE} --grid 32.32.32.32 --mpi 1.2.2.2 ${GRIDOPT} \
     --config ${CONFIG} --mass ${MASS} --shift ${SIGMA} \
     --stol ${STOL} --siter ${SITER} --steps ${STEPS} \
-    --history --refined --out ${OUT}
+    --history --out ${OUT}
 
 # (optional) one-shot head-to-head summary at a fixed budget:
 srun ./select_gpu ${EXE} --grid 32.32.32.32 --mpi 1.2.2.2 ${GRIDOPT} \
