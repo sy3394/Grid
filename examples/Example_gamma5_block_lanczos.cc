@@ -38,6 +38,7 @@
 
 #include <Grid/Grid.h>
 #include <Grid/algorithms/iterative/Gamma5BlockLanczos.h>
+#include <Grid/algorithms/iterative/RefinedArnoldi.h>
 #include <functional>
 
 using namespace std;
@@ -454,6 +455,12 @@ int main(int argc, char** argv) {
   }
 
   // ================= SHIFT-INVERT (single or sweep): the eigenvalue computation =================
+  // Default solver: RefinedArnoldi (single-vector Arnoldi + refined extraction) -- best
+  // for interior D_W modes.  --g5bl opts back into gamma5-block Lanczos (thick restart).
+  bool useG5bl = hasOpt(argc, argv, "--g5bl");
+  int  kdim    = std::stoi(getOpt(argc, argv, "--krylov", std::to_string(2*steps)));
+  std::cout << GridLogMessage << "solver: " << (useG5bl ? "gamma5-block Lanczos" : "RefinedArnoldi")
+            << (useG5bl ? "" : ("  (Krylov dim " + std::to_string(kdim) + ")")) << std::endl;
   std::vector<EvalRes> collected;
   long totApply = 0, totCG = 0; double tSolve = 0;
   for (size_t is = 0; is < sigmas.size(); is++) {
@@ -461,19 +468,25 @@ int main(int argc, char** argv) {
     WilsonOp Dsh(Umu, *UGrid, *UrbGrid, mass - sg, wpar);
     ConjugateGradient<FermionField> cg(stol, siter, false);
     ShiftInvertNE<WilsonOp, FermionField> SI(Dsh, cg);
-    Gamma5BlockLanczos<FermionField> g(SI, UGrid, gamma5, tol, 1);
-    g.setRawCheck(&DW, sg, true);
     GridStopWatch sw; sw.Start();
-    if (isoOnly) g(v0, v1, steps, reorth, G5SortAbsDescending);
-    else         g.thickRestart(v0, v1, cycles, steps, wanted, reorth, G5SortAbsDescending);
-    sw.Stop(); tSolve += sw.useconds()*1e-6; totApply += SI.nApply; totCG += SI.nCG;
-
-    const auto& ev = g.getEvals(); const auto& rs = g.getResiduals();
     int nc = 0;
-    for (int i = 0; i < (int)ev.size(); i++) {
-      if (rs[i] >= accept) continue;
-      addDedup(collected, sg + 1.0/ev(i), rs[i], dedupe); nc++;
+    if (useG5bl) {
+      Gamma5BlockLanczos<FermionField> g(SI, UGrid, gamma5, tol, 1);
+      g.setRawCheck(&DW, sg, true);
+      if (isoOnly) g(v0, v1, steps, reorth, G5SortAbsDescending);
+      else         g.thickRestart(v0, v1, cycles, steps, wanted, reorth, G5SortAbsDescending);
+      const auto& ev = g.getEvals(); const auto& rs = g.getResiduals();
+      for (int i = 0; i < (int)ev.size(); i++)
+        if (rs[i] < accept) { addDedup(collected, sg + 1.0/ev(i), rs[i], dedupe); nc++; }
+    } else {
+      RefinedArnoldi<FermionField> a(SI, UGrid, tol, 1);
+      a.setRawCheck(&DW, sg, true);
+      a(v0, kdim, RASortAbsDescending);                 // nearest-sigma modes first
+      const auto& ev = a.getEvals(); const auto& rs = a.getResiduals();
+      for (int i = 0; i < (int)ev.size(); i++)
+        if (rs[i] < accept) { addDedup(collected, sg + 1.0/ev(i), rs[i], dedupe); nc++; }
     }
+    sw.Stop(); tSolve += sw.useconds()*1e-6; totApply += SI.nApply; totCG += SI.nCG;
     std::cout << GridLogMessage << "sigma=" << sg << ": " << nc << " converged; total " << collected.size() << std::endl;
   }
   std::cout << GridLogMessage << "Krylov dim (applications): " << totApply
