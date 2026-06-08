@@ -94,6 +94,12 @@ private:
   RealD degenRel_ = 1e-6;
   RealD degenRel() const { return degenRel_; }
 
+  // Refined Ritz extraction: keep the gamma5-built Krylov subspace, but extract
+  // each Ritz vector as the EUCLIDEAN-residual minimiser over that subspace, and
+  // report the Euclidean residual.  Fixes the oblique gamma5-Galerkin penalty
+  // while remaining g5bl (same subspace, same short recurrence).
+  bool refined_ = false;
+
 public:
   Gamma5BlockLanczos(LinearOperatorBase<Field>& op, GridBase* grid,
                      Gamma5Func g5, RealD tol = 1e-8, int verbose = 1)
@@ -105,6 +111,7 @@ public:
   int                       getNumLocked()  const { return (int)lockG_.size(); }
   long                      getLookaheads() const { return lookaheadCount_; }
   void                      setDegenRel(RealD r)   { degenRel_ = r; }
+  void                      setRefined(bool b)      { refined_ = b; }
   const std::vector<double>& getKappaGamma() const { return kappaGamma_; }
   const std::vector<double>& getEtaLoss()    const { return etaLoss_;    }
   const std::vector<double>& getCycleBestRes() const { return cycleBestRes_; }
@@ -385,6 +392,8 @@ private:
     evals_.resize(dim); evecs_.clear(); residuals_.clear();
     evecs_.reserve(dim); residuals_.reserve(dim);
 
+    if (refined_) { computeRefined(m, off, dim, Tm, lam, idx); return; }
+
     for (int ji = 0; ji < dim; ji++) {
       int j = idx[ji];
       evals_(ji) = lam(j);
@@ -403,6 +412,56 @@ private:
       Field rj(Grid_); rj = Zero();
       for (int c = 0; c < (int)Q_[m].size(); c++) rj = rj + Q_[m][c] * Bt(c);
       residuals_.push_back(std::sqrt(norm2(rj)));
+    }
+  }
+
+  // Refined Ritz: for each Ritz value mu_j (from T_m), the refined vector is the
+  // minimiser of ||(M-mu_j) V_m z|| / ||V_m z|| over z (Euclidean).  Using the
+  // recurrence  (M-mu)V_m = [V_m, Q_m] * [ T_m-mu ; B_{m-1} E^T ] =: U_aug Krec,
+  // this is the smallest generalised eigenpair of  (Krec^dag GE Krec,  VE),
+  // where GE = U_aug^dag U_aug (Euclidean Gram) and VE = V_m^dag V_m.
+  void computeRefined(int m, const std::vector<int>& off, int dim,
+                      const CMat& Tm, const CVec& lam, const std::vector<int>& idx) {
+    // augmented basis U_aug = [Q_0..Q_{m-1}, Q_m]  (V_m plus the spillover block)
+    std::vector<const Field*> cols;
+    for (int k = 0; k <= m; k++) for (int c = 0; c < sz(k); c++) cols.push_back(&Q_[k][c]);
+    int dimA = (int)cols.size();                 // dim + s_m
+    int s_m  = sz(m);
+
+    // Euclidean Grams GE (dimA x dimA, Hermitian) and VE = GE[0:dim,0:dim]
+    CMat GE(dimA, dimA);
+    for (int a = 0; a < dimA; a++)
+      for (int b = a; b < dimA; b++) {
+        Cd v = toStd(innerProduct(*cols[a], *cols[b]));
+        GE(a,b) = v; GE(b,a) = std::conj(v);
+      }
+    CMat VE = GE.topLeftCorner(dim, dim);
+
+    // linking block B_{m-1} E^T  (s_m x dim): places B_[m-1] on the last block's cols
+    CMat Blink = CMat::Zero(s_m, dim);
+    Blink.block(0, off[m-1], s_m, sz(m-1)) = B_[m-1];
+
+    for (int ji = 0; ji < dim; ji++) {
+      Cd mu = lam(idx[ji]);
+      // Krec = [ T_m - mu I ; Blink ]   ((dim+s_m) x dim)
+      CMat Krec(dim + s_m, dim);
+      Krec.topRows(dim)    = Tm - mu * CMat::Identity(dim, dim);
+      Krec.bottomRows(s_m) = Blink;
+      CMat P = Krec.adjoint() * GE * Krec;        // dim x dim Hermitian
+      P = 0.5 * (P + P.adjoint());                // symmetrise (rounding)
+
+      Eigen::GeneralizedSelfAdjointEigenSolver<CMat> ges(P, VE);
+      double theta = ges.eigenvalues()(0);        // smallest -> min Euclidean residual^2
+      CVec z = ges.eigenvectors().col(0);
+
+      Field uj(Grid_); uj = Zero();
+      for (int k = 0; k < m; k++)
+        for (int c = 0; c < sz(k); c++)
+          uj = uj + Q_[k][c] * z(off[k] + c);
+
+      evals_(ji) = ComplexD(mu.real(), mu.imag());
+      evecs_.push_back(uj);
+      residuals_.push_back(std::sqrt(std::max(0.0, theta)));  // ||(M-mu)u||/||u||
     }
   }
 

@@ -232,6 +232,7 @@ int main(int argc, char** argv) {
   bool isoOnly = hasOpt(argc, argv, "--isolation-only");
   bool cold    = hasOpt(argc, argv, "--cold");
   bool check   = hasOpt(argc, argv, "--check");   // verify each eigenpair against raw D_W
+  bool refined = hasOpt(argc, argv, "--refined"); // refined (Euclidean) Ritz extraction
   RealD degen  = std::stod(getOpt(argc, argv, "--degen", "-1")); // override breakdown threshold
 
   // shift list: --shift-sweep lo:hi:n  (sweep)  |  --shift sigma  (single)  |  none (direct)
@@ -408,6 +409,26 @@ int main(int argc, char** argv) {
     }
     fg.close();
     std::cout << GridLogMessage << "g5bl history -> " << out << ".g5bl.hist" << std::endl;
+
+    // --- g5bl with REFINED (Euclidean) extraction ---
+    if (refined) {
+      Gamma5BlockLanczos<FermionField> gr(SI, UGrid, gamma5, tol, 0);
+      if (degen > 0) gr.setDegenRel(degen);
+      gr.setRefined(true);
+      gr(v0, v1, steps, reorth, G5SortAbsDescending);
+      std::ofstream fr(out + ".g5bl_refined.hist");
+      fr << "# matvecs krylov_dim min_raw_res n_below_1e-2 n_below_1e-4\n";
+      for (int mm = 1; mm <= gr.getNumSteps(); mm++) {
+        gr.extractRitzAt(mm, G5SortAbsDescending);
+        const auto& ev = gr.getEvals(); const auto& uv = gr.getEvecs();
+        std::vector<std::complex<double>> L; std::vector<FermionField> Vv;
+        for (int i = 0; i < (int)ev.size(); i++) { L.push_back(sg + 1.0/ev(i)); Vv.push_back(uv[i]); }
+        auto s = stats(L, Vv);
+        fr << 2*mm << " " << (int)ev.size() << " " << s[0] << " " << (int)s[1] << " " << (int)s[2] << "\n";
+      }
+      fr.close();
+      std::cout << GridLogMessage << "g5bl_refined history -> " << out << ".g5bl_refined.hist" << std::endl;
+    }
 
     // --- Arnoldi history (build V,H once to 2*steps, extract at each m) ---
     int budget = 2 * steps;
