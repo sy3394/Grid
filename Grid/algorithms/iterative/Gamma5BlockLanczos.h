@@ -108,6 +108,10 @@ public:
   const std::vector<double>& getKappaGamma() const { return kappaGamma_; }
   const std::vector<double>& getEtaLoss()    const { return etaLoss_;    }
   const std::vector<double>& getCycleBestRes() const { return cycleBestRes_; }
+  int getNumSteps() const { return nSteps_; }
+  // Re-extract Ritz pairs using only the first m completed steps (the Krylov
+  // subspaces are nested), for residual-vs-Krylov-dimension histories.
+  void extractRitzAt(int m, Gamma5RitzSort sort) { if (m >= 1 && m <= nSteps_) computeRitzPairs(m, sort); }
 
   void log(const std::string& s) const {
     if (verbose_ > 0) std::cout << GridLogMessage << "[g5BL] " << s << std::endl;

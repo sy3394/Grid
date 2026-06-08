@@ -368,6 +368,85 @@ int main(int argc, char** argv) {
   // ===== apples-to-apples head-to-head: g5bl vs plain Arnoldi, same operator =====
   // Both invert the SAME (D_W - sigma)^{-1} (same inner CG) and target the same
   // complex eigenvalues; only the outer eigensolver differs.  Equal matvec budget.
+  // ===== residual-vs-Krylov-dimension history (Euclidean), g5bl vs Arnoldi =====
+  // Writes <out>.g5bl.hist and <out>.arnoldi.hist with columns:
+  //   matvecs  krylov_dim  min_raw_res  n_below_1e-2  n_below_1e-4
+  // where min_raw_res = smallest ||D_W u - lambda u||/||u|| over all Ritz pairs.
+  // matvecs is the cost axis (= inner CG solves); at equal matvecs both methods
+  // span the same Krylov dimension, so it is a fair head-to-head.
+  if (hasOpt(argc, argv, "--history")) {
+    double sg = sigmas[0];
+    WilsonOp Dsh(Umu, *UGrid, *UrbGrid, mass - sg, wpar);
+    ConjugateGradient<FermionField> cgh(stol, siter, false);
+    ShiftInvertNE<WilsonOp, FermionField> SI(Dsh, cgh);
+    FermionField w(UGrid);
+    auto rawRes = [&](const FermionField& u, std::complex<double> lam)->double {
+      DLinDirect.Op(u, w); ComplexD lf(lam.real(), lam.imag());
+      FermionField t(UGrid); t = w - u * lf; return std::sqrt(norm2(t)/norm2(u)); };
+    auto stats = [&](const std::vector<std::complex<double>>& lams,
+                     const std::vector<FermionField>& vecs)->std::array<double,3> {
+      double mn = 1e30; int b2 = 0, b4 = 0;
+      for (int i = 0; i < (int)lams.size(); i++) {
+        double r = rawRes(vecs[i], lams[i]);
+        mn = std::min(mn, r); if (r < 1e-2) b2++; if (r < 1e-4) b4++;
+      }
+      return {mn, (double)b2, (double)b4}; };
+
+    // --- g5bl history ---
+    Gamma5BlockLanczos<FermionField> g(SI, UGrid, gamma5, tol, 0);
+    if (degen > 0) g.setDegenRel(degen);
+    g(v0, v1, steps, reorth, G5SortAbsDescending);
+    std::ofstream fg(out + ".g5bl.hist");
+    fg << "# matvecs krylov_dim min_raw_res n_below_1e-2 n_below_1e-4\n";
+    for (int m = 1; m <= g.getNumSteps(); m++) {
+      g.extractRitzAt(m, G5SortAbsDescending);
+      const auto& ev = g.getEvals(); const auto& uv = g.getEvecs();
+      std::vector<std::complex<double>> L; std::vector<FermionField> Vv;
+      for (int i = 0; i < (int)ev.size(); i++) { L.push_back(sg + 1.0/ev(i)); Vv.push_back(uv[i]); }
+      auto s = stats(L, Vv);
+      fg << 2*m << " " << (int)ev.size() << " " << s[0] << " " << (int)s[1] << " " << (int)s[2] << "\n";
+    }
+    fg.close();
+    std::cout << GridLogMessage << "g5bl history -> " << out << ".g5bl.hist" << std::endl;
+
+    // --- Arnoldi history (build V,H once to 2*steps, extract at each m) ---
+    int budget = 2 * steps;
+    std::vector<FermionField> Va;
+    { FermionField v(UGrid); v = v0; v = v * (1.0/std::sqrt(norm2(v))); Va.push_back(v); }
+    Eigen::MatrixXcd H = Eigen::MatrixXcd::Zero(budget + 1, budget);
+    int adone = budget;
+    for (int j = 0; j < budget; j++) {
+      FermionField wj(UGrid); SI.Op(Va[j], wj);
+      for (int i = 0; i <= j; i++) {
+        auto h = innerProduct(Va[i], wj);
+        H(i, j) = std::complex<double>((double)real(h), (double)imag(h));
+        wj = wj - Va[i] * h;
+      }
+      double hn = std::sqrt(norm2(wj));
+      if (j + 1 <= budget) H(j + 1, j) = hn;
+      if (hn < 1e-12) { adone = j + 1; break; }
+      if (j + 1 < budget) Va.push_back(wj * (1.0/hn));
+    }
+    std::ofstream fa(out + ".arnoldi.hist");
+    fa << "# matvecs krylov_dim min_raw_res n_below_1e-2 n_below_1e-4\n";
+    for (int m = 1; m <= adone; m++) {
+      Eigen::ComplexEigenSolver<Eigen::MatrixXcd> es(H.block(0, 0, m, m));
+      auto lam = es.eigenvalues(); auto Y = es.eigenvectors();
+      std::vector<std::complex<double>> L; std::vector<FermionField> Vv;
+      for (int j = 0; j < m; j++) {
+        L.push_back(sg + 1.0/lam(j));
+        FermionField uj(UGrid); uj = Zero();
+        for (int k = 0; k < m && k < (int)Va.size(); k++) uj = uj + Va[k] * Y(k, j);
+        Vv.push_back(uj);
+      }
+      auto s = stats(L, Vv);
+      fa << m << " " << m << " " << s[0] << " " << (int)s[1] << " " << (int)s[2] << "\n";
+    }
+    fa.close();
+    std::cout << GridLogMessage << "Arnoldi history -> " << out << ".arnoldi.hist" << std::endl;
+    Grid_finalize(); return 0;
+  }
+
   // ===== diagnostic: pinpoint the g5bl bottleneck (manuscript Sec. 8) =====
   // Tracks per-step kappa(Gamma_k) (oblique-projector conditioning) and
   // eta=||Q_1^dag g5 Q_k|| (loss of gamma5-orthogonality); per-Ritz compares the
