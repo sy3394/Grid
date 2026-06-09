@@ -27,7 +27,7 @@
 # The default sweep 0.70:0.85:8 tiles that band; widen SWEEP for more of the
 # interior real axis (e.g. 0.0:1.4:15).
 #
-# 4 nodes x 8 GCDs = 32 ranks; 32^4 with --mpi 2.2.2.4.
+# 4 nodes x 8 GCDs = 32 ranks; 32^4 with --mpi 4.2.2.2.
 # ---------------------------------------------------------------------------
 
 cat << EOF > ./select_gpu
@@ -51,7 +51,7 @@ export OMP_NUM_THREADS=7
 export MPICH_GPU_SUPPORT_ENABLED=1
 
 # ---- paths (EDIT) ----
-EXE==${root}/examples/Example_gamma5_block_lanczos
+EXE=${root}/examples/Example_gamma5_block_lanczos
 CONFIG=${root}/HMC/32cube-rho0.124-tau4/snapshots/702/U_smr_3.000000
 OUT=g5bl_702_md3.dat
 TAG=3.000000                                          # MD-time label (col 1)

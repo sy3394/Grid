@@ -9,7 +9,7 @@
 #SBATCH --gpu-bind=none
 #SBATCH --exclusive
 #SBATCH --mem=0
-#SBATCH -o g5bl_hist_%j.out
+#SBATCH --out=out/g5bl_hist-%j.out
 
 # ---------------------------------------------------------------------------
 # Performance analysis on 32^4: raw Euclidean residual & #converged-modes vs Krylov
@@ -24,28 +24,32 @@
 # Krylov dim = number of (D_W - sigma)^{-1} applications.
 #
 # Pull the .hist files back to ~/BNL/G5BL/data and plot with g5bl_performance.ipynb.
-# The --compare run prints a 3-row head-to-head (g5bl / arnoldi / blockArnoldi).
+# The --compare run prints a head-to-head at equal Krylov dim.
 # ---------------------------------------------------------------------------
 
-cat << EOF > select_gpu
+cat << EOF > ./select_gpu
 #!/bin/bash
-export GPU_MAP=(0 1 2 3 7 6 5 4)
-export NUMA_MAP=(3 3 1 1 2 2 0 0)
+export GPU_MAP=(0 1 2 3 4 5 6 7)
+export NUMA_MAP=(3 3 1 1 0 0 2 2)
 export GPU=\${GPU_MAP[\$SLURM_LOCALID]}
 export NUM=\${NUMA_MAP[\$SLURM_LOCALID]}
-export HIP_VISIBLE_DEVICES=\$GPU
-unset ROCR_VISIBLE_DEVICES
+export ROCR_VISIBLE_DEVICES=\$GPU
+echo RANK \$SLURM_LOCALID using GPU \$GPU NUMA \${NUM}
 exec numactl -m \$NUM -N \$NUM \$*
 EOF
 chmod +x ./select_gpu
 
-root=$HOME/Frontier/Grid/systems/Frontier
+mkdir -p out
+
+root=/ccs/home/syamamoto/tmp/src/Grid_cleanedup_for_pullrequest/systems/Frontier
 source ${root}/sourceme.sh
+
 export OMP_NUM_THREADS=7
 export MPICH_GPU_SUPPORT_ENABLED=1
 
-EXE=./Example_gamma5_block_lanczos
-CONFIG=$HOME/path/to/snapshots/702/U_smr_3.000000   # <-- EDIT
+# ---- paths (EDIT) ----
+EXE=${root}/examples/Example_gamma5_block_lanczos
+CONFIG=${root}/HMC/32cube-rho0.124-tau4/snapshots/702/U_smr_3.000000
 OUT=hist702                                          # tag for the .hist files
 
 SIGMA=0.78        # centre of the reference cluster Re in [0.749,0.812]
@@ -55,16 +59,19 @@ KRYLOV=80
 STOL=1e-11        # inner CG tolerance (double precision)
 SITER=30000
 
-GRIDOPT="--accelerator-threads 8 --comms-overlap --shm 4096 --shm-mpi 0"
+
+vol=32.32.32.32
+mpi=1.2.2.2       # 1 node x 8 GCDs
+PARAMS="--mpi $mpi --accelerator-threads 32 --shm 2048 --shm-mpi 0 --grid $vol --comms-overlap" #--comms-sequential
 
 # Residual-vs-Krylov-dim history for RefinedArnoldi and Gamma5BlockLanczos.
-srun ./select_gpu ${EXE} --grid 32.32.32.32 --mpi 1.2.2.2 ${GRIDOPT} \
+srun ./select_gpu ${EXE} $PARAMS \
     --config ${CONFIG} --mass ${MASS} --shift ${SIGMA} \
     --stol ${STOL} --siter ${SITER} --steps ${STEPS} --krylov ${KRYLOV} \
     --history --out ${OUT}
 
 # (optional) one-shot head-to-head summary at equal Krylov dim:
-srun ./select_gpu ${EXE} --grid 32.32.32.32 --mpi 1.2.2.2 ${GRIDOPT} \
+srun ./select_gpu ${EXE} $PARAMS \
     --config ${CONFIG} --mass ${MASS} --shift ${SIGMA} \
     --stol ${STOL} --siter ${SITER} --steps ${STEPS} --krylov ${KRYLOV} --accept 1e-6 --compare
 
