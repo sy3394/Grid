@@ -1,5 +1,5 @@
 #!/bin/bash -l
-#SBATCH --job-name=g5bl_hist
+#SBATCH --job-name=solver_cmp
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=8
 #SBATCH --cpus-per-task=7
@@ -9,7 +9,7 @@
 #SBATCH --gpu-bind=none
 #SBATCH --exclusive
 #SBATCH --mem=0
-#SBATCH --out=out/g5bl_hist-%j.out
+#SBATCH --out=out/compare_solvers-%j.out
 
 # ---------------------------------------------------------------------------
 # Performance analysis on 32^4: raw Euclidean residual & #converged-modes vs Krylov
