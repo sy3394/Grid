@@ -13,10 +13,15 @@
 #SBATCH --out=out/g5bl_702-%j.out
 
 # ---------------------------------------------------------------------------
-# gamma5-Block Lanczos with a SHIFT-INVERT SWEEP over real sigma, in ONE job.
-# Resolves the near-real interior D_W spectrum of config 702 band by band:
-# each sigma converges the eigenvalues nearest it (lambda = sigma + 1/theta),
-# and the code accumulates + de-duplicates across windows.
+# SHIFT-INVERT SWEEP over real sigma, in ONE job, to resolve the near-real
+# interior D_W spectrum of config 702 band by band: each sigma converges the
+# eigenvalues nearest it (lambda = sigma + 1/theta), accumulated + de-duplicated
+# across windows.
+#
+# Default solver: RefinedArnoldi (single-vector Arnoldi + refined Ritz) -- the
+# best method for interior D_W modes on weak 8^4 (beats gamma5-block Lanczos on
+# both accuracy and #modes at equal cost).  Add --g5bl to use gamma5-block
+# Lanczos instead (then --wanted/--cycles apply).
 #
 # Reference cluster (evals_DW_702_2.dat, MD-time slice): Re in [0.749, 0.812].
 # The default sweep 0.70:0.85:8 tiles that band; widen SWEEP for more of the
@@ -24,9 +29,6 @@
 #
 # 4 nodes x 8 GCDs = 32 ranks; 32^4 with --mpi 2.2.2.4.
 # ---------------------------------------------------------------------------
-
-CPU_BIND="map_ldom:3,3,1,1,0,0,2,2"
-MEM_BIND="map_mem:3,3,1,1,0,0,2,2"
 
 cat << EOF > ./select_gpu
 #!/bin/bash
@@ -57,24 +59,28 @@ TAG=3.000000                                          # MD-time label (col 1)
 # ---- sweep + solver parameters ----
 SWEEP=0.70:0.85:8     # n real shifts tiling the reference cluster
 MASS=0                # reference used m = 0
-STEPS=40              # Lanczos steps per cycle (active Krylov 2*STEPS)
-WANTED=12             # wanted conjugate pairs per shift window
-CYCLES=6              # thick-restart cycles per shift
-TOL=1e-7              # Lanczos (theta-space) tolerance
-ACCEPT=1e-4           # keep modes with theta-residual < ACCEPT
-DEDUPE=1e-5           # merge modes within this distance in C
-STOL=1e-8             # inner normal-equations CG tolerance
-SITER=20000           # inner CG max iterations
+STEPS=40              # base step count; default Krylov dim = 2*STEPS
+KRYLOV=80             # RefinedArnoldi Krylov dimension (memory is ample on Frontier)
+WANTED=12             # (--g5bl only) wanted conjugate pairs per window
+CYCLES=6              # (--g5bl only) thick-restart cycles per shift
+TOL=1e-10             # convergence tolerance (raw Euclidean residual; double precision)
+ACCEPT=1e-8           # keep modes with raw residual < ACCEPT
+DEDUPE=1e-6           # merge modes within this distance in C
+STOL=1e-11            # inner normal-equations CG tolerance (< ACCEPT)
+SITER=30000           # inner CG max iterations
+
 
 vol=32.32.32.32
 mpi=4.2.2.2
 PARAMS="--mpi $mpi --accelerator-threads 32 --shm 2048 --shm-mpi 0 --grid $vol --comms-overlap" #--comms-sequential
 
-srun --cpu-bind=${CPU_BIND} --mem-bind=${MEM_BIND} ./select_gpu ${EXE} $PARAMS \
-     --config ${CONFIG} --mass ${MASS} \
-     --shift-sweep ${SWEEP} \
-     --steps ${STEPS} --wanted ${WANTED} --cycles ${CYCLES} --tol ${TOL} --accept ${ACCEPT} --dedupe ${DEDUPE} --stol ${STOL} --siter ${SITER} \
-     --tag ${TAG} --out ${OUT}
+srun ./select_gpu ${EXE} $PARAMS \
+    --config ${CONFIG} --mass ${MASS} \
+    --shift-sweep ${SWEEP} \
+    --steps ${STEPS} --krylov ${KRYLOV} --wanted ${WANTED} --cycles ${CYCLES} --tol ${TOL} \
+    --accept ${ACCEPT} --dedupe ${DEDUPE} --stol ${STOL} --siter ${SITER} \
+    --tag ${TAG} --out ${OUT}
+# (add --g5bl above to switch to gamma5-block Lanczos)
 
 # Output: ${OUT} = all converged, de-duplicated D_W eigenvalues across the sweep.
 # Compare:  python3 G5L/compare_evals.py evals_DW_702_2.dat ${OUT} --mdtime 3.0
