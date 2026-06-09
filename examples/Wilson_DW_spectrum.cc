@@ -15,18 +15,21 @@
     are accumulated and de-duplicated across windows, then written out (those with
     Re(lambda) in [lo, hi]).
 
-    Solver: RefinedArnoldi (Grid/algorithms/iterative/RefinedArnoldi.h).
+    Solver: RefinedArnoldi (default) or Gamma5BlockLanczos (--g5bl).  RefinedArnoldi is
+    the better method for interior D_W modes; --g5bl is provided for comparison output.
 
     Usage (32^4 example):
       Wilson_DW_spectrum --grid 32.32.32.32 --mpi 1.2.2.2 --config <NERSC> \
           --mass 0 --window 0:2 --nshift 21 --krylov 80 \
           --stol 1e-11 --accept 1e-8 --tag <mdtime> --out evals_DW.dat
+      (add --g5bl to use gamma5-block Lanczos; then --steps/--wanted/--cycles apply)
     Output rows:  <tag>  Re(lambda)  Im(lambda)   (sorted by |Im|).
 
 *************************************************************************************/
 
 #include <Grid/Grid.h>
 #include <Grid/algorithms/iterative/RefinedArnoldi.h>
+#include <Grid/algorithms/iterative/Gamma5BlockLanczos.h>
 
 using namespace Grid;
 
@@ -68,6 +71,10 @@ int main(int argc, char** argv) {
   int   siter  = std::stoi(argOr(argc, argv, "--siter",  "30000"));
   RealD accept = std::stod(argOr(argc, argv, "--accept", "1e-8"));
   RealD dedupe = std::stod(argOr(argc, argv, "--dedupe", "1e-6"));
+  bool  useG5bl= GridCmdOptionExists(argv, argv+argc, "--g5bl");
+  int   steps  = std::stoi(argOr(argc, argv, "--steps",  std::to_string(kdim/2)));  // g5bl block steps (Krylov 2*steps)
+  int   wanted = std::stoi(argOr(argc, argv, "--wanted", "12"));                     // g5bl: wanted conjugate pairs
+  int   cycles = std::stoi(argOr(argc, argv, "--cycles", "6"));                      // g5bl: thick-restart cycles
   std::string cfg = argOr(argc, argv, "--config", "");
   std::string out = argOr(argc, argv, "--out",    "evals_DW.dat");
   std::string tag = argOr(argc, argv, "--tag",    "0");
@@ -80,7 +87,8 @@ int main(int argc, char** argv) {
 
   std::cout << GridLogMessage << "D_W spectrum on " << GridDefaultLatt() << " mass=" << mass
             << "  window Re in [" << lo << "," << hi << "]  nshift=" << nshift
-            << "  Krylov dim=" << kdim << std::endl;
+            << "  Krylov dim=" << kdim
+            << "  solver=" << (useG5bl ? "Gamma5BlockLanczos" : "RefinedArnoldi") << std::endl;
 
   // gauge field
   LatticeGaugeField Umu(UGrid);
@@ -97,8 +105,11 @@ int main(int argc, char** argv) {
   WilsonOp Dw(Umu, *UGrid, *UrbGrid, mass, wpar);
   NonHermitianLinearOperator<WilsonOp, FermionField> DW(Dw);
 
+  Gamma G5(Gamma::Algebra::Gamma5);
+  auto gamma5 = [&G5](const FermionField& in, FermionField& out){ out = G5 * in; };
+
   GridParallelRNG RNG(UGrid); RNG.SeedFixedIntegers({5,6,7,8});
-  FermionField v0(UGrid); random(RNG, v0);
+  FermionField v0(UGrid), v1(UGrid); random(RNG, v0); random(RNG, v1);   // v1: g5bl block seed
   FermionField wbuf(UGrid);
   auto rawRes = [&](const FermionField& u, std::complex<double> lam)->double {
     DW.Op(u, wbuf); ComplexD lf(lam.real(), lam.imag());
@@ -119,14 +130,21 @@ int main(int argc, char** argv) {
     ConjugateGradient<FermionField> cg(stol, siter, false);
     ShiftInvertNE<WilsonOp, FermionField> SI(Dsh, cg);
 
-    RefinedArnoldi<FermionField> a(SI, UGrid, accept, 1);
-    a.setRawCheck(&DW, sg, /*shiftInvert=*/true);
-    a(v0, kdim, RASortAbsDescending);                       // nearest-sigma modes first
-
     int nc = 0;
-    for (int i = 0; i < (int)a.getEvals().size(); i++) {
-      std::complex<double> lam = sg + 1.0/a.getEvals()(i);
-      if (a.getResiduals()[i] < accept) { addDedup(lam, a.getResiduals()[i]); nc++; }
+    auto collect = [&](const Eigen::VectorXcd& ev, const std::vector<RealD>& rs){
+      for (int i = 0; i < (int)ev.size(); i++)
+        if (rs[i] < accept) { addDedup(sg + 1.0/ev(i), rs[i]); nc++; } };
+
+    if (useG5bl) {
+      Gamma5BlockLanczos<FermionField> g(SI, UGrid, gamma5, accept, 0);
+      g.setRawCheck(&DW, sg, /*shiftInvert=*/true);
+      g.thickRestart(v0, v1, cycles, steps, wanted, /*reorth=*/true, G5SortAbsDescending);
+      collect(g.getEvals(), g.getResiduals());
+    } else {
+      RefinedArnoldi<FermionField> a(SI, UGrid, accept, 0);
+      a.setRawCheck(&DW, sg, /*shiftInvert=*/true);
+      a(v0, kdim, RASortAbsDescending);                     // nearest-sigma modes first
+      collect(a.getEvals(), a.getResiduals());
     }
     totApply += SI.nApply; totCG += SI.nCG;
     std::cout << GridLogMessage << "sigma=" << sg << ": " << nc << " converged; total "
