@@ -44,7 +44,7 @@ export MPICH_GPU_SUPPORT_ENABLED=1
 EXE=${root}/examples/Wilson_DW_spectrum
 CONFIG=${root}/HMC/32cube-rho0.124-tau4/snapshots/702/U_smr_3.000000
 OUT=evals_DW_702.dat
-TAG=3.000000                                          # MD-time label (col 1)
+TAG=0 #3.000000                                          # MD-time label (col 1)
 
 # ---- window + solver parameters ----
 MASS=0                # reference used m = 0
