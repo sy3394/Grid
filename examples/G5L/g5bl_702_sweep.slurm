@@ -5,7 +5,7 @@
 #SBATCH --ntasks-per-node=8
 ##SBATCH --cpus-per-task=8
 #SBATCH --gpus-per-node=8
-#SBATCH --time=24:00:00
+#SBATCH --time=10:00:00
 #SBATCH --account=phy157_dwf
 #SBATCH --gpu-bind=none
 #SBATCH --exclusive
@@ -42,16 +42,15 @@ chmod +x ./select_gpu
 
 mkdir -p out
 
-# Grid Frontier environment (adjust to your tree)
-root=$HOME/Frontier/Grid/systems/Frontier
+root=/ccs/home/syamamoto/tmp/src/Grid_cleanedup_for_pullrequest/systems/Frontier
 source ${root}/sourceme.sh
 
 export OMP_NUM_THREADS=7
 export MPICH_GPU_SUPPORT_ENABLED=1
 
 # ---- paths (EDIT) ----
-EXE=./Example_gamma5_block_lanczos
-CONFIG=$HOME/path/to/snapshots/702/U_smr_3.000000     # <-- your snapshot
+EXE==${root}/examples/Example_gamma5_block_lanczos
+CONFIG=${root}/HMC/32cube-rho0.124-tau4/snapshots/702/U_smr_3.000000
 OUT=g5bl_702_md3.dat
 TAG=3.000000                                          # MD-time label (col 1)
 
@@ -67,14 +66,15 @@ DEDUPE=1e-5           # merge modes within this distance in C
 STOL=1e-8             # inner normal-equations CG tolerance
 SITER=20000           # inner CG max iterations
 
-srun --cpu-bind=${CPU_BIND} --mem-bind=${MEM_BIND} ./select_gpu ${EXE} \
-    --grid 32.32.32.32 --mpi 2.2.2.4 \
-    --accelerator-threads 8 --comms-overlap --shm 4096 --shm-mpi 0 \
-    --config ${CONFIG} --mass ${MASS} \
-    --shift-sweep ${SWEEP} \
-    --steps ${STEPS} --wanted ${WANTED} --cycles ${CYCLES} --tol ${TOL} \
-    --accept ${ACCEPT} --dedupe ${DEDUPE} --stol ${STOL} --siter ${SITER} \
-    --tag ${TAG} --out ${OUT}
+vol=32.32.32.32
+mpi=4.2.2.2
+PARAMS="--mpi $mpi --accelerator-threads 32 --shm 2048 --shm-mpi 0 --grid $vol --comms-overlap" #--comms-sequential
+
+srun --cpu-bind=${CPU_BIND} --mem-bind=${MEM_BIND} ./select_gpu ${EXE} $PARAMS \
+     --config ${CONFIG} --mass ${MASS} \
+     --shift-sweep ${SWEEP} \
+     --steps ${STEPS} --wanted ${WANTED} --cycles ${CYCLES} --tol ${TOL} --accept ${ACCEPT} --dedupe ${DEDUPE} --stol ${STOL} --siter ${SITER} \
+     --tag ${TAG} --out ${OUT}
 
 # Output: ${OUT} = all converged, de-duplicated D_W eigenvalues across the sweep.
 # Compare:  python3 G5L/compare_evals.py evals_DW_702_2.dat ${OUT} --mdtime 3.0
