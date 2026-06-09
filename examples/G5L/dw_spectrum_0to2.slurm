@@ -13,9 +13,9 @@
 
 # ---------------------------------------------------------------------------
 # Wilson D_W eigenvalues in the real-axis window Re(lambda) in [LO,HI], via a
-# RefinedArnoldi shift-invert sweep (Wilson_DW_spectrum).  One config per job;
-# output rows  <tag>  Re(lambda)  Im(lambda)  (sorted by |Im|, near-real first).
-# Run the ensemble by resubmitting with a different CONFIG / TAG / OUT.
+# shift-invert sweep (Wilson_DW_spectrum; RefinedArnoldi by default, --g5bl for
+# gamma5-block Lanczos).  One config per job; output rows  <tag>  Re(lambda)  Im(lambda)
+# (sorted by |Im|, near-real first).  Resubmit per config; narrow WINDOW for the cluster.
 #
 # 4 nodes x 8 GCDs = 32 ranks; 32^4 with --mpi 4.2.2.2.
 # ---------------------------------------------------------------------------
@@ -48,13 +48,17 @@ TAG=3.000000                                          # MD-time label (col 1)
 
 # ---- window + solver parameters ----
 MASS=0                # reference used m = 0
-WINDOW=0:2            # Re(lambda) window
+WINDOW=0:2            # Re(lambda) window (narrow to the cluster with e.g. 0.70:0.85)
 NSHIFT=11             # real shifts tiling the window (validation; raise to 21 for the full run)
 KRYLOV=80             # RefinedArnoldi Krylov dimension per shift
 ACCEPT=1e-8           # keep modes with raw residual < ACCEPT
 DEDUPE=1e-6           # merge modes within this distance in C
 STOL=1e-11            # inner normal-equations CG tolerance (< ACCEPT)
 SITER=30000           # inner CG max iterations
+# g5bl-only knobs (used when --g5bl is appended below):
+STEPS=40              # gamma5-block Lanczos block steps (Krylov dim = 2*STEPS)
+WANTED=12             # wanted conjugate pairs per window
+CYCLES=6              # thick-restart cycles per shift
 
 
 vol=32.32.32.32
@@ -66,6 +70,8 @@ srun ./select_gpu ${EXE} $PARAMS \
     --window ${WINDOW} --nshift ${NSHIFT} --krylov ${KRYLOV} \
     --accept ${ACCEPT} --dedupe ${DEDUPE} --stol ${STOL} --siter ${SITER} \
     --tag ${TAG} --out ${OUT}
+# To produce the spectrum with gamma5-block Lanczos instead, append:
+#     --g5bl --steps ${STEPS} --wanted ${WANTED} --cycles ${CYCLES}
 
 # Output: ${OUT} = D_W eigenvalues with Re(lambda) in the window, de-duplicated.
 # Compare:  python3 G5L/compare_evals.py evals_DW_702_2.dat ${OUT} --mdtime 3.0

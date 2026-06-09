@@ -30,8 +30,7 @@ converged conjugate pairs and deflates them.
 - `Grid/algorithms/iterative/Gamma5BlockLanczos.h` — the gamma5-block solver (header only).
 - `examples/Example_gamma5_block_lanczos.cc` — demonstrator/comparison driver.
 - `examples/Wilson_DW_spectrum.cc` — production driver: D_W eigenvalues in Re in [lo,hi].
-- `examples/G5L/dw_spectrum_0to2.slurm` — Frontier production: D_W spectrum in [0,2] (RefinedArnoldi).
-- `examples/G5L/g5bl_702_sweep.slurm` — Frontier production: shift-invert cluster sweep (RefinedArnoldi, or g5bl via --g5bl).
+- `examples/G5L/dw_spectrum_0to2.slurm` — Frontier production: D_W spectrum sweep (RefinedArnoldi, or g5bl via --g5bl; narrow WINDOW for the cluster).
 - `examples/G5L/compare_solvers.slurm` — Frontier test: RefinedArnoldi vs g5bl head-to-head (--history + --compare).
 - `examples/G5L/compare_evals.py`     — compare output vs a reference eval file.
 - `examples/G5L/free_wilson_spectrum.py` — analytic free-Wilson spectrum.
