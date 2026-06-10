@@ -67,7 +67,7 @@ int main(int argc, char** argv) {
   RealD mass   = std::stod(argOr(argc, argv, "--mass",   "0"));
   int   nshift = std::stoi(argOr(argc, argv, "--nshift", "21"));
   int   kdim   = std::stoi(argOr(argc, argv, "--krylov", "80"));
-  RealD stol   = std::stod(argOr(argc, argv, "--stol",   "1e-11"));
+  RealD stol   = std::stod(argOr(argc, argv, "--stol",   "1e-9"));   // ~10x tighter than accept is plenty
   int   siter  = std::stoi(argOr(argc, argv, "--siter",  "30000"));
   RealD accept = std::stod(argOr(argc, argv, "--accept", "1e-8"));
   RealD dedupe = std::stod(argOr(argc, argv, "--dedupe", "1e-6"));
