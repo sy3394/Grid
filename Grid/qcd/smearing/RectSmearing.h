@@ -220,11 +220,11 @@ public:
       
       if(SmearRhoRs[1]>0) {
 	rectStapleRs(C, Us, U2s);
-	std::cout << GridLogMessage << "BaseSmearREc t rs: " <<norm2(C)<<SmearRhoRs[1]<<std::endl;
+	//std::cout << GridLogMessage << "BaseSmearREc t rs: " <<norm2(C)<<SmearRhoRs[1]<<std::endl;
       }
       else if(SmearRhoRl[1]>0) {
 	rectStapleRl(C, Us, U2s);
-	std::cout << GridLogMessage << "BaseSmearREct rl: " <<norm2(C)<<" "<<SmearRhoRl[1]<<std::endl;
+	//std::cout << GridLogMessage << "BaseSmearREct rl: " <<norm2(C)<<" "<<SmearRhoRl[1]<<std::endl;
       }
     }
     

@@ -15,8 +15,15 @@ NAMESPACE_BEGIN(Grid);
   @brief Smeared configuration masked container for rectagle flow
   Modified for a multi-subset smearing (aka Luscher Flowed HMC)
 */
+#undef DEBUG
+//#define DEBUG
+
 template <class Gimpl>
-class SmearedConfigurationRect : public SmearedConfigurationMasked<Gimpl> //from Masked better???
+class SmearedConfigurationRect : public SmearedConfigurationMasked<Gimpl>
+// TODO:
+//can be a child of SmearedConfiguration but wanted to keep JacobianAction template form
+// we can possibly add a virtual method logDetJacobian in the SmearedConfiguration class to make it work
+// To use this class as it is, you need to include both this file and GaugeConfigurationMasked.h
 {
 public:
   INHERIT_GIMPL_TYPES(Gimpl);
@@ -65,21 +72,20 @@ private:
     case 1:
       {
 	WL.Staple(Cmu, U, mu);  //nb staple conventions of IroIro and Grid differ by a dagger
-	//Cmu = adj(rho * Cmu);
 	break;
       }
     case 2:
       {
 	// TODO: prepare optimized version
 	WL.RectStapleUnoptimisedRs(Cmu, U, mu);
-	//Cmu = adj(rho * Cmu);
 	break;
       }
     }
 
     Cmu = adj(rho * Cmu);
+#ifdef DEBUG
     std::cout << GridLogMessage << "BaseSmear: " << mu<<" "<<rho<<" "<<flow_kernel<<" "<<norm2(Cmu) << std::endl;//DEBUG
-
+#endif
   }
 
   void BaseSmearDerivativeP(GaugeField& SigmaTerm,
@@ -544,7 +550,7 @@ public:
     }
 #endif
 
-#if 1  //testing combined Horner's rule
+#if 0  //testing combined Horner's rule
     std::vector<AdjMatrixField>  XB_dJdX;    XB_dJdX.resize(8,grid);
     //std::vector<AdjMatrix> TRb_s; TRb_s.resize(8);
     AdjMatrixField XB_tbXn(grid);
@@ -568,22 +574,32 @@ public:
       XB_dJdX[b] = Zero(); //TRb_s[b]; 
     }
     
-    // 2. The Horner Loop (Unchanged)
+    // 2. The Horner Loop 
     for (int j = 12; j >= 1; --j) {
-      double kfac = 1.0 / (j + 1);
-
       for(int b=0; b<8; b++) {
         // dJdX[b] correctly accumulates the negative contributions
-        XB_dJdX[b] = (TRb_s[b] * XB_t3 + X * XB_dJdX[b] )* kfac;
+        XB_dJdX[b] = (TRb_s[b] * XB_t3 + X * XB_dJdX[b]) *(1.0 / (j + 1));
       }
 
-      XB_t3 = (XB_t2 * kfac) + aunit;
+      XB_t3 = XB_t2 * (1.0 / (j + 1)) + aunit;
       XB_t2 = X * XB_t3;
+      
     }
     XB_JxAd = XB_t3;
     std::cout << GridLogMessage << "DEBUG: Horner's method JxAd"<<norm2(XB_JxAd-JxAd)<< " djdx ";
-    for(int i =0;i<dJdX.size();i++) std::cout<<norm2(XB_dJdX[i] + dJdX[i])<<" ";//note: sign deviation of dJdX from Luscher's convention
+    for(int i =0;i<dJdX.size();i++) std::cout<<i<<" "<<norm2(XB_dJdX[i] + dJdX[i])<<" "<<norm2(XB_dJdX[i])<<" "<<norm2(dJdX[i])<<" ";//note: sign deviation of dJdX from Luscher's convention
     std::cout <<std::endl;
+    for(int i =0;i<dJdX.size();i++){
+      Dump(dJdX[i], "DEBUG HO (dJdX");
+      Dump(XB_dJdX[i], "DEBUG HO (XB_dJdX");
+    }
+
+#if 0
+
+    for(int b=0;b<8;b++){
+      dJdX[b] = -XB_dJdX[b];
+    }
+#endif
 #endif
     
     time+=usecond();
@@ -695,7 +711,7 @@ public:
 	    time+=usecond();
 	    std::cout << GridLogMessage << "PlaqLR took "<<time<< " us"<<std::endl;
 	    
-#if 1 //DEBUG
+#if 0 //DEBUG
 	    GaugeLinkField PlaqR2(grid);
 	    dirs = {(nu+1),mu+1,-(nu+1),-(mu+1)};
 	    linkTracer(Umu, Utmp, dirs, 3, -rho, PlaqR2);
@@ -723,7 +739,7 @@ public:
 	    PlaqR=(rho)*Gimpl::CovShiftForward(Umu[nu], nu,
 					       Gimpl::CovShiftBackward(Umu[mu], mu,
 								       Gimpl::CovShiftIdentityBackward(Umu[nu], nu)));
-#if 1 //DEBUG
+#if 0 //DEBUG
 	    //GaugeLinkField PlaqR2(grid);
 	    dirs = {(nu+1),-(mu+1),-(nu+1)};
 	    linkTracer(Umu, Utmp, dirs, -1, rho, PlaqR2);
@@ -1171,6 +1187,7 @@ public:
     }
     BaseSmear(Cmu, U,mu,rho,flw_knl);
 
+    std::cout << GridLogMessage << "logDetJacobianLevel " << mu <<" "<< rho<<" "<<flw_knl<<" "<<smr_ind <<std::endl;
     Umu = peekLorentz(U, mu);
     Complex ci(0,1);
     for(int b=0;b<Ngen;b++) {
@@ -1247,7 +1264,7 @@ public:
     return result.real();
   }
 public:
-  RealD logDetJacobian(void)
+  virtual RealD logDetJacobian(void)
   {
     RealD ln_det = 0;
     if (this->smearingLevels > 0)
@@ -1264,7 +1281,7 @@ public:
     }
     return ln_det;
   }
-  void logDetJacobianForce(GaugeField &force)
+  virtual void logDetJacobianForce(GaugeField &force)
   {
     force =Zero();
     GaugeField force_det(force.Grid());
@@ -1345,7 +1362,7 @@ public:
 
       GaugeField smeared_A(this->ThinLinks->Grid());
       GaugeField smeared_B(this->ThinLinks->Grid());
-      std::cout << GridLogDebug << this->smearingLevels <<" "<<this->SmearedSet.size()<<""<<Nsmr_one_step<<std::endl;//DEBUG
+      //std::cout << GridLogDebug << this->smearingLevels <<" "<<this->SmearedSet.size()<<""<<Nsmr_one_step<<std::endl;//DEBUG
       previous_u = *this->ThinLinks;
       double start = usecond();
       for (int smearLvl = 0; smearLvl < this->smearingLevels; smearLvl+=Nsmr_one_step)

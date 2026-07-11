@@ -1870,9 +1870,9 @@ public:
     }  // if smearingLevels = 0 do nothing
     std::cout << GridLogMessage << " DEBUG: logDetJacobianForce Full " << std::endl;
   }
-  /*------------------------------- OLD IMPLEMENTATION ----------------------------------------------------------*/
+  /*------------------------------- END: OLD IMPLEMENTATION ----------------------------------------------------------*/
   
-  RealD logDetJacobian(void)
+  virtual RealD logDetJacobian(void)
   {
     RealD ln_det = 0;
     if (this->smearingLevels > 0)
@@ -1893,7 +1893,7 @@ public:
     }
     return ln_det;
   }
-  void logDetJacobianForce(GaugeField &force)
+  virtual void logDetJacobianForce(GaugeField &force)
   {
     GRID_TRACE("logDetJacobianForce");
     force = Zero();
