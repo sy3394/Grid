@@ -42,7 +42,7 @@ export MPICH_GPU_SUPPORT_ENABLED=1
 
 # ---- paths (EDIT) ----
 EXE=${root}/examples/Wilson_DW_spectrum
-CONFIG=${root}/HMC/32cube-rho0.124-tau4/snapshots/702/U_smr_3.000000
+CONFIG=${root}/HMC/32cube-rho0.124-tau4/ckpoint_EODWF_lat_smr.702
 OUT=evals_DW_702.dat
 TAG=0 #3.000000                                          # MD-time label (col 1)
 
@@ -53,7 +53,9 @@ NSHIFT=11             # real shifts tiling the window (validation; raise to 21 f
 KRYLOV=80             # RefinedArnoldi Krylov dimension per shift
 ACCEPT=1e-8           # keep modes with raw residual < ACCEPT
 DEDUPE=1e-6           # merge modes within this distance in C
-STOL=1e-11            # inner normal-equations CG tolerance (< ACCEPT)
+STOL=1e-9             # inner CG tolerance: ~10x tighter than ACCEPT is plenty.  Shifts
+                      # that land on the cluster make (D_W-sigma) near-singular, so 1e-11
+                      # would cost ~8500 iters/solve for no gain in the final eigenvalues.
 SITER=30000           # inner CG max iterations
 # g5bl-only knobs (used when --g5bl is appended below):
 STEPS=40              # gamma5-block Lanczos block steps (Krylov dim = 2*STEPS)

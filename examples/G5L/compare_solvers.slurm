@@ -1,10 +1,11 @@
 #!/bin/bash -l
 #SBATCH --job-name=solver_cmp
+#SBATCH --partition=extended
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=8
 #SBATCH --cpus-per-task=7
 #SBATCH --gpus-per-node=8
-#SBATCH --time=04:00:00
+#SBATCH --time=06:00:00
 #SBATCH --account=phy157_dwf
 #SBATCH --gpu-bind=none
 #SBATCH --exclusive
@@ -49,14 +50,18 @@ export MPICH_GPU_SUPPORT_ENABLED=1
 
 # ---- paths (EDIT) ----
 EXE=${root}/examples/Example_gamma5_block_lanczos
-CONFIG=${root}/HMC/32cube-rho0.124-tau4/snapshots/702/U_smr_3.000000
+CONFIG=${root}/HMC/32cube-rho0.124-tau4/ckpoint_EODWF_lat_smr.702
 OUT=hist702                                          # tag for the .hist files
 
 SIGMA=0.78        # centre of the reference cluster Re in [0.749,0.812]
 MASS=0
 STEPS=40          # RefinedArnoldi Krylov dim = 2*STEPS = 80; g5bl block steps = 40
 KRYLOV=80
-STOL=1e-11        # inner CG tolerance (double precision)
+# Loose inner CG: sigma=0.78 sits ON the cluster so (D_W-sigma) is near-singular and
+# CG to 1e-11 costs ~8500 iters/solve.  Convergence is judged on the RAW D_W residual
+# (and both solvers share the inner solve), so 1e-7 leaves the comparison curves intact
+# while roughly halving the iterations.  The curves then plateau near ~1e-6.
+STOL=1e-7
 SITER=30000
 
 
