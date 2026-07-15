@@ -73,6 +73,43 @@ inline void removeWhitespace(std::string &key)
   key.erase(std::remove_if(key.begin(), key.end(), ::isspace),key.end());
 }
 
+/////////////////////////////////////////////////////////////////////////////////
+// Grid-private CRC-32, byte-identical to zlib crc32(): reflected polynomial
+// 0xEDB88320, init/final XOR 0xFFFFFFFF. SciDAC checksums must not call the
+// bare crc32 symbol: in some link environments (oneAPI/SYCL on Aurora) it
+// resolves to a non-zlib implementation and checksums are silently wrong.
+/////////////////////////////////////////////////////////////////////////////////
+inline uint32_t GridCrc32(uint32_t crc,const unsigned char *buf,size_t len)
+{
+  static const std::vector<uint32_t> table = [](){
+    std::vector<uint32_t> t(256);
+    for(uint32_t n=0;n<256;n++){
+      uint32_t c=n;
+      for(int k=0;k<8;k++) c = (c&1) ? (0xEDB88320u ^ (c>>1)) : (c>>1);
+      t[n]=c;
+    }
+    return t;
+  }();
+  crc = crc ^ 0xFFFFFFFFu;
+  for(size_t i=0;i<len;i++) crc = table[(crc ^ buf[i]) & 0xFF] ^ (crc >> 8);
+  return crc ^ 0xFFFFFFFFu;
+}
+// One-time self-check against the standard CRC-32 check value; abort loudly
+// rather than write unverifiable checksums.
+inline void GridCrc32SelfTest(void)
+{
+  static const int checked = [](){
+    uint32_t c = GridCrc32(0,(const unsigned char *)"123456789",9);
+    if ( c != 0xcbf43926 ) {
+      fprintf(stderr,"GridCrc32 self-test failed: got %08x expected cbf43926\n",c);
+      fflush(stderr);
+      abort();
+    }
+    return 1;
+  }();
+  (void)checked;
+}
+
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 // Static class holding the parallel IO code
 // Could just use a namespace
@@ -148,6 +185,8 @@ class BinaryIO {
     Coordinate local_start =grid->LocalStarts();
     Coordinate global_vol  =grid->FullDimensions();
 
+    GridCrc32SelfTest();
+
     thread_region
     { 
       Coordinate coor(nd);
@@ -178,7 +217,7 @@ class BinaryIO {
 	uint64_t gsite29   = global_site%29;
 	uint64_t gsite31   = global_site%31;
 	
-	site_crc = crc32(0,(unsigned char *)site_buf,sizeof(fobj));
+	site_crc = GridCrc32(0,(unsigned char *)site_buf,sizeof(fobj));
 	//	std::cout << "Site "<<local_site << " crc "<<std::hex<<site_crc<<std::dec<<std::endl;
 	//	std::cout << "Site "<<local_site << std::hex<<site_buf[0] <<site_buf[1]<<std::dec <<std::endl;
 	scidac_csuma_thr ^= site_crc<<gsite29 | site_crc>>(32-gsite29);
