@@ -17,6 +17,16 @@ NAMESPACE_BEGIN(Grid);
 */
 #undef DEBUG
 //#define DEBUG
+// With DEBUG defined, the DEFAULT force/Jacobian routines self-check every
+// component against the `int old` reference overloads and print norm diffs
+// (per component, per PlaqL/R term, per level, and for the totals), so a
+// single HMC run validates the whole optimised path. ~3x cost per
+// evaluation. Enable: replace the #undef above with #define and rebuild.
+#ifdef DEBUG
+#define RECT_DBG_PLAQ std::cout << GridLogMessage << " DEBUG: Plaq L/R line " << __LINE__ << " smr "<<smr<<" mu "<<mu<<" nu "<<nu<<" "<<norm2(PlaqL)<<" "<<norm2(PlaqR)<<std::endl;
+#else
+#define RECT_DBG_PLAQ
+#endif
 
 template <class Gimpl>
 class SmearedConfigurationRect : public SmearedConfigurationMasked<Gimpl>
@@ -1375,6 +1385,14 @@ public:
       BaseSmear_ghost_rect(Cmu, gU, mu, rho);
       break;
     }
+#ifdef DEBUG
+    {
+      GaugeLinkField Cmu2(grid);
+      BaseSmear(Cmu2, U, mu, rho, flw_knl);
+      std::cout << GridLogMessage << " DEBUG: BaseSmear_ghost " << smr<<" "<<mu<<" "<<flw_knl
+		<<" diff "<<norm2(Cmu-Cmu2)<<" ref "<<norm2(Cmu2)<<std::endl;
+    }
+#endif
 
     //////////////////////////////////////////////////////////////////
     // Assemble Luscher exp diff map J matrix
@@ -1386,6 +1404,20 @@ public:
     {GRID_TRACE("ZxAdOpt");
       SU3Adjoint::make_adjoint_rep(ZxAd, Zx);
     }
+#ifdef DEBUG
+    {
+      AdjMatrixField ZxAd2(grid); ZxAd2 = Zero();
+      AdjMatrix TRb; ColourMatrix tb; LatticeComplex cplx(grid);
+      for(int b=0;b<8;b++) {
+	SU3::generator(b, tb);
+	SU3Adjoint::generator(b,TRb);
+	cplx = 2.0*trace(ci*tb*Zx);
+	ZxAd2 = ZxAd2 - cplx * TRb;
+      }
+      std::cout << GridLogMessage << " DEBUG: ZxAd " << smr<<" "<<mu
+		<<" diff "<<norm2(ZxAd-ZxAd2)<<" ref "<<norm2(ZxAd2)<<std::endl;
+    }
+#endif
 
     /////////////////////////////////////////////////////////////////
     // NxxAd (needed before the fused J/Mab kernel below)
@@ -1393,6 +1425,14 @@ public:
     PlaqL = Ident;
     PlaqR = Utmp*adj(Cmu);
     ComputeNxy(PlaqL,PlaqR,NxxAd);
+#ifdef DEBUG
+    {
+      AdjMatrixField NxxAd2(grid);
+      ComputeNxy(0,PlaqL,PlaqR,NxxAd2);
+      std::cout << GridLogMessage << " DEBUG: NxxAd " << smr<<" "<<mu
+		<<" diff "<<norm2(NxxAd-NxxAd2)<<" ref "<<norm2(NxxAd2)<<std::endl;
+    }
+#endif
 
     RealD t3a = usecond();
     /////////////////////////////////////////////////////////////////
@@ -1472,6 +1512,43 @@ public:
 	});
     }
 
+#ifdef DEBUG
+    {
+      // Reference sequence of the old overload: lattice Taylor J, Mab,
+      // complex (Eigen) Inverse, lattice Horner dJdX + traces. Compared
+      // BEFORE the mask is applied, as in the old routine.
+      AdjMatrixField JxAd2(grid), MpAd2(grid), MpAdInv2(grid), nMpInv2(grid), MpInvJx2(grid), X2(grid), mZxAd2(grid);
+      AdjVectorField dJdXe2(grid);
+      X2=1.0; JxAd2 = X2; mZxAd2 = (-1.0)*ZxAd;
+      RealD kpfac = 1;
+      for(int k=1;k<12;k++){ X2=X2*mZxAd2; kpfac = kpfac/(k+1); JxAd2 = JxAd2 + X2*kpfac; }
+      MpAd2 = Complex(1.0,0.0); MpAd2 = MpAd2 - JxAd2*NxxAd;
+      MpAdInv2 = Inverse(MpAd2);
+      nMpInv2 = NxxAd*MpAdInv2;
+      MpInvJx2 = (-1.0)*MpAdInv2*JxAd2;
+      std::vector<AdjMatrixField> dJdX2(8,grid);
+      std::vector<AdjMatrix> TRb_s(8);
+      AdjMatrixField t22(grid), t32(grid), aunit2(grid);
+      for(int b=0;b<8;b++){ SU3Adjoint::generator(b, TRb_s[b]); dJdX2[b] = TRb_s[b]; }
+      aunit2 = ComplexD(1.0);
+      X2 = (-1.0)*ZxAd; t22 = X2;
+      for (int j = 12; j > 1; --j) {
+	t32 = t22*(1.0/(j+1)) + aunit2;
+	t22 = X2*t32;
+	for(int b=0;b<8;b++) dJdX2[b] = TRb_s[b]*t32 + X2*dJdX2[b]*(1.0/(j+1));
+      }
+      for(int b=0;b<8;b++) dJdX2[b] = -0.5*dJdX2[b];
+      for(int e=0;e<8;e++){
+	LatticeComplexD tr(grid);
+	tr = trace(dJdX2[e]*nMpInv2);
+	pokeColour(dJdXe2,tr,e);
+      }
+      std::cout << GridLogMessage << " DEBUG: fused J/Mab/Inv/dJdX " << smr<<" "<<mu
+		<<" dJdXe diff "<<norm2(dJdXe_nMpInv-dJdXe2)<<" ref "<<norm2(dJdXe2)
+		<<" MpInvJx diff "<<norm2(MpInvJx-MpInvJx2)<<" ref "<<norm2(MpInvJx2)<<std::endl;
+    }
+#endif
+
     Compute_MpInvJx_dNxxdSy(PlaqL,PlaqR,MpInvJx,FdetV);
     Fdet2_mu=FdetV;
     Fdet1_mu=Zero();
@@ -1538,8 +1615,9 @@ public:
 		});
 	      PlaqR = GhostRect.Extract(gPlaqR);
 	    }
+	    RECT_DBG_PLAQ
 
-	    dJdXe_nMpInv_y =   dJdXe_nMpInv;
+	    dJdXe_nMpInv_y =  dJdXe_nMpInv;
 	    ComputeNxy(PlaqL,PlaqR,Nxy);
 	    Fdet1_nu = transpose(Nxy)*dJdXe_nMpInv_y;
 
@@ -1570,8 +1648,9 @@ public:
 	      PlaqR = GhostRect.Extract(gPlaqR);
 	      PlaqL = GhostRect.Extract(gPlaqL);
 	    }
+	    RECT_DBG_PLAQ
 
-	    dJdXe_nMpInv_y = Cshift(dJdXe_nMpInv,mu,-1);
+	    dJdXe_nMpInv_y =Cshift(dJdXe_nMpInv,mu,-1);
 	    ComputeNxy(PlaqL, PlaqR,Nxy);
 	    Fdet1_nu = Fdet1_nu+transpose(Nxy)*dJdXe_nMpInv_y;
 
@@ -1600,8 +1679,9 @@ public:
 	      PlaqL = GhostRect.Extract(gPlaqL);
 	      PlaqR = Umu[nu];
 	    }
+	    RECT_DBG_PLAQ
 
-	    dJdXe_nMpInv_y = Cshift(dJdXe_nMpInv,nu,1);
+	    dJdXe_nMpInv_y =Cshift(dJdXe_nMpInv,nu,1);
 	    ComputeNxy(PlaqL,PlaqR,Nxy);
 	    Fdet1_nu = Fdet1_nu + transpose(Nxy)*dJdXe_nMpInv_y;
 
@@ -1632,8 +1712,9 @@ public:
 	      PlaqL = GhostRect.Extract(gPlaqL);
 	      PlaqR = GhostRect.Extract(gPlaqR);
 	    }
+	    RECT_DBG_PLAQ
 
-	    dJdXe_nMpInv_y = Cshift(dJdXe_nMpInv,mu,-1);
+	    dJdXe_nMpInv_y =Cshift(dJdXe_nMpInv,mu,-1);
 	    dJdXe_nMpInv_y = Cshift(dJdXe_nMpInv_y,nu,1);
 
 	    ComputeNxy(PlaqL,PlaqR,Nxy);
@@ -1676,8 +1757,9 @@ public:
 	      PlaqL = GhostRect.Extract(gPlaqL);
 	      PlaqR = GhostRect.Extract(gPlaqR);
 	    }
+	    RECT_DBG_PLAQ
 
-	    dJdXe_nMpInv_y = Cshift(dJdXe_nMpInv,nu,-1);
+	    dJdXe_nMpInv_y =Cshift(dJdXe_nMpInv,nu,-1);
 
 	    ComputeNxy(PlaqL,PlaqR,Nxy);
 	    Fdet1_mu = Fdet1_mu + transpose(Nxy)*dJdXe_nMpInv_y;
@@ -1707,8 +1789,9 @@ public:
 	      PlaqL = GhostRect.Extract(gPlaqL);
 	      PlaqR = Umu[nu];
 	    }
+	    RECT_DBG_PLAQ
 
-	    dJdXe_nMpInv_y = Cshift(dJdXe_nMpInv,nu,1);
+	    dJdXe_nMpInv_y =Cshift(dJdXe_nMpInv,nu,1);
 
 	    ComputeNxy(PlaqL,PlaqR,Nxy);
 	    Fdet1_mu = Fdet1_mu + transpose(Nxy)*dJdXe_nMpInv_y;
@@ -1752,8 +1835,9 @@ public:
 		});
 	      PlaqR = GhostRect.Extract(gPlaqR);
 	    }
+	    RECT_DBG_PLAQ
 
-	    dJdXe_nMpInv_y =   dJdXe_nMpInv;
+	    dJdXe_nMpInv_y =  dJdXe_nMpInv;
 	    ComputeNxy(PlaqL,PlaqR,Nxy);
 	    Fdet1_nu = transpose(Nxy)*dJdXe_nMpInv_y;
 
@@ -1790,8 +1874,9 @@ public:
 	      PlaqR = GhostRect.Extract(gPlaqR);
 	      PlaqL = GhostRect.Extract(gPlaqL);
 	    }
+	    RECT_DBG_PLAQ
 
-	    dJdXe_nMpInv_y = Cshift(dJdXe_nMpInv,mu,-1);
+	    dJdXe_nMpInv_y =Cshift(dJdXe_nMpInv,mu,-1);
 	    ComputeNxy(PlaqL, PlaqR,Nxy);
 	    Fdet1_nu = Fdet1_nu+transpose(Nxy)*dJdXe_nMpInv_y;
 
@@ -1829,8 +1914,9 @@ public:
 	      PlaqR = GhostRect.Extract(gPlaqR);
 	      PlaqL = GhostRect.Extract(gPlaqL);
 	    }
+	    RECT_DBG_PLAQ
 
-	    dJdXe_nMpInv_y = Cshift(dJdXe_nMpInv,nu,-1);
+	    dJdXe_nMpInv_y =Cshift(dJdXe_nMpInv,nu,-1);
 	    ComputeNxy(PlaqL, PlaqR,Nxy);
 	    Fdet1_nu = Fdet1_nu+transpose(Nxy)*dJdXe_nMpInv_y;
 
@@ -1868,8 +1954,9 @@ public:
 	      PlaqR = GhostRect.Extract(gPlaqR);
 	      PlaqL = GhostRect.Extract(gPlaqL);
 	    }
+	    RECT_DBG_PLAQ
 
-	    dJdXe_nMpInv_y = Cshift(Cshift(dJdXe_nMpInv,mu,-1),nu,-1);
+	    dJdXe_nMpInv_y =Cshift(Cshift(dJdXe_nMpInv,mu,-1),nu,-1);
 	    ComputeNxy(PlaqL, PlaqR,Nxy);
 	    Fdet1_nu = Fdet1_nu+transpose(Nxy)*dJdXe_nMpInv_y;
 
@@ -1910,8 +1997,9 @@ public:
 	      PlaqL = GhostRect.Extract(gPlaqL);
 	      PlaqR = GhostRect.Extract(gPlaqR);
 	    }
+	    RECT_DBG_PLAQ
 
-	    dJdXe_nMpInv_y = Cshift(dJdXe_nMpInv,nu,1);
+	    dJdXe_nMpInv_y =Cshift(dJdXe_nMpInv,nu,1);
 	    ComputeNxy(PlaqL, PlaqR,Nxy);
 	    Fdet1_nu = Fdet1_nu+transpose(Nxy)*dJdXe_nMpInv_y;
 
@@ -1950,8 +2038,9 @@ public:
 	      PlaqL = GhostRect.Extract(gPlaqL);
 	      PlaqR = GhostRect.Extract(gPlaqR);
 	    }
+	    RECT_DBG_PLAQ
 
-	    dJdXe_nMpInv_y = Cshift(Cshift(dJdXe_nMpInv,mu,-1),nu,1);
+	    dJdXe_nMpInv_y =Cshift(Cshift(dJdXe_nMpInv,mu,-1),nu,1);
 	    ComputeNxy(PlaqL, PlaqR,Nxy);
 	    Fdet1_nu = Fdet1_nu+transpose(Nxy)*dJdXe_nMpInv_y;
 
@@ -1989,8 +2078,9 @@ public:
 	      PlaqL = GhostRect.Extract(gPlaqL);
 	      PlaqR = GhostRect.Extract(gPlaqR);
 	    }
+	    RECT_DBG_PLAQ
 
-	    dJdXe_nMpInv_y = Cshift(dJdXe_nMpInv,nu,2);
+	    dJdXe_nMpInv_y =Cshift(dJdXe_nMpInv,nu,2);
 	    ComputeNxy(PlaqL,PlaqR,Nxy);
 	    Fdet1_nu = Fdet1_nu + transpose(Nxy)*dJdXe_nMpInv_y;
 
@@ -2028,8 +2118,9 @@ public:
 	      PlaqL = GhostRect.Extract(gPlaqL);
 	      PlaqR = GhostRect.Extract(gPlaqR);
 	    }
+	    RECT_DBG_PLAQ
 
-	    dJdXe_nMpInv_y = Cshift(Cshift(dJdXe_nMpInv,mu,-1),nu,2);
+	    dJdXe_nMpInv_y =Cshift(Cshift(dJdXe_nMpInv,mu,-1),nu,2);
 	    ComputeNxy(PlaqL, PlaqR,Nxy);
 	    Fdet1_nu = Fdet1_nu+transpose(Nxy)*dJdXe_nMpInv_y;
 
@@ -2077,8 +2168,9 @@ public:
 	      PlaqL = GhostRect.Extract(gPlaqL);
 	      PlaqR = GhostRect.Extract(gPlaqR);
 	    }
+	    RECT_DBG_PLAQ
 
-	    dJdXe_nMpInv_y = Cshift(dJdXe_nMpInv,nu,-2);
+	    dJdXe_nMpInv_y =Cshift(dJdXe_nMpInv,nu,-2);
 	    ComputeNxy(PlaqL,PlaqR,Nxy);
 	    Fdet1_mu = Fdet1_mu + transpose(Nxy)*dJdXe_nMpInv_y;
 
@@ -2116,8 +2208,9 @@ public:
 	      PlaqL = GhostRect.Extract(gPlaqL);
 	      PlaqR = GhostRect.Extract(gPlaqR);
 	    }
+	    RECT_DBG_PLAQ
 
-	    dJdXe_nMpInv_y = Cshift(dJdXe_nMpInv,nu,2);
+	    dJdXe_nMpInv_y =Cshift(dJdXe_nMpInv,nu,2);
 	    ComputeNxy(PlaqL,PlaqR,Nxy);
 	    Fdet1_mu = Fdet1_mu + transpose(Nxy)*dJdXe_nMpInv_y;
 
@@ -2143,6 +2236,15 @@ public:
 
     // Sign conventions as in the reference routine above
     force=-1.0*(Fdet1 + Fdet2);
+#ifdef DEBUG
+    {
+      GaugeField force2(grid);
+      force2 = Zero();
+      logDetJacobianForceLevel(0,U,force2,smr);
+      std::cout << GridLogMessage << " DEBUG: forceLevel " << smr<<" "<<mu<<" "<<flw_knl
+		<<" diff "<<norm2(force-force2)<<" ref "<<norm2(force2)<<std::endl;
+    }
+#endif
     RealD t1 = usecond();
     std::cout << GridLogPerformance << " logDetJacobianForceLevelOpt took "<<t1-t0<<" us"
 	      << " (prelim "<<t3a-t0<<" us, dJdXe "<<t4-t3a<<" us, nu loop "<<t5-t4<<" us)"<<std::endl;
@@ -2309,6 +2411,13 @@ public:
     ////////////////////////////
     ln_det = ln_det * mask;
     Complex result = sum(ln_det);
+#ifdef DEBUG
+    {
+      RealD result2 = logDetJacobianLevel(0,U,smr);
+      std::cout << GridLogMessage << " DEBUG: logDetJacobianLevel " << smr<<" "<<mu<<" "<<flw_knl
+		<<" def "<<result.real()<<" old "<<result2<<" diff "<<result.real()-result2<<std::endl;
+    }
+#endif
     return result.real();
   }
 
@@ -2445,6 +2554,13 @@ public:
 	ln_det+= logDetJacobianLevel(this->get_smeared_conf(ismr-1),ismr);
       }
       ln_det +=logDetJacobianLevel(*(this->ThinLinks),0);
+#ifdef DEBUG
+      {
+	RealD ln_det2 = logDetJacobian(0);
+	std::cout << GridLogMessage << " DEBUG: logDetJacobian TOTAL def "<<ln_det
+		  <<" old "<<ln_det2<<" diff "<<ln_det-ln_det2<<std::endl;
+      }
+#endif
 
       double end = usecond();
       double time = (end - start)/ 1e3;
@@ -2527,7 +2643,15 @@ public:
       force = force + force_det;
 
       force=Ta(force); // Ta
-      
+#ifdef DEBUG
+      {
+	GaugeField force2(force.Grid());
+	logDetJacobianForce(0,force2);
+	std::cout << GridLogMessage << " DEBUG: logDetJacobianForce TOTAL diff "
+		  <<norm2(force-force2)<<" ref "<<norm2(force2)<<std::endl;
+      }
+#endif
+
       double end = usecond();
       double time = (end - start)/ 1e3;
       std::cout << GridLogMessage << "GaugeConfigurationRect: lnDetJacobianForce took " << time << " ms" << std::endl;  
