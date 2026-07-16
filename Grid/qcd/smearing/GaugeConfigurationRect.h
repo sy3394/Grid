@@ -1285,7 +1285,15 @@ public:
     // each also came with an extra factor of -1 from Luscher's convention, which is kept for the moment
     //   This is because InertForce come with extra factor of -1, which can be adjasted
     // The overall minus sign in force is necessary: Trivializing Maps, the Wilson Flow and the HMC Algorithm (Lushcer) Eq. (6.1)
-    force=-1.0*(Fdet1 + Fdet2); //-0.5*(Fdet1 + Fdet2);
+    // 2026-07-13: -1.0 -> -0.5. FD tests (tests/forces/Test_rect_fd_level0)
+    // showed force = 2x dS/dU for BOTH kernels at -1.0 (the eps-sweep limit
+    // of dS/dSpred was 1/2 for plq and rect alike; the earlier apparent plq
+    // consistency at eps=0.01 was a curvature artifact). The lndet side is
+    // confirmed correct absolutely (tests/forces/Test_rect_numjac vs a
+    // numerical Jacobian of the map), so the 1/2 belongs to the force.
+    // NOTE the same statement applies to GaugeConfigurationMasked.h via the
+    // convention ledger (its net normalisation is identical).
+    force=-0.5*(Fdet1 + Fdet2);
     RealD t1 = usecond();
     std::cout << GridLogMessage << " logDetJacobianForce level took "<<t1-t0<<" us "<<std::endl;
     std::cout << GridLogMessage << " logDetJacobianForce t3-t0 "<<t3a-t0<<" us "<<std::endl;
@@ -2235,7 +2243,9 @@ public:
     InsertForce(Fdet2,Fdet2_mu,mu);
 
     // Sign conventions as in the reference routine above
-    force=-1.0*(Fdet1 + Fdet2);
+    // 2026-07-13: -1.0 -> -0.5, kept in step with the default routine
+    // (see the note there; force was 2x dS/dU for both kernels).
+    force=-0.5*(Fdet1 + Fdet2);
 #ifdef DEBUG
     {
       GaugeField force2(grid);
