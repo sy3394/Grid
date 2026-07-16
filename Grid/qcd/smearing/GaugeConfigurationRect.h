@@ -33,6 +33,7 @@ private:
   typedef typename SU3Adjoint::AMatrix AdjMatrix;
   typedef typename SU3Adjoint::LatticeAdjMatrix  AdjMatrixField;
   typedef typename SU3Adjoint::LatticeAdjVector  AdjVectorField;
+  typedef typename SU3::vAlgebraMatrix vAlgebraMatrix;
 
   // These live in base class
   //  const unsigned int smearingLevels;
@@ -41,12 +42,24 @@ private:
 
   // Conventions:
   //   - flow kernel: 1 =:= Wilson,    2 =:= short-side rectangle
-  //   -  mask types: 1 =:= red-black, 2 =:= 2x2 red-black in the plane perp. to \mu but identical in mu-dir
-  
+  //   -  mask types: 1 =:= red-black, 2 =:= red-black in 2x2 blocks of the dirs perp. to \mu,
+  //                                       alternating site-by-site along \mu:
+  //                                       mask = ( x_\mu + \sum_{\nu!=\mu} floor(x_\nu/2) ) mod 2
+
   int Nsmr_one_step = 2*Nd; // = #filterings(even colour, odd colour) x #dirs of smearing
   std::vector<int> mask_types;
   std::vector<Smear_Stout<Gimpl> *> Stouts;
   std::vector<LatticeLorentzComplex> masks; // should we turn this to poiners?????????
+
+  // Optimised rect staple: ghost exchange of depth 2 (paths reach two hops in nu)
+  // + per-mu stencils, set up once in the constructor.
+  PaddedCell GhostRect;
+  std::vector<GeneralLocalStencil> gStencils_rectsmear;
+  // Force-level PlaqL/PlaqR stencils on the depth-2 padded grid.
+  // Entry order == kernel read order in logDetJacobianForceLevel; keep in step.
+  std::vector<GeneralLocalStencil> gStencils_plqforce;  //  6 per (mu,nu) pair, 3-4 entries
+  std::vector<GeneralLocalStencil> gStencils_rectforce; // 10 per (mu,nu) pair, 6 entries
+  std::vector<GeneralLocalStencil> gStencils_plqsmear;  //  1 per mu, 6 entries per nu!=mu (plq staple)
 
   void ApplyMask(GaugeField &U,int smr)
   {
@@ -86,6 +99,61 @@ private:
 #ifdef DEBUG
     std::cout << GridLogMessage << "BaseSmear: " << mu<<" "<<rho<<" "<<flow_kernel<<" "<<norm2(Cmu) << std::endl;//DEBUG
 #endif
+  }
+
+  // Optimised Rs staple: same result as BaseSmear with flow_kernel=2, but computed
+  // on the padded grid with the pre-built stencil. gU = GhostRect.ExchangePeriodic(U).
+  void BaseSmear_ghost_rect(GaugeLinkField& Cmu, const GaugeField& gU, int mu, RealD rho) {
+    GRID_TRACE("BaseSmear_ghost_rect");
+    assert((int)gStencils_rectsmear.size() == Nd);
+    GridBase *ggrid = gU.Grid();
+    GaugeLinkField gC(ggrid);
+    Rect_Stout<Gimpl>::RectStaplePaddedRs(gC, gU, gStencils_rectsmear[mu], mu, rho);
+    Cmu = GhostRect.Extract(gC);
+  }
+
+  // Optimised plq staple on the padded grid: Cmu = rho * adj(staple), the
+  // flw_knl==1 result of BaseSmear. Kernel as BaseSmear_ghost in
+  // GaugeConfigurationMasked.h, but on the full grid (no checkerboard).
+  // gU = GhostRect.ExchangePeriodic(U).
+  void BaseSmear_ghost_plq(GaugeLinkField& Cmu, const GaugeField& gU, int mu, RealD rho) {
+    GRID_TRACE("BaseSmear_ghost_plq");
+    GridBase *ggrid = gU.Grid();
+    GaugeLinkField gtmp(ggrid);
+    {
+      autoView( gtmp_v , gtmp, AcceleratorWrite);
+      autoView( gU_v , gU, AcceleratorRead);
+      autoView( gStencil_v, gStencils_plqsmear[mu], AcceleratorRead);
+      accelerator_for(ss, ggrid->oSites(), ggrid->Nsimd(), {
+	  typedef decltype(coalescedRead(gtmp_v[0])) LinkMat;
+
+	  LinkMat tmp = Zero();
+	  for(int nu=0;nu<Nd;nu++){
+	    int inc = 6*(nu - (mu<=nu));
+	    if (nu != mu) {
+	      GeneralStencilEntry const* e = gStencil_v.GetEntry(0+inc,ss);
+	      auto U_nu_x = coalescedReadGeneralPermute(gU_v[e->_offset], e->_permute, Nd)(nu)();
+	      e = gStencil_v.GetEntry(1+inc,ss);
+	      auto U_mu_xpnu = coalescedReadGeneralPermute(gU_v[e->_offset], e->_permute, Nd)(mu)();
+	      e = gStencil_v.GetEntry(2+inc,ss);
+	      auto Udag_nu_xpmu = adj(coalescedReadGeneralPermute(gU_v[e->_offset], e->_permute, Nd))(nu)();
+
+	      tmp()() = tmp()() + U_nu_x * U_mu_xpnu * Udag_nu_xpmu;
+
+	      e = gStencil_v.GetEntry(3+inc,ss);
+	      auto Udag_nu_xmnu = adj(coalescedReadGeneralPermute(gU_v[e->_offset], e->_permute, Nd))(nu)();
+	      e = gStencil_v.GetEntry(4+inc,ss);
+	      auto U_mu_xmnu = coalescedReadGeneralPermute(gU_v[e->_offset], e->_permute, Nd)(mu)();
+	      e = gStencil_v.GetEntry(5+inc,ss);
+	      auto U_nu_xpmu_mnu = coalescedReadGeneralPermute(gU_v[e->_offset], e->_permute, Nd)(nu)();
+
+	      tmp()() = tmp()() + Udag_nu_xmnu * U_mu_xmnu * U_nu_xpmu_mnu;
+	    }
+	  }
+	  coalescedWrite(gtmp_v[ss],rho*tmp);
+	});
+    }
+    Cmu = GhostRect.Extract(gtmp);
   }
 
   void BaseSmearDerivativeP(GaugeField& SigmaTerm,
@@ -283,9 +351,13 @@ private:
     pokeLorentz(Fdet, Fdet_pol, nu);
   }
 
-  // tmp comment: no extra factor 
-  void ComputeNxy(const GaugeLinkField &PlaqL,const GaugeLinkField &PlaqR,AdjMatrixField &NxAd)
+  // tmp comment: no extra factor
+  // Old implementation, kept for consistency checks against the fused
+  // default; to be deleted once confirmed. The int old argument only
+  // selects this overload.
+  void ComputeNxy(int old, const GaugeLinkField &PlaqL,const GaugeLinkField &PlaqR,AdjMatrixField &NxAd)
   {
+    GRID_TRACE("ComputeNxy_old");
     GaugeLinkField Nx(PlaqL.Grid());
     const int Ngen = SU3Adjoint::Dimension;
     Complex ci(0,1);
@@ -300,8 +372,12 @@ private:
   }
 
   // tmp comment: orig. extra factor of (-2)*(-2)/(-2) = -2 <- multiplied the result by 2 but still deviation from Luscher by -1
-  void Compute_MpInvJx_dNxxdSy(const GaugeLinkField &PlaqL,const GaugeLinkField &PlaqR, AdjMatrixField MpInvJx,AdjVectorField &Fdet2 )
+  // Old implementation, kept for consistency checks against the fused
+  // default; to be deleted once confirmed. The int old argument only
+  // selects this overload.
+  void Compute_MpInvJx_dNxxdSy(int old, const GaugeLinkField &PlaqL,const GaugeLinkField &PlaqR, AdjMatrixField MpInvJx,AdjVectorField &Fdet2 )
   {
+    GRID_TRACE("Compute_MpInvJx_dNxxdSy_old");
     GaugeLinkField UtaU(PlaqL.Grid());
     GaugeLinkField D(PlaqL.Grid());
     AdjMatrixField Dbc(PlaqL.Grid());
@@ -350,9 +426,71 @@ private:
       tpk+=usecond();
     }
     t+=usecond();
-    std::cout << GridLogPerformance << " Compute_MpInvJx_dNxxdSy " << t/1e3 << " ms  proj "<<tp/1e3<< " ms"
+    std::cout << GridLogPerformance << " Compute_MpInvJx_dNxxdSy_old " << t/1e3 << " ms  proj "<<tp/1e3<< " ms"
 	      << " ta "<<tta/1e3<<" ms" << " poke "<<tpk/1e3<< " ms"<<std::endl;
   }
+
+  // Default (fused) implementation, port of the plaquette-kernel
+  // optimisation in GaugeConfigurationMasked.h. Same result as the old
+  // overload above: note this class's convention ta = i t^a (the
+  // masked/plaquette class uses 2i t^a); the c-loop convention T'^c = 2i t^c
+  // is internal to the one-argument LieAlgebraProject.
+  void Compute_MpInvJx_dNxxdSy(const GaugeLinkField &PlaqL,const GaugeLinkField &PlaqR, const AdjMatrixField &MpInvJx,AdjVectorField &Fdet2 )
+  {
+    GRID_TRACE("Compute_MpInvJx_dNxxdSy");
+    GridBase *grid = PlaqL.Grid();
+    const int Ngen = SU3Adjoint::Dimension;
+    Complex ci(0,1);
+    RealD t=-usecond();
+
+    autoView(Fdet2_v,Fdet2,AcceleratorWrite);
+    autoView(PlaqL_v,PlaqL,AcceleratorRead);
+    autoView(PlaqR_v,PlaqR,AcceleratorRead);
+    autoView(MpInvJx_v,MpInvJx,AcceleratorRead);
+    const int nsimd = vAlgebraMatrix::Nsimd();
+    accelerator_for2d(ss,grid->oSites(),a,Ngen,nsimd,{
+        typedef decltype(coalescedRead(MpInvJx_v[0])) adj_mat;
+
+        adj_mat Dbc;
+        ColourMatrix ta;
+
+	SU3::generator(a, ta);
+	ta = ci * ta;
+	auto UtaU = adj(PlaqL_v(ss))*ta*PlaqR_v(ss);
+	SU3::LieAlgebraProject(Dbc,UtaU);
+
+        coalescedWrite(Fdet2_v[ss]()()(a),traceProduct(MpInvJx_v(ss),Dbc)()()());
+      });
+    t+=usecond();
+    std::cout << GridLogPerformance << " Compute_MpInvJx_dNxxdSy " << t/1e3 <<" ms"<<std::endl;
+  }
+
+  // Default (fused) implementation of ComputeNxy (same conventions as the
+  // old overload above: tb = 2i t^b is internal to the two-argument
+  // LieAlgebraProject).
+  void ComputeNxy(const GaugeLinkField &PlaqL,const GaugeLinkField &PlaqR,AdjMatrixField &NxAd)
+  {
+    GRID_TRACE("ComputeNxy");
+    GridBase *grid = PlaqL.Grid();
+    RealD t=-usecond();
+
+    autoView(NxAd_v,NxAd,AcceleratorWrite);
+    autoView(PlaqL_v,PlaqL,AcceleratorRead);
+    autoView(PlaqR_v,PlaqR,AcceleratorRead);
+    const int nsimd = vAlgebraMatrix::Nsimd();
+    accelerator_for(ss,grid->oSites(),nsimd,{
+        typedef decltype(coalescedRead(NxAd_v[0]))  adj_mat;
+        adj_mat NxAd_site;
+	SU3::LieAlgebraProject(NxAd_site,PlaqL_v(ss),PlaqR_v(ss));
+        coalescedWrite(NxAd_v[ss],NxAd_site);
+      });
+    t+=usecond();
+    std::cout << GridLogPerformance << " ComputeNxy " << t/1e3 <<" ms"<<std::endl;
+  }
+
+  // The site-local real-part inverse used inside the fused force kernel
+  // lives in Lattice_trace.h (Inverse_RealPartSite), next to LUdcmp/solve
+  // and Inverse_RealPart, which is now implemented on top of it.
 
   void linkTracer(const std::vector<GaugeLinkField> &Umu, const GaugeLinkField &Umskd, const std::vector<int> dirs0, int ind, Real rho, GaugeLinkField &rect){
     // dir in dirs is 1+mu where mu=0,..3 to put sign on dir
@@ -387,7 +525,10 @@ private:
     
 public:
 
-  void logDetJacobianForceLevel(const GaugeField &U, GaugeField &force ,int smr)
+  // Old implementation, kept for consistency checks against the optimised
+  // default below; to be deleted once confirmed. The int old argument only
+  // selects this overload.
+  void logDetJacobianForceLevel(int old, const GaugeField &U, GaugeField &force ,int smr)
   {
     GridBase* grid = U.Grid();
     ColourMatrix   tb;
@@ -610,7 +751,7 @@ public:
     time=-usecond();
     PlaqL = Ident;
     PlaqR = Utmp*adj(Cmu);
-    ComputeNxy(PlaqL,PlaqR,NxxAd);
+    ComputeNxy(old,PlaqL,PlaqR,NxxAd);
     time+=usecond();
     std::cout << GridLogMessage << "ComputeNxy took "<<time<< " us"<<std::endl;
     
@@ -645,7 +786,7 @@ public:
     AdjMatrixField MpInvJx_nu(grid);
     MpInvJx = (-1.0)*MpAdInv * JxAd;// rho is on the plaq factor
 
-    Compute_MpInvJx_dNxxdSy(PlaqL,PlaqR,MpInvJx,FdetV);
+    Compute_MpInvJx_dNxxdSy(old,PlaqL,PlaqR,MpInvJx,FdetV);
     Fdet2_mu=FdetV;
     Fdet1_mu=Zero();
     
@@ -720,14 +861,14 @@ public:
 	
 	    time=-usecond();
 	    dJdXe_nMpInv_y =   dJdXe_nMpInv;
-	    ComputeNxy(PlaqL,PlaqR,Nxy);
+	    ComputeNxy(old,PlaqL,PlaqR,Nxy);
 	    Fdet1_nu = transpose(Nxy)*dJdXe_nMpInv_y;
 	    time+=usecond();
 	    std::cout << GridLogMessage << "ComputeNxy (occurs 6x) took "<<time<< " us"<<std::endl;
 	    
 	    time=-usecond();
 	    PlaqR=(-1.0)*PlaqR;
-	    Compute_MpInvJx_dNxxdSy(PlaqL,PlaqR,MpInvJx,FdetV);
+	    Compute_MpInvJx_dNxxdSy(old,PlaqL,PlaqR,MpInvJx,FdetV);
 	    Fdet2_nu = FdetV;
 	    time+=usecond();
 	    std::cout << GridLogMessage << "Compute_MpInvJx_dNxxSy (occurs 6x) took "<<time<< " us"<<std::endl;
@@ -748,12 +889,12 @@ public:
 	    PlaqL=Gimpl::CovShiftIdentityBackward(Utmp, mu);
 	    
 	    dJdXe_nMpInv_y = Cshift(dJdXe_nMpInv,mu,-1);
-	    ComputeNxy(PlaqL, PlaqR,Nxy);
+	    ComputeNxy(old,PlaqL, PlaqR,Nxy);
 	    Fdet1_nu = Fdet1_nu+transpose(Nxy)*dJdXe_nMpInv_y;
 	    
 
 	    MpInvJx_nu = Cshift(MpInvJx,mu,-1);
-	    Compute_MpInvJx_dNxxdSy(PlaqL,PlaqR,MpInvJx_nu,FdetV);
+	    Compute_MpInvJx_dNxxdSy(old,PlaqL,PlaqR,MpInvJx_nu,FdetV);
 	    Fdet2_nu = Fdet2_nu+FdetV;
 	    
 	    ///////////////// -ve nu /////////////////
@@ -768,11 +909,11 @@ public:
 	    PlaqR = Gimpl::CovShiftIdentityForward(Umu[nu], nu);
 	    
 	    dJdXe_nMpInv_y = Cshift(dJdXe_nMpInv,nu,1);
-	    ComputeNxy(PlaqL,PlaqR,Nxy);
+	    ComputeNxy(old,PlaqL,PlaqR,Nxy);
 	    Fdet1_nu = Fdet1_nu + transpose(Nxy)*dJdXe_nMpInv_y;
 	    
 	    MpInvJx_nu = Cshift(MpInvJx,nu,1);
-	    Compute_MpInvJx_dNxxdSy(PlaqL,PlaqR,MpInvJx_nu,FdetV);
+	    Compute_MpInvJx_dNxxdSy(old,PlaqL,PlaqR,MpInvJx_nu,FdetV);
 	    Fdet2_nu = Fdet2_nu+FdetV;
 	    
 	    // x==
@@ -788,12 +929,12 @@ public:
 	    dJdXe_nMpInv_y = Cshift(dJdXe_nMpInv,mu,-1);
 	    dJdXe_nMpInv_y = Cshift(dJdXe_nMpInv_y,nu,1);
 	    
-	    ComputeNxy(PlaqL,PlaqR,Nxy);
+	    ComputeNxy(old,PlaqL,PlaqR,Nxy);
 	    Fdet1_nu = Fdet1_nu + transpose(Nxy)*dJdXe_nMpInv_y;
 
 	    MpInvJx_nu = Cshift(MpInvJx,mu,-1);
 	    MpInvJx_nu = Cshift(MpInvJx_nu,nu,1);
-	    Compute_MpInvJx_dNxxdSy(PlaqL,PlaqR,MpInvJx_nu,FdetV);
+	    Compute_MpInvJx_dNxxdSy(old,PlaqL,PlaqR,MpInvJx_nu,FdetV);
 	    Fdet2_nu = Fdet2_nu+FdetV;
 
 	    /////////////////////////////////////////////////////////////////////
@@ -817,12 +958,12 @@ public:
 	    
 	    dJdXe_nMpInv_y = Cshift(dJdXe_nMpInv,nu,-1);
 	    
-	    ComputeNxy(PlaqL,PlaqR,Nxy);
+	    ComputeNxy(old,PlaqL,PlaqR,Nxy);
 	    Fdet1_mu = Fdet1_mu + transpose(Nxy)*dJdXe_nMpInv_y;
 	    
 	    MpInvJx_nu = Cshift(MpInvJx,nu,-1);
 	    
-	    Compute_MpInvJx_dNxxdSy(PlaqL,PlaqR,MpInvJx_nu,FdetV);
+	    Compute_MpInvJx_dNxxdSy(old,PlaqL,PlaqR,MpInvJx_nu,FdetV);
 	    Fdet2_mu = Fdet2_mu+FdetV;
 
 	    // x==
@@ -837,12 +978,12 @@ public:
 
 	    dJdXe_nMpInv_y = Cshift(dJdXe_nMpInv,nu,1);
 	    
-	    ComputeNxy(PlaqL,PlaqR,Nxy);
+	    ComputeNxy(old,PlaqL,PlaqR,Nxy);
 	    Fdet1_mu = Fdet1_mu + transpose(Nxy)*dJdXe_nMpInv_y;
 	    
 	    MpInvJx_nu = Cshift(MpInvJx,nu,1);
 	    
-	    Compute_MpInvJx_dNxxdSy(PlaqL,PlaqR,MpInvJx_nu,FdetV);
+	    Compute_MpInvJx_dNxxdSy(old,PlaqL,PlaqR,MpInvJx_nu,FdetV);
 	    Fdet2_mu = Fdet2_mu+FdetV;
 
 	    break;
@@ -866,13 +1007,13 @@ public:
 	    
 	    time=-usecond();
 	    dJdXe_nMpInv_y =   dJdXe_nMpInv;
-	    ComputeNxy(PlaqL,PlaqR,Nxy);
+	    ComputeNxy(old,PlaqL,PlaqR,Nxy);
 	    Fdet1_nu = transpose(Nxy)*dJdXe_nMpInv_y;
 	    time+=usecond();
 	    std::cout << GridLogMessage << "ComputeNxy (occurs 10x) took "<<time<< " us"<<std::endl;
 	    
 	    time=-usecond();
-	    Compute_MpInvJx_dNxxdSy(PlaqR,PlaqL,MpInvJx,FdetV);
+	    Compute_MpInvJx_dNxxdSy(old,PlaqR,PlaqL,MpInvJx,FdetV);
 	    Fdet2_nu = FdetV;
 	    time+=usecond();
 	    std::cout << GridLogMessage << "Compute_MpInvJx_dNxxSy (occurs 10x) took "<<time<< " us"<<std::endl;
@@ -893,11 +1034,11 @@ public:
 	    PlaqL=Gimpl::CovShiftIdentityBackward(Utmp, mu); // Note: adj(PlaqL) is used in ComputeNx & Compute_MpInvJx_dNxxdSy
 	  
 	    dJdXe_nMpInv_y = Cshift(dJdXe_nMpInv,mu,-1);
-	    ComputeNxy(PlaqL, PlaqR,Nxy);
+	    ComputeNxy(old,PlaqL, PlaqR,Nxy);
 	    Fdet1_nu = Fdet1_nu+transpose(Nxy)*dJdXe_nMpInv_y;
 	    
 	    MpInvJx_nu = Cshift(MpInvJx,mu,-1);
-	    Compute_MpInvJx_dNxxdSy(PlaqL,PlaqR,MpInvJx_nu,FdetV);
+	    Compute_MpInvJx_dNxxdSy(old,PlaqL,PlaqR,MpInvJx_nu,FdetV);
 	    Fdet2_nu = Fdet2_nu+FdetV;
 	
 	
@@ -918,11 +1059,11 @@ public:
 												 
 	  
 	    dJdXe_nMpInv_y = Cshift(dJdXe_nMpInv,nu,-1);
-	    ComputeNxy(PlaqL, PlaqR,Nxy);
+	    ComputeNxy(old,PlaqL, PlaqR,Nxy);
 	    Fdet1_nu = Fdet1_nu+transpose(Nxy)*dJdXe_nMpInv_y;
 	  
 	    MpInvJx_nu = Cshift(MpInvJx,nu,-1);
-	    Compute_MpInvJx_dNxxdSy(PlaqR,PlaqL,MpInvJx_nu,FdetV);
+	    Compute_MpInvJx_dNxxdSy(old,PlaqR,PlaqL,MpInvJx_nu,FdetV);
 	    Fdet2_nu = Fdet2_nu+FdetV;
 
 	
@@ -946,11 +1087,11 @@ public:
 
 
 	    dJdXe_nMpInv_y = Cshift(Cshift(dJdXe_nMpInv,mu,-1),nu,-1);
-	    ComputeNxy(PlaqL, PlaqR,Nxy);
+	    ComputeNxy(old,PlaqL, PlaqR,Nxy);
 	    Fdet1_nu = Fdet1_nu+transpose(Nxy)*dJdXe_nMpInv_y;
 	    
 	    MpInvJx_nu = Cshift(Cshift(MpInvJx,mu,-1),nu,-1);
-	    Compute_MpInvJx_dNxxdSy(PlaqL,PlaqR,MpInvJx_nu,FdetV);
+	    Compute_MpInvJx_dNxxdSy(old,PlaqL,PlaqR,MpInvJx_nu,FdetV);
 	    Fdet2_nu = Fdet2_nu+FdetV;
 	    
 	
@@ -974,11 +1115,11 @@ public:
 	    PlaqR = Gimpl::CovShiftIdentityForward(Umu[nu], nu);
 	    
 	    dJdXe_nMpInv_y = Cshift(dJdXe_nMpInv,nu,1);
-	    ComputeNxy(PlaqL, PlaqR,Nxy);
+	    ComputeNxy(old,PlaqL, PlaqR,Nxy);
 	    Fdet1_nu = Fdet1_nu+transpose(Nxy)*dJdXe_nMpInv_y;
 	    
 	    MpInvJx_nu = Cshift(MpInvJx,nu,1);
-	    Compute_MpInvJx_dNxxdSy(PlaqL,PlaqR,MpInvJx_nu,FdetV);
+	    Compute_MpInvJx_dNxxdSy(old,PlaqL,PlaqR,MpInvJx_nu,FdetV);
 	    Fdet2_nu = Fdet2_nu+FdetV;
 	    
 	
@@ -1001,11 +1142,11 @@ public:
 					   Gimpl::CovShiftIdentityBackward(Utmp,mu));
 	    
 	    dJdXe_nMpInv_y = Cshift(Cshift(dJdXe_nMpInv,mu,-1),nu,1);
-	    ComputeNxy(PlaqL, PlaqR,Nxy);
+	    ComputeNxy(old,PlaqL, PlaqR,Nxy);
 	    Fdet1_nu = Fdet1_nu+transpose(Nxy)*dJdXe_nMpInv_y;
 	    
 	    MpInvJx_nu = Cshift(Cshift(MpInvJx,mu,-1),nu,1);
-	    Compute_MpInvJx_dNxxdSy(PlaqR,PlaqL,MpInvJx_nu,FdetV);
+	    Compute_MpInvJx_dNxxdSy(old,PlaqR,PlaqL,MpInvJx_nu,FdetV);
 	    Fdet2_nu = Fdet2_nu+FdetV;
 	    
 
@@ -1027,11 +1168,11 @@ public:
 											 Gimpl::CovShiftIdentityBackward(Utmp,mu))));
 	    
 	    dJdXe_nMpInv_y = Cshift(dJdXe_nMpInv,nu,2);
-	    ComputeNxy(PlaqL,PlaqR,Nxy);
+	    ComputeNxy(old,PlaqL,PlaqR,Nxy);
 	    Fdet1_nu = Fdet1_nu + transpose(Nxy)*dJdXe_nMpInv_y;
 	    
 	    MpInvJx_nu = Cshift(MpInvJx,nu,2);
-	    Compute_MpInvJx_dNxxdSy(PlaqL,PlaqR,MpInvJx_nu,FdetV);
+	    Compute_MpInvJx_dNxxdSy(old,PlaqL,PlaqR,MpInvJx_nu,FdetV);
 	    Fdet2_nu = Fdet2_nu + FdetV;
 	  
 	    //    x==
@@ -1052,11 +1193,11 @@ public:
 								   Gimpl::CovShiftIdentityForward(Umu[nu], nu)));
 	    
 	    dJdXe_nMpInv_y = Cshift(Cshift(dJdXe_nMpInv,mu,-1),nu,2);
-	    ComputeNxy(PlaqL, PlaqR,Nxy);
+	    ComputeNxy(old,PlaqL, PlaqR,Nxy);
 	    Fdet1_nu = Fdet1_nu+transpose(Nxy)*dJdXe_nMpInv_y;
 	    
 	    MpInvJx_nu = Cshift(Cshift(MpInvJx,mu,-1),nu,2);
-	    Compute_MpInvJx_dNxxdSy(PlaqR,PlaqL,MpInvJx_nu,FdetV);
+	    Compute_MpInvJx_dNxxdSy(old,PlaqR,PlaqL,MpInvJx_nu,FdetV);
 	    Fdet2_nu = Fdet2_nu+FdetV;
 
 	    /////////////////////////////////////////////////////////////////////
@@ -1084,11 +1225,11 @@ public:
 									  Gimpl::CovShiftBackward(Umu[nu],nu,
 												  Gimpl::CovShiftIdentityBackward(Utmp,mu))));
 	    dJdXe_nMpInv_y = Cshift(dJdXe_nMpInv,nu,-2);
-	    ComputeNxy(PlaqL,PlaqR,Nxy);
+	    ComputeNxy(old,PlaqL,PlaqR,Nxy);
 	    Fdet1_mu = Fdet1_mu + transpose(Nxy)*dJdXe_nMpInv_y;
 	  
 	    MpInvJx_nu = Cshift(MpInvJx,nu,-2);
-	    Compute_MpInvJx_dNxxdSy(PlaqR,PlaqL,MpInvJx_nu,FdetV);
+	    Compute_MpInvJx_dNxxdSy(old,PlaqR,PlaqL,MpInvJx_nu,FdetV);
 	    Fdet2_mu = Fdet2_mu+FdetV;
 	  
 	
@@ -1107,11 +1248,11 @@ public:
 											      Gimpl::CovShiftIdentityBackward(Utmp,mu))));
 
 	    dJdXe_nMpInv_y = Cshift(dJdXe_nMpInv,nu,2);
-	    ComputeNxy(PlaqL,PlaqR,Nxy);
+	    ComputeNxy(old,PlaqL,PlaqR,Nxy);
 	    Fdet1_mu = Fdet1_mu + transpose(Nxy)*dJdXe_nMpInv_y;
 	    
 	    MpInvJx_nu = Cshift(MpInvJx,nu,2);
-	    Compute_MpInvJx_dNxxdSy(PlaqR,PlaqL,MpInvJx_nu,FdetV);
+	    Compute_MpInvJx_dNxxdSy(old,PlaqR,PlaqL,MpInvJx_nu,FdetV);
 	    Fdet2_mu = Fdet2_mu+FdetV;
 	    break;
 	  }
@@ -1144,7 +1285,1037 @@ public:
     std::cout << GridLogMessage << " logDetJacobianForce level took "<<t1-t0<<" us "<<std::endl;
   }
   
+  // Default (optimised) implementation. Same result and per-term structure
+  // as the old overload above; differences are performance-only:
+  //  - flw_knl==2 staple from the depth-2 padded cell (RectStaplePaddedRs)
+  //  - ZxAd via make_adjoint_rep; JxAd Taylor series fused sitewise
+  //  - dJdX Horner + trace(dJdX nMpInv) fused in one kernel (factor -0.5 as
+  //    in the old overload; the masked/plaquette class uses -1.0)
+  //  - fused ComputeNxy / Compute_MpInvJx_dNxxdSy
+  //  - MpAd inversion via Inverse_RealPart (production choice, GPU-resident;
+  //    adjoint rep is real). The old overload keeps the complex Inverse, so
+  //    the consistency check covers this difference (tolerance, not bitwise).
+  void logDetJacobianForceLevel(const GaugeField &U, GaugeField &force ,int smr)
+  {
+    GRID_TRACE("logDetJacobianForceLevel");
+    GridBase* grid = U.Grid();
+    GaugeField Umsk(grid);
+    std::vector<GaugeLinkField> Umu(Nd,grid);
+    GaugeLinkField Cmu(grid); // U and staple; C contains factor of epsilon
+    GaugeLinkField Zx(grid);  // U times Staple, contains factor of epsilon
+    GaugeLinkField Utmp(grid);
+    GaugeLinkField PlaqL(grid);
+    GaugeLinkField PlaqR(grid);
+    const int Ngen = SU3Adjoint::Dimension;
+    ColourMatrix Ident;
+
+    AdjVectorField  dJdXe_nMpInv(grid);
+    AdjVectorField  dJdXe_nMpInv_y(grid);
+    AdjMatrixField  NxxAd(grid);   // Nxx in adjoint space
+    AdjMatrixField  ZxAd(grid);
+    // Jx, Mab, MpAdInv, nMpInv live only inside the fused kernel below
+    Complex ci(0,1);
+
+    RealD t0 = usecond();
+    Ident = ComplexD(1.0);
+    for(int d=0;d<Nd;d++){
+      Umu[d] = peekLorentz(U, d);
+    }
+    int mu= (smr/2) %Nd;
+
+    ////////////////////////////////////////////////////////////////////////////////
+    // Mask the gauge field
+    ////////////////////////////////////////////////////////////////////////////////
+    auto mask=PeekIndex<LorentzIndex>(masks[smr],mu);
+
+    Umsk = U;
+    ApplyMask(Umsk,smr);
+    Utmp = peekLorentz(Umsk,mu);
+
+    ////////////////////////////////////////////////////////////////////////////////
+    // Retrieve the eps/rho parameter(s) -- could allow all different but not so far
+    ////////////////////////////////////////////////////////////////////////////////
+    int smr_ind = smr/Nsmr_one_step;
+    int flw_knl = mask_types[smr_ind];
+    double rho;
+
+    switch(flw_knl){
+    case 1:
+      rho=this->Stouts[smr_ind]->SmearRho[1];
+      break;
+    case 2:
+      rho=((Rect_Stout<Gimpl> *) this->Stouts[smr_ind])->SmearRhoRs[1];
+      break;
+    }
+
+    //////////////////////////////////////////////////////////////////
+    // Padded (ghost) gauge field, per-direction links and masked link:
+    // used by the staple (flw_knl==2) and by every stencil-built
+    // PlaqL/PlaqR term in the nu loop below.
+    //////////////////////////////////////////////////////////////////
+    GridBase *ggrid = GhostRect.grids[Nd-1];
+    GaugeField gU(grid);
+    std::vector<GaugeLinkField> gUmu(Nd,grid);
+    GaugeLinkField gUtmp(grid);
+    {
+      GRID_TRACE("ExchangePeriodicRect");
+      gU = GhostRect.ExchangePeriodic(U);
+      for(int d=0; d<Nd; d++) gUmu[d] = peekLorentz(gU, d);
+      gUtmp = GhostRect.ExchangePeriodic(Utmp);
+    }
+
+    //////////////////////////////////////////////////////////////////
+    // Assemble the N matrix
+    //////////////////////////////////////////////////////////////////
+    switch(flw_knl){
+    case 1:
+      BaseSmear_ghost_plq(Cmu, gU, mu, rho);
+      break;
+    case 2:
+      BaseSmear_ghost_rect(Cmu, gU, mu, rho);
+      break;
+    }
+
+    //////////////////////////////////////////////////////////////////
+    // Assemble Luscher exp diff map J matrix
+    //////////////////////////////////////////////////////////////////
+    // Ta so Z lives in Lie algabra
+    Zx  = Ta(Cmu * adj(Umu[mu]));
+
+    // Move Z to the adjoint rep: ZxAd = -sum_b 2 tr(i t^b Zx) TRb
+    {GRID_TRACE("ZxAdOpt");
+      SU3Adjoint::make_adjoint_rep(ZxAd, Zx);
+    }
+
+    /////////////////////////////////////////////////////////////////
+    // NxxAd (needed before the fused J/Mab kernel below)
+    /////////////////////////////////////////////////////////////////
+    PlaqL = Ident;
+    PlaqR = Utmp*adj(Cmu);
+    ComputeNxy(PlaqL,PlaqR,NxxAd);
+
+    RealD t3a = usecond();
+    /////////////////////////////////////////////////////////////////
+    // Nxx Mp^-1
+    /////////////////////////////////////////////////////////////////
+    AdjVectorField  FdetV(grid);
+    AdjVectorField  Fdet1_nu(grid);
+    AdjVectorField  Fdet2_nu(grid);
+    AdjVectorField  Fdet2_mu(grid);
+    AdjVectorField  Fdet1_mu(grid);
+
+    AdjMatrixField MpInvJx(grid);
+    AdjMatrixField MpInvJx_nu(grid);
+
+    /////////////////////////////////////////////////////////////////
+    // ONE fused kernel: a single Horner recursion yields BOTH dJdX_b and
+    // J (= 1 + t2/2 after the loop — same truncation as the reference
+    // Taylor series, cf. the XB scheme in the old overload); then
+    // Mab = 1 - Jx Nxx; its real-part 8x8 LU inverse in-kernel
+    // (Inverse_RealPartSite, Lattice_trace.h — the adjoint rep is real;
+    // production choice as in GaugeConfigurationMasked.h, the old overload
+    // keeps the complex Inverse); the dJdXe traces; and
+    // MpInvJx = -MpAdInv Jx. Jx, Mab, MpAdInv, nMpInv are kernel-local —
+    // no intermediate lattice fields. On CPU builds only the LU section
+    // serialises SIMD lanes (data-dependent pivoting); the rest stays
+    // vectorised. NB Horner-J equals Taylor-J only in exact arithmetic:
+    // the FP summation order differs (last-bit), visible as ~1e-27 rel^2
+    // in the old-vs-default force check.
+    /////////////////////////////////////////////////////////////////
+    {GRID_TRACE("J_Mab_Inv_dJdX_fusedOpt");
+      autoView(dJdXe_nMpInv_v,dJdXe_nMpInv,AcceleratorWrite);
+      autoView(MpInvJx_v,MpInvJx,AcceleratorWrite);
+      autoView(ZxAd_v,ZxAd,AcceleratorRead);
+      autoView(NxxAd_v,NxxAd,AcceleratorRead);
+      const int nsimd = vAlgebraMatrix::Nsimd();
+      accelerator_for(ss,grid->oSites(),nsimd,{
+	  typedef decltype(coalescedRead(ZxAd_v[0]))         adj_mat;
+	  typedef decltype(coalescedRead(dJdXe_nMpInv_v[0])) adj_vec;
+	  adj_mat X, t3, t2, aunit, JxAd_site, MpAd_site, MpAdInv_site, nMpInv_site;
+	  adj_vec dJdXe_nMpInv_site;
+	  iVector<adj_mat,Ngen> iTas;
+	  iVector<adj_mat,Ngen> dJdX_b;
+
+	  // One Horner recursion yields BOTH dJdX_b and J (the XB scheme of
+	  // the old overload): after the j-loop, J = 1 + t2/2 reproduces the
+	  // reference Taylor truncation sum_{k=0..11} X^k/(k+1)! exactly.
+	  for(int b=0;b<Ngen;b++){
+	    SU3Adjoint::generator(b, iTas(b));
+	    dJdX_b(b) = iTas(b);
+	  }
+	  aunit = ComplexD(1.0);
+	  X  = (-1.0)*ZxAd_v(ss);
+	  t2 = X;
+	  for (int j = 12; j > 1; --j) {
+	    t3  = t2*(1.0 / (j + 1))  + aunit;
+	    t2  = X * t3;
+	    for(int b=0;b<Ngen;b++){
+	      dJdX_b(b)= iTas(b) * t3 + X * dJdX_b(b)*(1.0 / (j + 1));
+	    }
+	  }
+	  JxAd_site = aunit + t2*0.5;
+
+	  // Mab = 1 - Jx Nxx and its real-part inverse, in registers
+	  MpAd_site = Complex(1.0,0.0);
+	  MpAd_site = MpAd_site - JxAd_site * NxxAd_v(ss);
+	  Inverse_RealPartSite(MpAdInv_site, MpAd_site);
+
+	  nMpInv_site= NxxAd_v(ss) * MpAdInv_site;
+	  // factor -0.5: this class's dJdX normalisation, c.f. reference above
+	  for(int e=0;e<Ngen;e++){
+	    dJdXe_nMpInv_site()()(e) = traceProduct((-0.5)*dJdX_b(e),nMpInv_site)()()();
+	  }
+	  coalescedWrite(dJdXe_nMpInv_v[ss],dJdXe_nMpInv_site);
+
+	  // MpInvJx = -MpAdInv Jx (rho is on the plaq factor)
+	  coalescedWrite(MpInvJx_v[ss],(-1.0)*(MpAdInv_site*JxAd_site));
+	});
+    }
+
+    Compute_MpInvJx_dNxxdSy(PlaqL,PlaqR,MpInvJx,FdetV);
+    Fdet2_mu=FdetV;
+    Fdet1_mu=Zero();
+    ///////////////////////////////
+    // Mask it off
+    ///////////////////////////////
+    {
+      auto tmp=PeekIndex<LorentzIndex>(masks[smr],mu);
+      dJdXe_nMpInv = dJdXe_nMpInv*tmp;
+    }
+
+    //    dJdXe_nMpInv needs to multiply:
+    //       Nxx_mu (site local)                           (1)
+    //       Nxy_mu one site forward  in each nu direction (3)
+    //       Nxy_mu one site backward in each nu direction (3)
+    //       Nxy_nu 0,0  ; +mu,0; 0,-nu; +mu-nu   [ 3x4 = 12]
+    // 19 terms.
+
+    AdjMatrixField Nxy(grid);
+
+    GaugeField Fdet1(grid);
+    GaugeField Fdet2(grid);
+
+    ///////////////////////////////////////////////////////////////////
+    // Padded workspaces + views for the stencil-built PlaqL/PlaqR terms
+    ///////////////////////////////////////////////////////////////////
+    GaugeLinkField gPlaqL(ggrid), gPlaqR(ggrid);
+    autoView( gPlaqL_v , gPlaqL, AcceleratorWrite);
+    autoView( gPlaqR_v , gPlaqR, AcceleratorWrite);
+    autoView( gU_mu_v  , gUmu[mu], AcceleratorRead);
+    autoView( gUtmp_v  , gUtmp,    AcceleratorRead);
+
+    RealD t4 = usecond();
+    for(int nu=0;nu<Nd;nu++){
+
+      if (nu!=mu) {
+	autoView( gU_nu_v , gUmu[nu], AcceleratorRead);
+	const int p6  = (mu*(Nd-1) + (nu-(mu<=nu)))*6;  // plq  stencil base
+	const int p10 = (mu*(Nd-1) + (nu-(mu<=nu)))*10; // rect stencil base
+	switch(flw_knl){
+	case 1:
+	  {
+	    ///////////////// +ve nu /////////////////
+	    //     __
+	    //    :  |
+	    //    x==    // nu polarisation -- clockwise
+	    // x = y
+
+	    PlaqL=Ident;
+	    // PlaqR = -rho U_nu(x) U_mu(x+nu) U_nu^d(x+mu) msk^d(x)
+	    {
+	      GRID_TRACE("PlaqP1");
+	      autoView( gStencil_v, gStencils_plqforce[p6+0], AcceleratorRead);
+	      accelerator_for(ss, ggrid->oSites(), ggrid->Nsimd(), {
+		  GeneralStencilEntry const* e = gStencil_v.GetEntry(0,ss);
+		  auto U_nu_x       =     coalescedReadGeneralPermute(gU_nu_v[e->_offset], e->_permute, Nd);
+		  e = gStencil_v.GetEntry(1,ss);
+		  auto U_mu_xpnu    =     coalescedReadGeneralPermute(gU_mu_v[e->_offset], e->_permute, Nd);
+		  e = gStencil_v.GetEntry(2,ss);
+		  auto Udag_nu_xpmu = adj(coalescedReadGeneralPermute(gU_nu_v[e->_offset], e->_permute, Nd));
+		  e = gStencil_v.GetEntry(3,ss);
+		  auto Mdag_x       = adj(coalescedReadGeneralPermute(gUtmp_v[e->_offset], e->_permute, Nd));
+		  coalescedWrite(gPlaqR_v[ss], (-rho) * U_nu_x * U_mu_xpnu * Udag_nu_xpmu * Mdag_x);
+		});
+	      PlaqR = GhostRect.Extract(gPlaqR);
+	    }
+
+	    dJdXe_nMpInv_y =   dJdXe_nMpInv;
+	    ComputeNxy(PlaqL,PlaqR,Nxy);
+	    Fdet1_nu = transpose(Nxy)*dJdXe_nMpInv_y;
+
+	    PlaqR=(-1.0)*PlaqR;
+	    Compute_MpInvJx_dNxxdSy(PlaqL,PlaqR,MpInvJx,FdetV);
+	    Fdet2_nu = FdetV;
+
+	    //     __
+	    //    |  :
+	    //    x==y    // nu polarisation -- anticlockwise
+
+	    // PlaqR = rho U_nu(x) U_mu^d(x-mu+nu) U_nu^d(x-mu) ; PlaqL = msk^d(x-mu)
+	    {
+	      GRID_TRACE("PlaqP2");
+	      autoView( gStencil_v, gStencils_plqforce[p6+1], AcceleratorRead);
+	      accelerator_for(ss, ggrid->oSites(), ggrid->Nsimd(), {
+		  GeneralStencilEntry const* e = gStencil_v.GetEntry(0,ss);
+		  auto U_nu_x         =     coalescedReadGeneralPermute(gU_nu_v[e->_offset], e->_permute, Nd);
+		  e = gStencil_v.GetEntry(1,ss);
+		  auto Udag_mu_xmmupnu= adj(coalescedReadGeneralPermute(gU_mu_v[e->_offset], e->_permute, Nd));
+		  e = gStencil_v.GetEntry(2,ss);
+		  auto Udag_nu_xmmu   = adj(coalescedReadGeneralPermute(gU_nu_v[e->_offset], e->_permute, Nd));
+		  coalescedWrite(gPlaqR_v[ss], (rho) * U_nu_x * Udag_mu_xmmupnu * Udag_nu_xmmu);
+		  e = gStencil_v.GetEntry(3,ss);
+		  auto Mdag_xmmu      = adj(coalescedReadGeneralPermute(gUtmp_v[e->_offset], e->_permute, Nd));
+		  coalescedWrite(gPlaqL_v[ss], Mdag_xmmu);
+		});
+	      PlaqR = GhostRect.Extract(gPlaqR);
+	      PlaqL = GhostRect.Extract(gPlaqL);
+	    }
+
+	    dJdXe_nMpInv_y = Cshift(dJdXe_nMpInv,mu,-1);
+	    ComputeNxy(PlaqL, PlaqR,Nxy);
+	    Fdet1_nu = Fdet1_nu+transpose(Nxy)*dJdXe_nMpInv_y;
+
+	    MpInvJx_nu = Cshift(MpInvJx,mu,-1);
+	    Compute_MpInvJx_dNxxdSy(PlaqL,PlaqR,MpInvJx_nu,FdetV);
+	    Fdet2_nu = Fdet2_nu+FdetV;
+
+	    ///////////////// -ve nu /////////////////
+	    // x==
+	    // :  |
+	    // y__|          // nu polarisation -- clockwise
+
+	    // PlaqL = rho U_mu(x) U_nu(x+mu) msk^d(x+nu) ; PlaqR = U_nu(x)
+	    {
+	      GRID_TRACE("PlaqP3");
+	      autoView( gStencil_v, gStencils_plqforce[p6+2], AcceleratorRead);
+	      accelerator_for(ss, ggrid->oSites(), ggrid->Nsimd(), {
+		  GeneralStencilEntry const* e = gStencil_v.GetEntry(0,ss);
+		  auto U_mu_x     =     coalescedReadGeneralPermute(gU_mu_v[e->_offset], e->_permute, Nd);
+		  e = gStencil_v.GetEntry(1,ss);
+		  auto U_nu_xpmu  =     coalescedReadGeneralPermute(gU_nu_v[e->_offset], e->_permute, Nd);
+		  e = gStencil_v.GetEntry(2,ss);
+		  auto Mdag_xpnu  = adj(coalescedReadGeneralPermute(gUtmp_v[e->_offset], e->_permute, Nd));
+		  coalescedWrite(gPlaqL_v[ss], (rho) * U_mu_x * U_nu_xpmu * Mdag_xpnu);
+		});
+	      PlaqL = GhostRect.Extract(gPlaqL);
+	      PlaqR = Umu[nu];
+	    }
+
+	    dJdXe_nMpInv_y = Cshift(dJdXe_nMpInv,nu,1);
+	    ComputeNxy(PlaqL,PlaqR,Nxy);
+	    Fdet1_nu = Fdet1_nu + transpose(Nxy)*dJdXe_nMpInv_y;
+
+	    MpInvJx_nu = Cshift(MpInvJx,nu,1);
+	    Compute_MpInvJx_dNxxdSy(PlaqL,PlaqR,MpInvJx_nu,FdetV);
+	    Fdet2_nu = Fdet2_nu+FdetV;
+
+	    // x==
+	    // |  :
+	    // |__y         // nu polarisation
+
+	    // PlaqL = -rho U_nu(x) msk^d(x-mu+nu) ; PlaqR = U_mu^d(x-mu) U_nu(x-mu)
+	    {
+	      GRID_TRACE("PlaqP4");
+	      autoView( gStencil_v, gStencils_plqforce[p6+3], AcceleratorRead);
+	      accelerator_for(ss, ggrid->oSites(), ggrid->Nsimd(), {
+		  GeneralStencilEntry const* e = gStencil_v.GetEntry(0,ss);
+		  auto U_nu_x       =     coalescedReadGeneralPermute(gU_nu_v[e->_offset], e->_permute, Nd);
+		  e = gStencil_v.GetEntry(1,ss);
+		  auto Mdag_xmmupnu = adj(coalescedReadGeneralPermute(gUtmp_v[e->_offset], e->_permute, Nd));
+		  coalescedWrite(gPlaqL_v[ss], (-rho) * U_nu_x * Mdag_xmmupnu);
+		  e = gStencil_v.GetEntry(2,ss);
+		  auto Udag_mu_xmmu = adj(coalescedReadGeneralPermute(gU_mu_v[e->_offset], e->_permute, Nd));
+		  e = gStencil_v.GetEntry(3,ss);
+		  auto U_nu_xmmu    =     coalescedReadGeneralPermute(gU_nu_v[e->_offset], e->_permute, Nd);
+		  coalescedWrite(gPlaqR_v[ss], Udag_mu_xmmu * U_nu_xmmu);
+		});
+	      PlaqL = GhostRect.Extract(gPlaqL);
+	      PlaqR = GhostRect.Extract(gPlaqR);
+	    }
+
+	    dJdXe_nMpInv_y = Cshift(dJdXe_nMpInv,mu,-1);
+	    dJdXe_nMpInv_y = Cshift(dJdXe_nMpInv_y,nu,1);
+
+	    ComputeNxy(PlaqL,PlaqR,Nxy);
+	    Fdet1_nu = Fdet1_nu + transpose(Nxy)*dJdXe_nMpInv_y;
+
+	    MpInvJx_nu = Cshift(MpInvJx,mu,-1);
+	    MpInvJx_nu = Cshift(MpInvJx_nu,nu,1);
+	    Compute_MpInvJx_dNxxdSy(PlaqL,PlaqR,MpInvJx_nu,FdetV);
+	    Fdet2_nu = Fdet2_nu+FdetV;
+
+	    /////////////////////////////////////////////////////////////////////
+	    // Set up the determinant force contribution in 3x3 algebra basis
+	    /////////////////////////////////////////////////////////////////////
+	    InsertForce(Fdet1,Fdet1_nu,nu);
+	    InsertForce(Fdet2,Fdet2_nu,nu);
+
+	    //////////////////////////////////////////////////
+	    // Parallel direction terms
+	    //////////////////////////////////////////////////
+
+	    //    y..
+	    //    |  |
+	    //    x==   // mu polarisation
+	    // PlaqL = -rho U_mu(x) U_nu^d(x+mu-nu) msk^d(x-nu) ; PlaqR = U_nu^d(x-nu)
+	    {
+	      GRID_TRACE("PlaqP5");
+	      autoView( gStencil_v, gStencils_plqforce[p6+4], AcceleratorRead);
+	      accelerator_for(ss, ggrid->oSites(), ggrid->Nsimd(), {
+		  GeneralStencilEntry const* e = gStencil_v.GetEntry(0,ss);
+		  auto U_mu_x         =     coalescedReadGeneralPermute(gU_mu_v[e->_offset], e->_permute, Nd);
+		  e = gStencil_v.GetEntry(1,ss);
+		  auto Udag_nu_xpmumnu= adj(coalescedReadGeneralPermute(gU_nu_v[e->_offset], e->_permute, Nd));
+		  e = gStencil_v.GetEntry(2,ss);
+		  auto Mdag_xmnu      = adj(coalescedReadGeneralPermute(gUtmp_v[e->_offset], e->_permute, Nd));
+		  coalescedWrite(gPlaqL_v[ss], (-rho) * U_mu_x * Udag_nu_xpmumnu * Mdag_xmnu);
+		  e = gStencil_v.GetEntry(3,ss);
+		  auto Udag_nu_xmnu   = adj(coalescedReadGeneralPermute(gU_nu_v[e->_offset], e->_permute, Nd));
+		  coalescedWrite(gPlaqR_v[ss], Udag_nu_xmnu);
+		});
+	      PlaqL = GhostRect.Extract(gPlaqL);
+	      PlaqR = GhostRect.Extract(gPlaqR);
+	    }
+
+	    dJdXe_nMpInv_y = Cshift(dJdXe_nMpInv,nu,-1);
+
+	    ComputeNxy(PlaqL,PlaqR,Nxy);
+	    Fdet1_mu = Fdet1_mu + transpose(Nxy)*dJdXe_nMpInv_y;
+
+	    MpInvJx_nu = Cshift(MpInvJx,nu,-1);
+
+	    Compute_MpInvJx_dNxxdSy(PlaqL,PlaqR,MpInvJx_nu,FdetV);
+	    Fdet2_mu = Fdet2_mu+FdetV;
+
+	    // x==
+	    // |  |
+	    // y..          // mu polarisation
+
+	    // PlaqL = -rho U_mu(x) U_nu(x+mu) msk^d(x+nu) ; PlaqR = U_nu(x)
+	    {
+	      GRID_TRACE("PlaqP6");
+	      autoView( gStencil_v, gStencils_plqforce[p6+5], AcceleratorRead);
+	      accelerator_for(ss, ggrid->oSites(), ggrid->Nsimd(), {
+		  GeneralStencilEntry const* e = gStencil_v.GetEntry(0,ss);
+		  auto U_mu_x     =     coalescedReadGeneralPermute(gU_mu_v[e->_offset], e->_permute, Nd);
+		  e = gStencil_v.GetEntry(1,ss);
+		  auto U_nu_xpmu  =     coalescedReadGeneralPermute(gU_nu_v[e->_offset], e->_permute, Nd);
+		  e = gStencil_v.GetEntry(2,ss);
+		  auto Mdag_xpnu  = adj(coalescedReadGeneralPermute(gUtmp_v[e->_offset], e->_permute, Nd));
+		  coalescedWrite(gPlaqL_v[ss], (-rho) * U_mu_x * U_nu_xpmu * Mdag_xpnu);
+		});
+	      PlaqL = GhostRect.Extract(gPlaqL);
+	      PlaqR = Umu[nu];
+	    }
+
+	    dJdXe_nMpInv_y = Cshift(dJdXe_nMpInv,nu,1);
+
+	    ComputeNxy(PlaqL,PlaqR,Nxy);
+	    Fdet1_mu = Fdet1_mu + transpose(Nxy)*dJdXe_nMpInv_y;
+
+	    MpInvJx_nu = Cshift(MpInvJx,nu,1);
+
+	    Compute_MpInvJx_dNxxdSy(PlaqL,PlaqR,MpInvJx_nu,FdetV);
+	    Fdet2_mu = Fdet2_mu+FdetV;
+
+	    break;
+	  }
+	case 2:
+	  {
+	    ///////////////// +ve nu /////////////////
+	    //     ->
+	    //    |  |
+	    //    :  |
+	    //    x==
+	    // x = y
+
+	    PlaqL=Ident;
+
+	    // PlaqR = -rho U_nu(x) U_nu(x+nu) U_mu(x+2nu) U_nu^d(x+mu+nu) U_nu^d(x+mu) msk^d(x)
+	    {
+	      GRID_TRACE("PlaqR1");
+	      autoView( gStencil_v, gStencils_rectforce[p10+0], AcceleratorRead);
+	      accelerator_for(ss, ggrid->oSites(), ggrid->Nsimd(), {
+		  GeneralStencilEntry const* e = gStencil_v.GetEntry(0,ss);
+		  auto U_nu_x         =     coalescedReadGeneralPermute(gU_nu_v[e->_offset], e->_permute, Nd);
+		  e = gStencil_v.GetEntry(1,ss);
+		  auto U_nu_xpnu      =     coalescedReadGeneralPermute(gU_nu_v[e->_offset], e->_permute, Nd);
+		  e = gStencil_v.GetEntry(2,ss);
+		  auto U_mu_xp2nu     =     coalescedReadGeneralPermute(gU_mu_v[e->_offset], e->_permute, Nd);
+		  e = gStencil_v.GetEntry(3,ss);
+		  auto Udag_nu_xpmupnu= adj(coalescedReadGeneralPermute(gU_nu_v[e->_offset], e->_permute, Nd));
+		  e = gStencil_v.GetEntry(4,ss);
+		  auto Udag_nu_xpmu   = adj(coalescedReadGeneralPermute(gU_nu_v[e->_offset], e->_permute, Nd));
+		  e = gStencil_v.GetEntry(5,ss);
+		  auto Mdag_x         = adj(coalescedReadGeneralPermute(gUtmp_v[e->_offset], e->_permute, Nd));
+		  coalescedWrite(gPlaqR_v[ss], (-rho) * U_nu_x * U_nu_xpnu * U_mu_xp2nu * Udag_nu_xpmupnu * Udag_nu_xpmu * Mdag_x);
+		});
+	      PlaqR = GhostRect.Extract(gPlaqR);
+	    }
+
+	    dJdXe_nMpInv_y =   dJdXe_nMpInv;
+	    ComputeNxy(PlaqL,PlaqR,Nxy);
+	    Fdet1_nu = transpose(Nxy)*dJdXe_nMpInv_y;
+
+	    Compute_MpInvJx_dNxxdSy(PlaqR,PlaqL,MpInvJx,FdetV);
+	    Fdet2_nu = FdetV;
+
+	    //     <-
+	    //    |  |
+	    //    |  :
+	    //    x==y
+	    // x = y - mu
+
+	    // PlaqR = rho U_nu(x) U_nu(x+nu) U_mu^d(x-mu+2nu) U_nu^d(x-mu+nu) U_nu^d(x-mu)
+	    // PlaqL = msk^d(x-mu)   [adj(PlaqL) is used in ComputeNxy & Compute_MpInvJx_dNxxdSy]
+	    {
+	      GRID_TRACE("PlaqR2");
+	      autoView( gStencil_v, gStencils_rectforce[p10+1], AcceleratorRead);
+	      accelerator_for(ss, ggrid->oSites(), ggrid->Nsimd(), {
+		  GeneralStencilEntry const* e = gStencil_v.GetEntry(0,ss);
+		  auto U_nu_x           =     coalescedReadGeneralPermute(gU_nu_v[e->_offset], e->_permute, Nd);
+		  e = gStencil_v.GetEntry(1,ss);
+		  auto U_nu_xpnu        =     coalescedReadGeneralPermute(gU_nu_v[e->_offset], e->_permute, Nd);
+		  e = gStencil_v.GetEntry(2,ss);
+		  auto Udag_mu_xmmup2nu = adj(coalescedReadGeneralPermute(gU_mu_v[e->_offset], e->_permute, Nd));
+		  e = gStencil_v.GetEntry(3,ss);
+		  auto Udag_nu_xmmupnu  = adj(coalescedReadGeneralPermute(gU_nu_v[e->_offset], e->_permute, Nd));
+		  e = gStencil_v.GetEntry(4,ss);
+		  auto Udag_nu_xmmu     = adj(coalescedReadGeneralPermute(gU_nu_v[e->_offset], e->_permute, Nd));
+		  coalescedWrite(gPlaqR_v[ss], (rho) * U_nu_x * U_nu_xpnu * Udag_mu_xmmup2nu * Udag_nu_xmmupnu * Udag_nu_xmmu);
+		  e = gStencil_v.GetEntry(5,ss);
+		  auto Mdag_xmmu        = adj(coalescedReadGeneralPermute(gUtmp_v[e->_offset], e->_permute, Nd));
+		  coalescedWrite(gPlaqL_v[ss], Mdag_xmmu);
+		});
+	      PlaqR = GhostRect.Extract(gPlaqR);
+	      PlaqL = GhostRect.Extract(gPlaqL);
+	    }
+
+	    dJdXe_nMpInv_y = Cshift(dJdXe_nMpInv,mu,-1);
+	    ComputeNxy(PlaqL, PlaqR,Nxy);
+	    Fdet1_nu = Fdet1_nu+transpose(Nxy)*dJdXe_nMpInv_y;
+
+	    MpInvJx_nu = Cshift(MpInvJx,mu,-1);
+	    Compute_MpInvJx_dNxxdSy(PlaqL,PlaqR,MpInvJx_nu,FdetV);
+	    Fdet2_nu = Fdet2_nu+FdetV;
+
+	    //    :->
+	    //    y  |
+	    //    |  |
+	    //    x==
+	    // x = y - nu
+
+	    // PlaqR = -rho U_nu(x) U_mu(x+nu) U_nu^d(x+mu) U_nu^d(x+mu-nu) msk^d(x-nu)
+	    // PlaqL = U_nu^d(x-nu)
+	    {
+	      GRID_TRACE("PlaqR3");
+	      autoView( gStencil_v, gStencils_rectforce[p10+2], AcceleratorRead);
+	      accelerator_for(ss, ggrid->oSites(), ggrid->Nsimd(), {
+		  GeneralStencilEntry const* e = gStencil_v.GetEntry(0,ss);
+		  auto U_nu_x          =     coalescedReadGeneralPermute(gU_nu_v[e->_offset], e->_permute, Nd);
+		  e = gStencil_v.GetEntry(1,ss);
+		  auto U_mu_xpnu       =     coalescedReadGeneralPermute(gU_mu_v[e->_offset], e->_permute, Nd);
+		  e = gStencil_v.GetEntry(2,ss);
+		  auto Udag_nu_xpmu    = adj(coalescedReadGeneralPermute(gU_nu_v[e->_offset], e->_permute, Nd));
+		  e = gStencil_v.GetEntry(3,ss);
+		  auto Udag_nu_xpmumnu = adj(coalescedReadGeneralPermute(gU_nu_v[e->_offset], e->_permute, Nd));
+		  e = gStencil_v.GetEntry(4,ss);
+		  auto Mdag_xmnu       = adj(coalescedReadGeneralPermute(gUtmp_v[e->_offset], e->_permute, Nd));
+		  coalescedWrite(gPlaqR_v[ss], (-rho) * U_nu_x * U_mu_xpnu * Udag_nu_xpmu * Udag_nu_xpmumnu * Mdag_xmnu);
+		  e = gStencil_v.GetEntry(5,ss);
+		  auto Udag_nu_xmnu    = adj(coalescedReadGeneralPermute(gU_nu_v[e->_offset], e->_permute, Nd));
+		  coalescedWrite(gPlaqL_v[ss], Udag_nu_xmnu);
+		});
+	      PlaqR = GhostRect.Extract(gPlaqR);
+	      PlaqL = GhostRect.Extract(gPlaqL);
+	    }
+
+	    dJdXe_nMpInv_y = Cshift(dJdXe_nMpInv,nu,-1);
+	    ComputeNxy(PlaqL, PlaqR,Nxy);
+	    Fdet1_nu = Fdet1_nu+transpose(Nxy)*dJdXe_nMpInv_y;
+
+	    MpInvJx_nu = Cshift(MpInvJx,nu,-1);
+	    Compute_MpInvJx_dNxxdSy(PlaqR,PlaqL,MpInvJx_nu,FdetV);
+	    Fdet2_nu = Fdet2_nu+FdetV;
+
+	    //     <-:
+	    //    |  y
+	    //    |  |
+	    //    x==
+	    // x = y - mu - nu
+
+	    // PlaqR = rho U_nu(x) U_mu^d(x-mu+nu) U_nu^d(x-mu) U_nu^d(x-mu-nu)
+	    // PlaqL = U_nu^d(x-nu) msk^d(x-mu-nu)
+	    {
+	      GRID_TRACE("PlaqR4");
+	      autoView( gStencil_v, gStencils_rectforce[p10+3], AcceleratorRead);
+	      accelerator_for(ss, ggrid->oSites(), ggrid->Nsimd(), {
+		  GeneralStencilEntry const* e = gStencil_v.GetEntry(0,ss);
+		  auto U_nu_x          =     coalescedReadGeneralPermute(gU_nu_v[e->_offset], e->_permute, Nd);
+		  e = gStencil_v.GetEntry(1,ss);
+		  auto Udag_mu_xmmupnu = adj(coalescedReadGeneralPermute(gU_mu_v[e->_offset], e->_permute, Nd));
+		  e = gStencil_v.GetEntry(2,ss);
+		  auto Udag_nu_xmmu    = adj(coalescedReadGeneralPermute(gU_nu_v[e->_offset], e->_permute, Nd));
+		  e = gStencil_v.GetEntry(3,ss);
+		  auto Udag_nu_xmmumnu = adj(coalescedReadGeneralPermute(gU_nu_v[e->_offset], e->_permute, Nd));
+		  coalescedWrite(gPlaqR_v[ss], (rho) * U_nu_x * Udag_mu_xmmupnu * Udag_nu_xmmu * Udag_nu_xmmumnu);
+		  e = gStencil_v.GetEntry(4,ss);
+		  auto Udag_nu_xmnu    = adj(coalescedReadGeneralPermute(gU_nu_v[e->_offset], e->_permute, Nd));
+		  e = gStencil_v.GetEntry(5,ss);
+		  auto Mdag_xmmumnu    = adj(coalescedReadGeneralPermute(gUtmp_v[e->_offset], e->_permute, Nd));
+		  coalescedWrite(gPlaqL_v[ss], Udag_nu_xmnu * Mdag_xmmumnu);
+		});
+	      PlaqR = GhostRect.Extract(gPlaqR);
+	      PlaqL = GhostRect.Extract(gPlaqL);
+	    }
+
+	    dJdXe_nMpInv_y = Cshift(Cshift(dJdXe_nMpInv,mu,-1),nu,-1);
+	    ComputeNxy(PlaqL, PlaqR,Nxy);
+	    Fdet1_nu = Fdet1_nu+transpose(Nxy)*dJdXe_nMpInv_y;
+
+	    MpInvJx_nu = Cshift(Cshift(MpInvJx,mu,-1),nu,-1);
+	    Compute_MpInvJx_dNxxdSy(PlaqL,PlaqR,MpInvJx_nu,FdetV);
+	    Fdet2_nu = Fdet2_nu+FdetV;
+
+	    ///////////////// -ve nu /////////////////
+
+	    //    x==
+	    //    :  |
+	    //    y
+	    //    |  |
+	    //     <-
+	    // x = y + nu
+
+	    // PlaqL = rho U_nu^d(x-nu) U_mu(x-nu) U_nu(x-nu+mu) U_nu(x+mu) msk^d(x+nu)
+	    // PlaqR = U_nu(x)
+	    {
+	      GRID_TRACE("PlaqR5");
+	      autoView( gStencil_v, gStencils_rectforce[p10+4], AcceleratorRead);
+	      accelerator_for(ss, ggrid->oSites(), ggrid->Nsimd(), {
+		  GeneralStencilEntry const* e = gStencil_v.GetEntry(0,ss);
+		  auto Udag_nu_xmnu   = adj(coalescedReadGeneralPermute(gU_nu_v[e->_offset], e->_permute, Nd));
+		  e = gStencil_v.GetEntry(1,ss);
+		  auto U_mu_xmnu      =     coalescedReadGeneralPermute(gU_mu_v[e->_offset], e->_permute, Nd);
+		  e = gStencil_v.GetEntry(2,ss);
+		  auto U_nu_xmnupmu   =     coalescedReadGeneralPermute(gU_nu_v[e->_offset], e->_permute, Nd);
+		  e = gStencil_v.GetEntry(3,ss);
+		  auto U_nu_xpmu      =     coalescedReadGeneralPermute(gU_nu_v[e->_offset], e->_permute, Nd);
+		  e = gStencil_v.GetEntry(4,ss);
+		  auto Mdag_xpnu      = adj(coalescedReadGeneralPermute(gUtmp_v[e->_offset], e->_permute, Nd));
+		  coalescedWrite(gPlaqL_v[ss], (rho) * Udag_nu_xmnu * U_mu_xmnu * U_nu_xmnupmu * U_nu_xpmu * Mdag_xpnu);
+		  e = gStencil_v.GetEntry(5,ss);
+		  auto U_nu_x         =     coalescedReadGeneralPermute(gU_nu_v[e->_offset], e->_permute, Nd);
+		  coalescedWrite(gPlaqR_v[ss], U_nu_x);
+		});
+	      PlaqL = GhostRect.Extract(gPlaqL);
+	      PlaqR = GhostRect.Extract(gPlaqR);
+	    }
+
+	    dJdXe_nMpInv_y = Cshift(dJdXe_nMpInv,nu,1);
+	    ComputeNxy(PlaqL, PlaqR,Nxy);
+	    Fdet1_nu = Fdet1_nu+transpose(Nxy)*dJdXe_nMpInv_y;
+
+	    MpInvJx_nu = Cshift(MpInvJx,nu,1);
+	    Compute_MpInvJx_dNxxdSy(PlaqL,PlaqR,MpInvJx_nu,FdetV);
+	    Fdet2_nu = Fdet2_nu+FdetV;
+
+	    //    x==
+	    //    |  :
+	    //       y
+	    //    |  |
+	    //     ->
+	    // x = y - mu + nu
+
+	    // PlaqL = -rho U_nu^d(x-nu) U_mu^d(x-mu-nu) U_nu(x-mu-nu) U_nu(x-mu)
+	    // PlaqR = U_nu(x) msk^d(x-mu+nu)
+	    {
+	      GRID_TRACE("PlaqR6");
+	      autoView( gStencil_v, gStencils_rectforce[p10+5], AcceleratorRead);
+	      accelerator_for(ss, ggrid->oSites(), ggrid->Nsimd(), {
+		  GeneralStencilEntry const* e = gStencil_v.GetEntry(0,ss);
+		  auto Udag_nu_xmnu    = adj(coalescedReadGeneralPermute(gU_nu_v[e->_offset], e->_permute, Nd));
+		  e = gStencil_v.GetEntry(1,ss);
+		  auto Udag_mu_xmmumnu = adj(coalescedReadGeneralPermute(gU_mu_v[e->_offset], e->_permute, Nd));
+		  e = gStencil_v.GetEntry(2,ss);
+		  auto U_nu_xmmumnu    =     coalescedReadGeneralPermute(gU_nu_v[e->_offset], e->_permute, Nd);
+		  e = gStencil_v.GetEntry(3,ss);
+		  auto U_nu_xmmu       =     coalescedReadGeneralPermute(gU_nu_v[e->_offset], e->_permute, Nd);
+		  coalescedWrite(gPlaqL_v[ss], (-rho) * Udag_nu_xmnu * Udag_mu_xmmumnu * U_nu_xmmumnu * U_nu_xmmu);
+		  e = gStencil_v.GetEntry(4,ss);
+		  auto U_nu_x          =     coalescedReadGeneralPermute(gU_nu_v[e->_offset], e->_permute, Nd);
+		  e = gStencil_v.GetEntry(5,ss);
+		  auto Mdag_xmmupnu    = adj(coalescedReadGeneralPermute(gUtmp_v[e->_offset], e->_permute, Nd));
+		  coalescedWrite(gPlaqR_v[ss], U_nu_x * Mdag_xmmupnu);
+		});
+	      PlaqL = GhostRect.Extract(gPlaqL);
+	      PlaqR = GhostRect.Extract(gPlaqR);
+	    }
+
+	    dJdXe_nMpInv_y = Cshift(Cshift(dJdXe_nMpInv,mu,-1),nu,1);
+	    ComputeNxy(PlaqL, PlaqR,Nxy);
+	    Fdet1_nu = Fdet1_nu+transpose(Nxy)*dJdXe_nMpInv_y;
+
+	    MpInvJx_nu = Cshift(Cshift(MpInvJx,mu,-1),nu,1);
+	    Compute_MpInvJx_dNxxdSy(PlaqR,PlaqL,MpInvJx_nu,FdetV);
+	    Fdet2_nu = Fdet2_nu+FdetV;
+
+	    //    x==
+	    //    |  |
+	    //    :  |
+	    //    y->
+	    // x = y + 2nu
+
+	    // PlaqL = U_mu(x) U_nu(x+mu) U_nu(x+mu+nu) msk^d(x+2nu)
+	    // PlaqR = rho U_nu(x) U_nu(x+nu)
+	    {
+	      GRID_TRACE("PlaqR7");
+	      autoView( gStencil_v, gStencils_rectforce[p10+6], AcceleratorRead);
+	      accelerator_for(ss, ggrid->oSites(), ggrid->Nsimd(), {
+		  GeneralStencilEntry const* e = gStencil_v.GetEntry(0,ss);
+		  auto U_mu_x        =     coalescedReadGeneralPermute(gU_mu_v[e->_offset], e->_permute, Nd);
+		  e = gStencil_v.GetEntry(1,ss);
+		  auto U_nu_xpmu     =     coalescedReadGeneralPermute(gU_nu_v[e->_offset], e->_permute, Nd);
+		  e = gStencil_v.GetEntry(2,ss);
+		  auto U_nu_xpmupnu  =     coalescedReadGeneralPermute(gU_nu_v[e->_offset], e->_permute, Nd);
+		  e = gStencil_v.GetEntry(3,ss);
+		  auto Mdag_xp2nu    = adj(coalescedReadGeneralPermute(gUtmp_v[e->_offset], e->_permute, Nd));
+		  coalescedWrite(gPlaqL_v[ss], U_mu_x * U_nu_xpmu * U_nu_xpmupnu * Mdag_xp2nu);
+		  e = gStencil_v.GetEntry(4,ss);
+		  auto U_nu_x        =     coalescedReadGeneralPermute(gU_nu_v[e->_offset], e->_permute, Nd);
+		  e = gStencil_v.GetEntry(5,ss);
+		  auto U_nu_xpnu     =     coalescedReadGeneralPermute(gU_nu_v[e->_offset], e->_permute, Nd);
+		  coalescedWrite(gPlaqR_v[ss], (rho) * U_nu_x * U_nu_xpnu);
+		});
+	      PlaqL = GhostRect.Extract(gPlaqL);
+	      PlaqR = GhostRect.Extract(gPlaqR);
+	    }
+
+	    dJdXe_nMpInv_y = Cshift(dJdXe_nMpInv,nu,2);
+	    ComputeNxy(PlaqL,PlaqR,Nxy);
+	    Fdet1_nu = Fdet1_nu + transpose(Nxy)*dJdXe_nMpInv_y;
+
+	    MpInvJx_nu = Cshift(MpInvJx,nu,2);
+	    Compute_MpInvJx_dNxxdSy(PlaqL,PlaqR,MpInvJx_nu,FdetV);
+	    Fdet2_nu = Fdet2_nu + FdetV;
+
+	    //    x==
+	    //    |  |
+	    //    |  :
+	    //     ->y
+	    // x = y + 2nu - mu
+
+	    // PlaqL = U_mu^d(x-mu) U_nu(x-mu) U_nu(x-mu+nu)
+	    // PlaqR = -rho U_nu(x) U_nu(x+nu) msk^d(x-mu+2nu)
+	    {
+	      GRID_TRACE("PlaqR8");
+	      autoView( gStencil_v, gStencils_rectforce[p10+7], AcceleratorRead);
+	      accelerator_for(ss, ggrid->oSites(), ggrid->Nsimd(), {
+		  GeneralStencilEntry const* e = gStencil_v.GetEntry(0,ss);
+		  auto Udag_mu_xmmu   = adj(coalescedReadGeneralPermute(gU_mu_v[e->_offset], e->_permute, Nd));
+		  e = gStencil_v.GetEntry(1,ss);
+		  auto U_nu_xmmu      =     coalescedReadGeneralPermute(gU_nu_v[e->_offset], e->_permute, Nd);
+		  e = gStencil_v.GetEntry(2,ss);
+		  auto U_nu_xmmupnu   =     coalescedReadGeneralPermute(gU_nu_v[e->_offset], e->_permute, Nd);
+		  coalescedWrite(gPlaqL_v[ss], Udag_mu_xmmu * U_nu_xmmu * U_nu_xmmupnu);
+		  e = gStencil_v.GetEntry(3,ss);
+		  auto U_nu_x         =     coalescedReadGeneralPermute(gU_nu_v[e->_offset], e->_permute, Nd);
+		  e = gStencil_v.GetEntry(4,ss);
+		  auto U_nu_xpnu      =     coalescedReadGeneralPermute(gU_nu_v[e->_offset], e->_permute, Nd);
+		  e = gStencil_v.GetEntry(5,ss);
+		  auto Mdag_xmmup2nu  = adj(coalescedReadGeneralPermute(gUtmp_v[e->_offset], e->_permute, Nd));
+		  coalescedWrite(gPlaqR_v[ss], (-rho) * U_nu_x * U_nu_xpnu * Mdag_xmmup2nu);
+		});
+	      PlaqL = GhostRect.Extract(gPlaqL);
+	      PlaqR = GhostRect.Extract(gPlaqR);
+	    }
+
+	    dJdXe_nMpInv_y = Cshift(Cshift(dJdXe_nMpInv,mu,-1),nu,2);
+	    ComputeNxy(PlaqL, PlaqR,Nxy);
+	    Fdet1_nu = Fdet1_nu+transpose(Nxy)*dJdXe_nMpInv_y;
+
+	    MpInvJx_nu = Cshift(Cshift(MpInvJx,mu,-1),nu,2);
+	    Compute_MpInvJx_dNxxdSy(PlaqR,PlaqL,MpInvJx_nu,FdetV);
+	    Fdet2_nu = Fdet2_nu+FdetV;
+
+	    /////////////////////////////////////////////////////////////////////
+	    // Set up the determinant force contribution in 3x3 algebra basis
+	    /////////////////////////////////////////////////////////////////////
+	    InsertForce(Fdet1,Fdet1_nu,nu);
+	    InsertForce(Fdet2,Fdet2_nu,nu);
+
+	    //////////////////////////////////////////////////
+	    // Parallel direction terms
+	    //////////////////////////////////////////////////
+
+	    //    y..
+	    //    |  |
+	    //    |  |
+	    //    x=<=
+	    // x = y - 2nu
+
+	    // PlaqL = U_nu^d(x-nu) U_nu^d(x-2nu)
+	    // PlaqR = -rho U_mu(x) U_nu^d(x+mu-nu) U_nu^d(x+mu-2nu) msk^d(x-2nu)
+	    {
+	      GRID_TRACE("PlaqR9");
+	      autoView( gStencil_v, gStencils_rectforce[p10+8], AcceleratorRead);
+	      accelerator_for(ss, ggrid->oSites(), ggrid->Nsimd(), {
+		  GeneralStencilEntry const* e = gStencil_v.GetEntry(0,ss);
+		  auto Udag_nu_xmnu     = adj(coalescedReadGeneralPermute(gU_nu_v[e->_offset], e->_permute, Nd));
+		  e = gStencil_v.GetEntry(1,ss);
+		  auto Udag_nu_xm2nu    = adj(coalescedReadGeneralPermute(gU_nu_v[e->_offset], e->_permute, Nd));
+		  coalescedWrite(gPlaqL_v[ss], Udag_nu_xmnu * Udag_nu_xm2nu);
+		  e = gStencil_v.GetEntry(2,ss);
+		  auto U_mu_x           =     coalescedReadGeneralPermute(gU_mu_v[e->_offset], e->_permute, Nd);
+		  e = gStencil_v.GetEntry(3,ss);
+		  auto Udag_nu_xpmumnu  = adj(coalescedReadGeneralPermute(gU_nu_v[e->_offset], e->_permute, Nd));
+		  e = gStencil_v.GetEntry(4,ss);
+		  auto Udag_nu_xpmum2nu = adj(coalescedReadGeneralPermute(gU_nu_v[e->_offset], e->_permute, Nd));
+		  e = gStencil_v.GetEntry(5,ss);
+		  auto Mdag_xm2nu       = adj(coalescedReadGeneralPermute(gUtmp_v[e->_offset], e->_permute, Nd));
+		  coalescedWrite(gPlaqR_v[ss], (-rho) * U_mu_x * Udag_nu_xpmumnu * Udag_nu_xpmum2nu * Mdag_xm2nu);
+		});
+	      PlaqL = GhostRect.Extract(gPlaqL);
+	      PlaqR = GhostRect.Extract(gPlaqR);
+	    }
+
+	    dJdXe_nMpInv_y = Cshift(dJdXe_nMpInv,nu,-2);
+	    ComputeNxy(PlaqL,PlaqR,Nxy);
+	    Fdet1_mu = Fdet1_mu + transpose(Nxy)*dJdXe_nMpInv_y;
+
+	    MpInvJx_nu = Cshift(MpInvJx,nu,-2);
+	    Compute_MpInvJx_dNxxdSy(PlaqR,PlaqL,MpInvJx_nu,FdetV);
+	    Fdet2_mu = Fdet2_mu+FdetV;
+
+	    //    x<=
+	    //    |  |
+	    //    |  |
+	    //    y..
+	    // x = y + 2nu
+
+	    // PlaqL = U_nu(x) U_nu(x+nu)
+	    // PlaqR = -rho U_mu(x) U_nu(x+mu) U_nu(x+mu+nu) msk^d(x+2nu)
+	    {
+	      GRID_TRACE("PlaqR10");
+	      autoView( gStencil_v, gStencils_rectforce[p10+9], AcceleratorRead);
+	      accelerator_for(ss, ggrid->oSites(), ggrid->Nsimd(), {
+		  GeneralStencilEntry const* e = gStencil_v.GetEntry(0,ss);
+		  auto U_nu_x        =     coalescedReadGeneralPermute(gU_nu_v[e->_offset], e->_permute, Nd);
+		  e = gStencil_v.GetEntry(1,ss);
+		  auto U_nu_xpnu     =     coalescedReadGeneralPermute(gU_nu_v[e->_offset], e->_permute, Nd);
+		  coalescedWrite(gPlaqL_v[ss], U_nu_x * U_nu_xpnu);
+		  e = gStencil_v.GetEntry(2,ss);
+		  auto U_mu_x        =     coalescedReadGeneralPermute(gU_mu_v[e->_offset], e->_permute, Nd);
+		  e = gStencil_v.GetEntry(3,ss);
+		  auto U_nu_xpmu     =     coalescedReadGeneralPermute(gU_nu_v[e->_offset], e->_permute, Nd);
+		  e = gStencil_v.GetEntry(4,ss);
+		  auto U_nu_xpmupnu  =     coalescedReadGeneralPermute(gU_nu_v[e->_offset], e->_permute, Nd);
+		  e = gStencil_v.GetEntry(5,ss);
+		  auto Mdag_xp2nu    = adj(coalescedReadGeneralPermute(gUtmp_v[e->_offset], e->_permute, Nd));
+		  coalescedWrite(gPlaqR_v[ss], (-rho) * U_mu_x * U_nu_xpmu * U_nu_xpmupnu * Mdag_xp2nu);
+		});
+	      PlaqL = GhostRect.Extract(gPlaqL);
+	      PlaqR = GhostRect.Extract(gPlaqR);
+	    }
+
+	    dJdXe_nMpInv_y = Cshift(dJdXe_nMpInv,nu,2);
+	    ComputeNxy(PlaqL,PlaqR,Nxy);
+	    Fdet1_mu = Fdet1_mu + transpose(Nxy)*dJdXe_nMpInv_y;
+
+	    MpInvJx_nu = Cshift(MpInvJx,nu,2);
+	    Compute_MpInvJx_dNxxdSy(PlaqR,PlaqL,MpInvJx_nu,FdetV);
+	    Fdet2_mu = Fdet2_mu+FdetV;
+	    break;
+	  }
+	default:
+	  {
+	    assert(1!=1 && " At present, the only valid choice of flow kernel is either 1 or 2");
+	    break;
+	  }
+	}
+      }
+    }
+    RealD t5 = usecond();
+
+    Fdet1_mu = Fdet1_mu + transpose(NxxAd)*dJdXe_nMpInv;
+
+    InsertForce(Fdet1,Fdet1_mu,mu);
+    InsertForce(Fdet2,Fdet2_mu,mu);
+
+    // Sign conventions as in the reference routine above
+    force=-1.0*(Fdet1 + Fdet2);
+    RealD t1 = usecond();
+    std::cout << GridLogPerformance << " logDetJacobianForceLevelOpt took "<<t1-t0<<" us"
+	      << " (prelim "<<t3a-t0<<" us, dJdXe "<<t4-t3a<<" us, nu loop "<<t5-t4<<" us)"<<std::endl;
+  }
+
+  // Old top-level, kept for consistency checks: identical chain rule to the
+  // default logDetJacobianForce, but with the old level routine. To be
+  // deleted together with the old level routines.
+  void logDetJacobianForce(int old, GaugeField &force)
+  {
+    force =Zero();
+    GaugeField force_det(force.Grid());
+
+    if (this->smearingLevels > 0)
+    {
+      double start = usecond();
+
+      GaugeLinkField tmp_mu(force.Grid());
+
+      for (int ismr = this->smearingLevels - 1; ismr > 0; --ismr) {
+
+	// remove U in UdSdU...
+	for (int mu = 0; mu < Nd; mu++) {
+	  tmp_mu = adj(peekLorentz(this->get_smeared_conf(ismr), mu)) * peekLorentz(force, mu);
+	  pokeLorentz(force, tmp_mu, mu);
+	}
+
+      	// Propagate existing force
+        force = this->AnalyticSmearedForce(force, this->get_smeared_conf(ismr - 1), ismr);
+
+	// Add back U in UdSdU...
+	for (int mu = 0; mu < Nd; mu++) {
+	  tmp_mu = peekLorentz(this->get_smeared_conf(ismr - 1), mu) * peekLorentz(force, mu);
+	  pokeLorentz(force, tmp_mu, mu);
+	}
+
+	// Get this levels determinant force
+	force_det = Zero();
+	logDetJacobianForceLevel(old,this->get_smeared_conf(ismr-1),force_det,ismr);
+
+	// Sum the contributions
+	force = force + force_det;
+      }
+
+      // remove U in UdSdU...
+      for (int mu = 0; mu < Nd; mu++) {
+	tmp_mu = adj(peekLorentz(this->get_smeared_conf(0), mu)) * peekLorentz(force, mu);
+	pokeLorentz(force, tmp_mu, mu);
+      }
+
+      force = this->AnalyticSmearedForce(force, *this->ThinLinks,0);
+
+      for (int mu = 0; mu < Nd; mu++) {
+	tmp_mu = peekLorentz(*this->ThinLinks, mu) * peekLorentz(force, mu);
+	pokeLorentz(force, tmp_mu, mu);
+      }
+
+      force_det = Zero();
+
+      logDetJacobianForceLevel(old,*this->ThinLinks,force_det,0);
+
+      force = force + force_det;
+
+      force=Ta(force); // Ta
+
+      double end = usecond();
+      double time = (end - start)/ 1e3;
+      std::cout << GridLogMessage << "GaugeConfigurationRect: lnDetJacobianForce(old) took " << time << " ms" << std::endl;
+    }  // if smearingLevels = 0 do nothing
+  }
+
+  // Default (optimised) implementation. Same result as the old overload
+  // below: fused Ncb via the two-argument LieAlgebraProject (with PlaqL = 1
+  // it reproduces Nb = 2 Ta(i T^b U C^dag) exactly), Zac via
+  // make_adjoint_rep, and J Taylor + Mab + Determinant + log fused in one
+  // sitewise kernel (cf. the plaquette version in GaugeConfigurationMasked.h,
+  // which runs on the half grid; here full grid + mask before the sum —
+  // compression of the masked sum is a later lever).
   RealD logDetJacobianLevel(const GaugeField &U,int smr)
+  {
+    GRID_TRACE("logDetJacobianLevel");
+    GridBase* grid = U.Grid();
+    GaugeLinkField Umu(grid), Cmu(grid), PlaqL(grid);
+    GaugeLinkField Z(grid);
+    AdjMatrixField  Ncb(grid);
+    AdjMatrixField  Zac(grid);
+    LatticeComplex ln_det(grid);
+    ColourMatrix Ident;
+
+    int mu= (smr/2) %Nd; // both smearing types are of 2 colouring
+    auto mask=PeekIndex<LorentzIndex>(masks[smr],mu);
+    Ident = ComplexD(1.0);
+
+    //////////////////////////////////////////////////////////////////
+    // Assemble the N matrix
+    //////////////////////////////////////////////////////////////////
+    int smr_ind = smr/Nsmr_one_step;
+    int flw_knl = mask_types[smr_ind];
+    double rho;
+    switch(flw_knl){
+    case 1:
+      rho=this->Stouts[smr_ind]->SmearRho[1];
+      break;
+    case 2:
+      rho=((Rect_Stout<Gimpl> *) this->Stouts[smr_ind])->SmearRhoRs[1];
+      break;
+    }
+
+    {
+      GRID_TRACE("ExchangePeriodicRect");
+      GaugeField gU(grid);
+      gU = GhostRect.ExchangePeriodic(U);
+      switch(flw_knl){
+      case 1:
+	BaseSmear_ghost_plq(Cmu, gU, mu, rho);
+	break;
+      case 2:
+	BaseSmear_ghost_rect(Cmu, gU, mu, rho);
+	break;
+      }
+    }
+
+    Umu = peekLorentz(U, mu);
+    PlaqL = Ident;
+    ComputeNxy(PlaqL, Umu*adj(Cmu), Ncb);
+
+    //////////////////////////////////////////////////////////////////
+    // Assemble Luscher exp diff map J matrix
+    //////////////////////////////////////////////////////////////////
+    // Ta so Z lives in Lie algabra; move to the adjoint rep
+    Z  = Ta(Cmu * adj(Umu));
+    SU3Adjoint::make_adjoint_rep(Zac, Z);
+
+    //////////////////////////////////////////////////////////////////
+    // J(x) = 1 + Sum_k (-Zac)^k/(k+1)!, Mab, det, log: one kernel
+    //////////////////////////////////////////////////////////////////
+    {GRID_TRACE("J_Mab_lnDet");
+      autoView(ln_det_v,ln_det,AcceleratorWrite);
+      autoView(Zac_v,Zac,AcceleratorRead);
+      autoView(Ncb_v,Ncb,AcceleratorRead);
+      accelerator_for(ss,grid->oSites(),grid->Nsimd(),{
+	  typedef decltype(coalescedRead(Zac_v(0)))    adj_mat;
+	  adj_mat X, Jac, Mab_ss;
+	  RealD kpfac = 1;
+
+	  X=1.0;
+	  Jac = X;
+	  for(int k=1;k<12;k++){
+	    X=(-1.0)*X*Zac_v(ss);
+	    kpfac = kpfac /((RealD) (k+1));
+	    Jac = Jac + X * kpfac;
+	  }
+
+	  Mab_ss = Complex(1.0,0.0);
+	  Mab_ss = Mab_ss - Jac * Ncb_v(ss);
+
+	  auto detD = Determinant(Mab_ss);
+	  coalescedWrite(ln_det_v[ss],log(detD));
+	});
+    }
+
+    ////////////////////////////
+    // Masked sum
+    ////////////////////////////
+    ln_det = ln_det * mask;
+    Complex result = sum(ln_det);
+    return result.real();
+  }
+
+  // Old implementation, kept for consistency checks against the optimised
+  // default above; to be deleted once confirmed. The int old argument only
+  // selects this overload.
+  RealD logDetJacobianLevel(int old, const GaugeField &U,int smr)
   {
     GridBase* grid = U.Grid();
     GaugeField C(grid);
@@ -1277,7 +2448,26 @@ public:
 
       double end = usecond();
       double time = (end - start)/ 1e3;
-      std::cout << GridLogMessage << "GaugeConfigurationRect: logDetJacobian took " << time << " ms" << std::endl;  
+      std::cout << GridLogMessage << "GaugeConfigurationRect: logDetJacobian took " << time << " ms" << std::endl;
+    }
+    return ln_det;
+  }
+  // Old top-level, kept for consistency checks; to be deleted together with
+  // the old level routines.
+  RealD logDetJacobian(int old)
+  {
+    RealD ln_det = 0;
+    if (this->smearingLevels > 0)
+    {
+      double start = usecond();
+      for (int ismr = this->smearingLevels - 1; ismr > 0; --ismr) {
+	ln_det+= logDetJacobianLevel(old,this->get_smeared_conf(ismr-1),ismr);
+      }
+      ln_det +=logDetJacobianLevel(old,*(this->ThinLinks),0);
+
+      double end = usecond();
+      double time = (end - start)/ 1e3;
+      std::cout << GridLogMessage << "GaugeConfigurationRect: logDetJacobian(old) took " << time << " ms" << std::endl;
     }
     return ln_det;
   }
@@ -1458,14 +2648,153 @@ public:
 
   /* Standard constructor */
   SmearedConfigurationRect(GridCartesian* _UGrid, unsigned int Nsmear, std::vector<Smear_Stout<Gimpl> *> Stouts, std::vector<int> mask_types={2,1})
-    : SmearedConfigurationMasked<Gimpl>(_UGrid, Nsmear,*Stouts[0]), Stouts(Stouts), mask_types(mask_types)
+    : SmearedConfigurationMasked<Gimpl>(_UGrid, Nsmear,*Stouts[0]), Stouts(Stouts), mask_types(mask_types),
+      GhostRect(2,_UGrid)
   {
-    assert(Nsmear%(Nsmr_one_step)==0); 
+    assert(Nsmear%(Nsmr_one_step)==0);
     assert(Nsmear/Nsmr_one_step==mask_types.size()); // Nsmr_one_step = #Basic_num_steps = 2*Nd = 8; One step <-> a mask type
     assert(Stouts.size() == mask_types.size());
-    
+
     // was resized in base class
     assert(this->SmearedSet.size()==Nsmear);
+
+    bool has_rect = false;
+    for (auto mt : mask_types) if (mt == 2) has_rect = true;
+    if (has_rect) {
+      // The type-2 mask requires every extent = 0 mod 4: the 2x2 blocks must tile the
+      // torus with an even number of blocks per perp. direction for the red-black block
+      // colouring to alternate across the periodic boundary, and every direction takes
+      // the perp. role at some level.
+      Coordinate gdims = _UGrid->GlobalDimensions();
+      for (int d = 0; d < Nd; d++) assert(gdims[d] % 4 == 0);
+
+      // Stencils for the optimised rect staple, on the depth-2 padded grid.
+      GridBase *ggrid = GhostRect.grids[Nd-1];
+      for (int mu = 0; mu < Nd; mu++)
+	gStencils_rectsmear.push_back(Rect_Stout<Gimpl>::RectStapleStencilRs(ggrid, mu));
+    }
+
+    ///////////////////////////////////////////////////////////////////////
+    // Stencils for the force-level PlaqL/PlaqR terms (depth-2 padded grid).
+    // Shift lists transcribe the CovShift chains of the old
+    // logDetJacobianForceLevel term by term; the entry order must match the
+    // kernel read order there. "msk" marks entries read from the padded
+    // MASKED link gUtmp (this class cannot use the checkerboard trick of
+    // GaugeConfigurationMasked.h: the type-2 mask is not a parity class).
+    ///////////////////////////////////////////////////////////////////////
+    {
+      bool has_plq = false;
+      for (auto mt : mask_types) if (mt == 1) has_plq = true;
+      GridBase *ggrid = GhostRect.grids[Nd-1];
+      std::vector<Coordinate> shifts;
+
+      // plq staple stencil (one per mu; 6 entries per nu!=mu), same
+      // geometry as gStencils_smear in GaugeConfigurationMasked.h
+      if (has_plq) {
+	for(int mu=0;mu<Nd;mu++){
+	  Coordinate shift_0(Nd,0);
+	  shifts.clear();
+	  for(int nu=0;nu<Nd;nu++){
+	    if (nu==mu) continue;
+	    Coordinate shift_nu(Nd,0);  shift_nu[nu]=1;
+	    Coordinate shift_mu(Nd,0);  shift_mu[mu]=1;
+	    Coordinate shift_mnu(Nd,0); shift_mnu[nu]=-1;
+	    Coordinate shift_pmu_mnu(Nd,0); shift_pmu_mnu[mu]=1; shift_pmu_mnu[nu]=-1;
+	    // upper: U_nu(x) U_mu(x+nu) U_nu^d(x+mu)
+	    shifts.push_back(shift_0); shifts.push_back(shift_nu); shifts.push_back(shift_mu);
+	    // lower: U_nu^d(x-nu) U_mu(x-nu) U_nu(x+mu-nu)
+	    shifts.push_back(shift_mnu); shifts.push_back(shift_mnu); shifts.push_back(shift_pmu_mnu);
+	  }
+	  gStencils_plqsmear.push_back(GeneralLocalStencil(ggrid,shifts));
+	}
+      }
+
+      for(int mu=0;mu<Nd;mu++){
+	for(int nu=0;nu<Nd;nu++){
+	  if (nu==mu) continue;
+	  auto S = [mu,nu](int amu,int anu){ Coordinate c(Nd,0); c[mu]=amu; c[nu]=anu; return c; };
+
+	  if (has_plq) {
+	    // P1 (+nu cw, x=y):    R: U_nu(x) U_mu(x+nu) U_nu^d(x+mu) msk^d(x); L=1
+	    shifts.clear();
+	    shifts.push_back(S(0,0)); shifts.push_back(S(0,1)); shifts.push_back(S(1,0)); shifts.push_back(S(0,0));
+	    gStencils_plqforce.push_back(GeneralLocalStencil(ggrid,shifts));
+	    // P2 (+nu acw, x=y-mu): R: U_nu(x) U_mu^d(x-mu+nu) U_nu^d(x-mu); L: msk^d(x-mu)
+	    shifts.clear();
+	    shifts.push_back(S(0,0)); shifts.push_back(S(-1,1)); shifts.push_back(S(-1,0)); shifts.push_back(S(-1,0));
+	    gStencils_plqforce.push_back(GeneralLocalStencil(ggrid,shifts));
+	    // P3 (-nu cw, x=y+nu):  L: U_mu(x) U_nu(x+mu) msk^d(x+nu); R = U_nu(x) direct
+	    shifts.clear();
+	    shifts.push_back(S(0,0)); shifts.push_back(S(1,0)); shifts.push_back(S(0,1));
+	    gStencils_plqforce.push_back(GeneralLocalStencil(ggrid,shifts));
+	    // P4 (-nu acw, x=y-mu+nu): L: U_nu(x) msk^d(x-mu+nu); R: U_mu^d(x-mu) U_nu(x-mu)
+	    shifts.clear();
+	    shifts.push_back(S(0,0)); shifts.push_back(S(-1,1)); shifts.push_back(S(-1,0)); shifts.push_back(S(-1,0));
+	    gStencils_plqforce.push_back(GeneralLocalStencil(ggrid,shifts));
+	    // P5 (mu pol, x=y-nu): L: U_mu(x) U_nu^d(x+mu-nu) msk^d(x-nu); R: U_nu^d(x-nu)
+	    shifts.clear();
+	    shifts.push_back(S(0,0)); shifts.push_back(S(1,-1)); shifts.push_back(S(0,-1)); shifts.push_back(S(0,-1));
+	    gStencils_plqforce.push_back(GeneralLocalStencil(ggrid,shifts));
+	    // P6 (mu pol, x=y+nu): L: U_mu(x) U_nu(x+mu) msk^d(x+nu); R = U_nu(x) direct
+	    shifts.clear();
+	    shifts.push_back(S(0,0)); shifts.push_back(S(1,0)); shifts.push_back(S(0,1));
+	    gStencils_plqforce.push_back(GeneralLocalStencil(ggrid,shifts));
+	  }
+	  if (has_rect) {
+	    // R1 (+nu, x=y): R: U_nu(x) U_nu(x+nu) U_mu(x+2nu) U_nu^d(x+mu+nu) U_nu^d(x+mu) msk^d(x); L=1
+	    shifts.clear();
+	    shifts.push_back(S(0,0)); shifts.push_back(S(0,1)); shifts.push_back(S(0,2));
+	    shifts.push_back(S(1,1)); shifts.push_back(S(1,0)); shifts.push_back(S(0,0));
+	    gStencils_rectforce.push_back(GeneralLocalStencil(ggrid,shifts));
+	    // R2 (x=y-mu): R: U_nu(x) U_nu(x+nu) U_mu^d(x-mu+2nu) U_nu^d(x-mu+nu) U_nu^d(x-mu); L: msk^d(x-mu)
+	    shifts.clear();
+	    shifts.push_back(S(0,0)); shifts.push_back(S(0,1)); shifts.push_back(S(-1,2));
+	    shifts.push_back(S(-1,1)); shifts.push_back(S(-1,0)); shifts.push_back(S(-1,0));
+	    gStencils_rectforce.push_back(GeneralLocalStencil(ggrid,shifts));
+	    // R3 (x=y-nu): R: U_nu(x) U_mu(x+nu) U_nu^d(x+mu) U_nu^d(x+mu-nu) msk^d(x-nu); L: U_nu^d(x-nu)
+	    shifts.clear();
+	    shifts.push_back(S(0,0)); shifts.push_back(S(0,1)); shifts.push_back(S(1,0));
+	    shifts.push_back(S(1,-1)); shifts.push_back(S(0,-1)); shifts.push_back(S(0,-1));
+	    gStencils_rectforce.push_back(GeneralLocalStencil(ggrid,shifts));
+	    // R4 (x=y-mu-nu): R: U_nu(x) U_mu^d(x-mu+nu) U_nu^d(x-mu) U_nu^d(x-mu-nu); L: U_nu^d(x-nu) msk^d(x-mu-nu)
+	    shifts.clear();
+	    shifts.push_back(S(0,0)); shifts.push_back(S(-1,1)); shifts.push_back(S(-1,0));
+	    shifts.push_back(S(-1,-1)); shifts.push_back(S(0,-1)); shifts.push_back(S(-1,-1));
+	    gStencils_rectforce.push_back(GeneralLocalStencil(ggrid,shifts));
+	    // R5 (-nu, x=y+nu): L: U_nu^d(x-nu) U_mu(x-nu) U_nu(x-nu+mu) U_nu(x+mu) msk^d(x+nu); R: U_nu(x)
+	    shifts.clear();
+	    shifts.push_back(S(0,-1)); shifts.push_back(S(0,-1)); shifts.push_back(S(1,-1));
+	    shifts.push_back(S(1,0)); shifts.push_back(S(0,1)); shifts.push_back(S(0,0));
+	    gStencils_rectforce.push_back(GeneralLocalStencil(ggrid,shifts));
+	    // R6 (x=y-mu+nu): L: U_nu^d(x-nu) U_mu^d(x-mu-nu) U_nu(x-mu-nu) U_nu(x-mu); R: U_nu(x) msk^d(x-mu+nu)
+	    shifts.clear();
+	    shifts.push_back(S(0,-1)); shifts.push_back(S(-1,-1)); shifts.push_back(S(-1,-1));
+	    shifts.push_back(S(-1,0)); shifts.push_back(S(0,0)); shifts.push_back(S(-1,1));
+	    gStencils_rectforce.push_back(GeneralLocalStencil(ggrid,shifts));
+	    // R7 (x=y+2nu): L: U_mu(x) U_nu(x+mu) U_nu(x+mu+nu) msk^d(x+2nu); R: U_nu(x) U_nu(x+nu)
+	    shifts.clear();
+	    shifts.push_back(S(0,0)); shifts.push_back(S(1,0)); shifts.push_back(S(1,1));
+	    shifts.push_back(S(0,2)); shifts.push_back(S(0,0)); shifts.push_back(S(0,1));
+	    gStencils_rectforce.push_back(GeneralLocalStencil(ggrid,shifts));
+	    // R8 (x=y+2nu-mu): L: U_mu^d(x-mu) U_nu(x-mu) U_nu(x-mu+nu); R: U_nu(x) U_nu(x+nu) msk^d(x-mu+2nu)
+	    shifts.clear();
+	    shifts.push_back(S(-1,0)); shifts.push_back(S(-1,0)); shifts.push_back(S(-1,1));
+	    shifts.push_back(S(0,0)); shifts.push_back(S(0,1)); shifts.push_back(S(-1,2));
+	    gStencils_rectforce.push_back(GeneralLocalStencil(ggrid,shifts));
+	    // R9 (mu pol, x=y-2nu): L: U_nu^d(x-nu) U_nu^d(x-2nu); R: U_mu(x) U_nu^d(x+mu-nu) U_nu^d(x+mu-2nu) msk^d(x-2nu)
+	    shifts.clear();
+	    shifts.push_back(S(0,-1)); shifts.push_back(S(0,-2)); shifts.push_back(S(0,0));
+	    shifts.push_back(S(1,-1)); shifts.push_back(S(1,-2)); shifts.push_back(S(0,-2));
+	    gStencils_rectforce.push_back(GeneralLocalStencil(ggrid,shifts));
+	    // R10 (mu pol, x=y+2nu): L: U_nu(x) U_nu(x+nu); R: U_mu(x) U_nu(x+mu) U_nu(x+mu+nu) msk^d(x+2nu)
+	    shifts.clear();
+	    shifts.push_back(S(0,0)); shifts.push_back(S(0,1)); shifts.push_back(S(0,0));
+	    shifts.push_back(S(1,0)); shifts.push_back(S(1,1)); shifts.push_back(S(0,2));
+	    gStencils_rectforce.push_back(GeneralLocalStencil(ggrid,shifts));
+	  }
+	}
+      }
+    }
 
     ////////////////////
     // Setup the mask

@@ -88,7 +88,90 @@ public:
 
     }
   }
-  
+
+  //////////////////////////////////////////////////////////////////////////
+  // Optimised short-side rectangle staple on a padded (ghost) grid.
+  //
+  // RectStapleStencilRs builds, for direction mu, the stencil of the ten
+  // link reads per nu!=mu consumed by RectStaplePaddedRs; the two must be
+  // kept in step. The stencil lives on the padded grid, which needs
+  // depth>=2 because the paths reach two hops in nu.
+  //
+  // RectStaplePaddedRs writes Cup = rho * adj(Stap) on the padded grid,
+  // where Stap is the staple of WilsonLoops::RectStapleUnoptimisedRs;
+  // the caller extracts the interior (PaddedCell::Extract).
+  //////////////////////////////////////////////////////////////////////////
+  static GeneralLocalStencil RectStapleStencilRs(GridBase *ggrid, int mu) {
+    std::vector<Coordinate> shifts;
+    for (int nu = 0; nu < Nd; nu++) {
+      if (nu == mu) continue;
+      auto shift = [mu, nu](int smu, int snu) {
+	Coordinate s(Nd, 0); s[mu] = smu; s[nu] = snu; return s;
+      };
+      // upper: U_nu(x) U_nu(x+nu) U_mu(x+2nu) U_nu^dag(x+mu+nu) U_nu^dag(x+mu)
+      shifts.push_back(shift(0, 0));
+      shifts.push_back(shift(0, 1));
+      shifts.push_back(shift(0, 2));
+      shifts.push_back(shift(1, 1));
+      shifts.push_back(shift(1, 0));
+      // lower: U_nu^dag(x-nu) U_nu^dag(x-2nu) U_mu(x-2nu) U_nu(x+mu-2nu) U_nu(x+mu-nu)
+      shifts.push_back(shift(0, -1));
+      shifts.push_back(shift(0, -2));
+      shifts.push_back(shift(0, -2));
+      shifts.push_back(shift(1, -2));
+      shifts.push_back(shift(1, -1));
+    }
+    return GeneralLocalStencil(ggrid, shifts);
+  }
+
+  static void RectStaplePaddedRs(GaugeLinkField &Cup, const GaugeField &gU,
+				 const GeneralLocalStencil &gStencil, int mu, RealD rho) {
+    GRID_TRACE("RectStaplePaddedRs");
+    GridBase *ggrid = gU.Grid();
+    conformable(ggrid, Cup.Grid());
+
+    autoView( Cup_v , Cup, AcceleratorWrite);
+    autoView( gU_v , gU, AcceleratorRead);
+    autoView( gStencil_v, gStencil, AcceleratorRead);
+    accelerator_for(ss, ggrid->oSites(), ggrid->Nsimd(), {
+	typedef decltype(coalescedRead(Cup_v[0])) LinkMat;
+
+	LinkMat tmp = Zero();
+	for (int nu = 0; nu < Nd; nu++) {
+	  int inc = 10*(nu - (mu<=nu));
+	  if (nu != mu) {
+	    GeneralStencilEntry const* e;
+	    e = gStencil_v.GetEntry(0+inc,ss);
+	    auto U_nu_x          =     coalescedReadGeneralPermute(gU_v[e->_offset], e->_permute, Nd) (nu)();
+	    e = gStencil_v.GetEntry(1+inc,ss);
+	    auto U_nu_xpnu       =     coalescedReadGeneralPermute(gU_v[e->_offset], e->_permute, Nd) (nu)();
+	    e = gStencil_v.GetEntry(2+inc,ss);
+	    auto U_mu_xp2nu      =     coalescedReadGeneralPermute(gU_v[e->_offset], e->_permute, Nd) (mu)();
+	    e = gStencil_v.GetEntry(3+inc,ss);
+	    auto Udag_nu_xpmupnu = adj(coalescedReadGeneralPermute(gU_v[e->_offset], e->_permute, Nd))(nu)();
+	    e = gStencil_v.GetEntry(4+inc,ss);
+	    auto Udag_nu_xpmu    = adj(coalescedReadGeneralPermute(gU_v[e->_offset], e->_permute, Nd))(nu)();
+
+	    tmp()() = tmp()() + U_nu_x * U_nu_xpnu * U_mu_xp2nu * Udag_nu_xpmupnu * Udag_nu_xpmu;
+
+	    e = gStencil_v.GetEntry(5+inc,ss);
+	    auto Udag_nu_xmnu    = adj(coalescedReadGeneralPermute(gU_v[e->_offset], e->_permute, Nd))(nu)();
+	    e = gStencil_v.GetEntry(6+inc,ss);
+	    auto Udag_nu_xm2nu   = adj(coalescedReadGeneralPermute(gU_v[e->_offset], e->_permute, Nd))(nu)();
+	    e = gStencil_v.GetEntry(7+inc,ss);
+	    auto U_mu_xm2nu      =     coalescedReadGeneralPermute(gU_v[e->_offset], e->_permute, Nd) (mu)();
+	    e = gStencil_v.GetEntry(8+inc,ss);
+	    auto U_nu_xpmum2nu   =     coalescedReadGeneralPermute(gU_v[e->_offset], e->_permute, Nd) (nu)();
+	    e = gStencil_v.GetEntry(9+inc,ss);
+	    auto U_nu_xpmumnu    =     coalescedReadGeneralPermute(gU_v[e->_offset], e->_permute, Nd) (nu)();
+
+	    tmp()() = tmp()() + Udag_nu_xmnu * Udag_nu_xm2nu * U_mu_xm2nu * U_nu_xpmum2nu * U_nu_xpmumnu;
+	  }
+	}
+	coalescedWrite(Cup_v[ss], rho*tmp);
+      });
+  }
+
 
 protected:
 
