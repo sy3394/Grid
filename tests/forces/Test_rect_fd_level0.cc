@@ -100,6 +100,60 @@ int main(int argc, char **argv)
     }
   }
 
+  ////////////////////////////////////////////////////////////////////
+  // Same FD test directly on SmearedConfigurationMasked (production plq
+  // FTHMC) — no rect-class code involved.
+  ////////////////////////////////////////////////////////////////////
+  {
+    SmearedConfigurationMasked<Gimpl> CfgM(UGrid, Nsmear, SmearerS);
+    CfgM.set_Field(U0);
+
+    F = Zero();
+    CfgM.logDetJacobianForceLevel(U0, F, 0);
+    F = Ta(F);
+    for (RealD eps : {0.01, 0.005, 0.0025}) {
+      RealD S1 = -CfgM.logDetJacobianLevel(U0, 0);
+      U = U0;
+      LatticeGaugeField Pc(UGrid); Pc = P;
+      Gimpl::update_field(Pc, U, eps);
+      RealD S2 = -CfgM.logDetJacobianLevel(U, 0);
+      LatticeComplex dSl(UGrid); dSl = Zero();
+      for (int mu = 0; mu < Nd; mu++) {
+        auto Fmu = PeekIndex<LorentzIndex>(F, mu);
+        Pmu = PeekIndex<LorentzIndex>(P, mu);
+        dSl = dSl + trace(Pmu * Fmu) * eps * 2.0 * HMC_MOMENTUM_DENOMINATOR;
+      }
+      ComplexD dSpred = sum(dSl);
+      std::cout << GridLogMessage << "FDLVL0 MASKED eps=" << eps
+                << " dS=" << S2 - S1 << " dSpred=" << dSpred.real()
+                << " dS/dSpred=" << (S2 - S1) / dSpred.real() << std::endl;
+    }
+
+    LatticeGaugeField Ftot(UGrid);
+    CfgM.set_Field(U0);
+    CfgM.logDetJacobianForce(Ftot);
+    Ftot = Ta(Ftot);
+    for (RealD eps : {0.005, 0.0025, 0.00125}) {
+      CfgM.set_Field(U0);
+      RealD S1 = -CfgM.logDetJacobian();
+      U = U0;
+      LatticeGaugeField Pc(UGrid); Pc = P;
+      Gimpl::update_field(Pc, U, eps);
+      CfgM.set_Field(U);
+      RealD S2 = -CfgM.logDetJacobian();
+      LatticeComplex dSl(UGrid); dSl = Zero();
+      for (int mu = 0; mu < Nd; mu++) {
+        auto Fmu = PeekIndex<LorentzIndex>(Ftot, mu);
+        Pmu = PeekIndex<LorentzIndex>(P, mu);
+        dSl = dSl + trace(Pmu * Fmu) * eps * 2.0 * HMC_MOMENTUM_DENOMINATOR;
+      }
+      ComplexD dSpred = sum(dSl);
+      std::cout << GridLogMessage << "FDTOT MASKED eps=" << eps
+                << " dS=" << S2 - S1 << " dSpred=" << dSpred.real()
+                << " dS/dSpred=" << (S2 - S1) / dSpred.real() << std::endl;
+    }
+  }
+
   Grid_finalize();
   return 0;
 }

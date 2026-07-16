@@ -71,6 +71,44 @@ private:
   std::vector<GeneralLocalStencil> gStencils_rectforce; // 10 per (mu,nu) pair, 6 entries
   std::vector<GeneralLocalStencil> gStencils_plqsmear;  //  1 per mu, 6 entries per nu!=mu (plq staple)
 
+  // Lever 4: compression of the sitewise-dense sections. Half-volume
+  // container grid (pure storage — no stencil/Cshift ever runs on
+  // compressed fields, so a plain GridCartesian suffices) and per-level
+  // active-osite tables built from the masks themselves. Requires the mask
+  // to be uniform within each SIMD vector word (asserted empirically in
+  // the constructor; holds for mod-4 extents).
+  GridCartesian *HalfGrid = nullptr;
+  bool use_compressed = false; // set in the constructor iff every level's
+			       // mask is uniform within each vector word
+  std::vector<deviceVector<uint64_t> > active_tab; // [smr][half osite] -> full osite
+
+  template<class vobj>
+  void pickActive(Lattice<vobj> &half, const Lattice<vobj> &full, int smr) {
+    GRID_TRACE("pickActive");
+    conformable(half.Grid(), (GridBase *)HalfGrid);
+    uint64_t *tab = &active_tab[smr][0];
+    autoView(h_v, half, AcceleratorWrite);
+    autoView(f_v, full, AcceleratorRead);
+    accelerator_for(hss, HalfGrid->oSites(), vobj::Nsimd(), {
+	coalescedWrite(h_v[hss], coalescedRead(f_v[tab[hss]]));
+      });
+  }
+  // Scatters into a ZERO-INITIALISED full field: the zero fill reproduces
+  // the post-mask state (dJdXe was masked; MpInvJx values at inactive
+  // sites only ever multiply a vanishing masked-link factor).
+  template<class vobj>
+  void setActive(Lattice<vobj> &full, const Lattice<vobj> &half, int smr) {
+    GRID_TRACE("setActive");
+    conformable(half.Grid(), (GridBase *)HalfGrid);
+    uint64_t *tab = &active_tab[smr][0];
+    full = Zero();
+    autoView(h_v, half, AcceleratorRead);
+    autoView(f_v, full, AcceleratorWrite);
+    accelerator_for(hss, HalfGrid->oSites(), vobj::Nsimd(), {
+	coalescedWrite(f_v[tab[hss]], coalescedRead(h_v[hss]));
+      });
+  }
+
   void ApplyMask(GaugeField &U,int smr)
   {
     LatticeComplex tmp(U.Grid());
@@ -1470,13 +1508,29 @@ public:
     // the FP summation order differs (last-bit), visible as ~1e-27 rel^2
     // in the old-vs-default force check.
     /////////////////////////////////////////////////////////////////
+    // Lever 4: when the mask is vector-word uniform (use_compressed),
+    // gather the inputs to the ACTIVE half-volume, run the fused kernel
+    // there only, and scatter the outputs back zero-filled — the zero fill
+    // IS the old "mask it off" for dJdXe, and is exact for MpInvJx
+    // (inactive-site values only ever multiply the vanishing masked link).
+    // Otherwise fall back to the full grid with an explicit mask.
+    GridBase *kgrid = use_compressed ? (GridBase*)HalfGrid : grid;
+    AdjMatrixField  ZxAd_h(kgrid), NxxAd_h(kgrid), MpInvJx_h(kgrid);
+    AdjVectorField  dJdXe_h(kgrid);
+    if (use_compressed) {
+      pickActive(ZxAd_h,  ZxAd,  smr);
+      pickActive(NxxAd_h, NxxAd, smr);
+    } else {
+      ZxAd_h  = ZxAd;
+      NxxAd_h = NxxAd;
+    }
     {GRID_TRACE("J_Mab_Inv_dJdX_fusedOpt");
-      autoView(dJdXe_nMpInv_v,dJdXe_nMpInv,AcceleratorWrite);
-      autoView(MpInvJx_v,MpInvJx,AcceleratorWrite);
-      autoView(ZxAd_v,ZxAd,AcceleratorRead);
-      autoView(NxxAd_v,NxxAd,AcceleratorRead);
+      autoView(dJdXe_nMpInv_v,dJdXe_h,AcceleratorWrite);
+      autoView(MpInvJx_v,MpInvJx_h,AcceleratorWrite);
+      autoView(ZxAd_v,ZxAd_h,AcceleratorRead);
+      autoView(NxxAd_v,NxxAd_h,AcceleratorRead);
       const int nsimd = vAlgebraMatrix::Nsimd();
-      accelerator_for(ss,grid->oSites(),nsimd,{
+      accelerator_for(ss,kgrid->oSites(),nsimd,{
 	  typedef decltype(coalescedRead(ZxAd_v[0]))         adj_mat;
 	  typedef decltype(coalescedRead(dJdXe_nMpInv_v[0])) adj_vec;
 	  adj_mat X, t3, t2, aunit, JxAd_site, MpAd_site, MpAdInv_site, nMpInv_site;
@@ -1519,6 +1573,18 @@ public:
 	  coalescedWrite(MpInvJx_v[ss],(-1.0)*(MpAdInv_site*JxAd_site));
 	});
     }
+    if (use_compressed) {
+      setActive(dJdXe_nMpInv, dJdXe_h, smr);
+      setActive(MpInvJx,      MpInvJx_h, smr);
+    } else {
+      dJdXe_nMpInv = dJdXe_h;
+      MpInvJx      = MpInvJx_h;
+      // fallback: apply the mask explicitly (the compressed path enforces
+      // it through the zero-filled scatter)
+      auto mtmp = PeekIndex<LorentzIndex>(masks[smr],mu);
+      dJdXe_nMpInv = dJdXe_nMpInv * mtmp;
+      MpInvJx      = MpInvJx * mtmp;
+    }
 
 #ifdef DEBUG
     {
@@ -1551,6 +1617,11 @@ public:
 	tr = trace(dJdX2[e]*nMpInv2);
 	pokeColour(dJdXe2,tr,e);
       }
+      // the compressed outputs are scattered zero-filled (post-mask), so
+      // mask the full-grid references before comparing
+      auto mtmp = PeekIndex<LorentzIndex>(masks[smr],mu);
+      dJdXe2   = dJdXe2   * mtmp;
+      MpInvJx2 = MpInvJx2 * mtmp;
       std::cout << GridLogMessage << " DEBUG: fused J/Mab/Inv/dJdX " << smr<<" "<<mu
 		<<" dJdXe diff "<<norm2(dJdXe_nMpInv-dJdXe2)<<" ref "<<norm2(dJdXe2)
 		<<" MpInvJx diff "<<norm2(MpInvJx-MpInvJx2)<<" ref "<<norm2(MpInvJx2)<<std::endl;
@@ -1560,13 +1631,8 @@ public:
     Compute_MpInvJx_dNxxdSy(PlaqL,PlaqR,MpInvJx,FdetV);
     Fdet2_mu=FdetV;
     Fdet1_mu=Zero();
-    ///////////////////////////////
-    // Mask it off
-    ///////////////////////////////
-    {
-      auto tmp=PeekIndex<LorentzIndex>(masks[smr],mu);
-      dJdXe_nMpInv = dJdXe_nMpInv*tmp;
-    }
+    // (the old "mask it off" of dJdXe_nMpInv is now performed by the
+    // zero-filled setActive scatter above)
 
     //    dJdXe_nMpInv needs to multiply:
     //       Nxx_mu (site local)                           (1)
@@ -2391,11 +2457,25 @@ public:
     //////////////////////////////////////////////////////////////////
     // J(x) = 1 + Sum_k (-Zac)^k/(k+1)!, Mab, det, log: one kernel
     //////////////////////////////////////////////////////////////////
+    // Lever 4: active half only when the mask is vector-word uniform;
+    // inactive sites contributed exactly zero (Ncb=0 there => Mab=1 =>
+    // log det=0) and were masked out of the sum. Full-grid fallback
+    // otherwise.
+    GridBase *kgrid = use_compressed ? (GridBase*)HalfGrid : grid;
+    AdjMatrixField Zac_h(kgrid), Ncb_h(kgrid);
+    LatticeComplex ln_det_h(kgrid);
+    if (use_compressed) {
+      pickActive(Zac_h, Zac, smr);
+      pickActive(Ncb_h, Ncb, smr);
+    } else {
+      Zac_h = Zac;
+      Ncb_h = Ncb;
+    }
     {GRID_TRACE("J_Mab_lnDet");
-      autoView(ln_det_v,ln_det,AcceleratorWrite);
-      autoView(Zac_v,Zac,AcceleratorRead);
-      autoView(Ncb_v,Ncb,AcceleratorRead);
-      accelerator_for(ss,grid->oSites(),grid->Nsimd(),{
+      autoView(ln_det_v,ln_det_h,AcceleratorWrite);
+      autoView(Zac_v,Zac_h,AcceleratorRead);
+      autoView(Ncb_v,Ncb_h,AcceleratorRead);
+      accelerator_for(ss,kgrid->oSites(),kgrid->Nsimd(),{
 	  typedef decltype(coalescedRead(Zac_v(0)))    adj_mat;
 	  adj_mat X, Jac, Mab_ss;
 	  RealD kpfac = 1;
@@ -2417,10 +2497,11 @@ public:
     }
 
     ////////////////////////////
-    // Masked sum
+    // Sum: over the active half (mask enforced by the compression), or
+    // masked over the full grid in the fallback
     ////////////////////////////
-    ln_det = ln_det * mask;
-    Complex result = sum(ln_det);
+    if (!use_compressed) ln_det_h = ln_det_h * mask;
+    Complex result = sum(ln_det_h);
 #ifdef DEBUG
     {
       RealD result2 = logDetJacobianLevel(0,U,smr);
@@ -2998,6 +3079,57 @@ public:
       }
     }
     delete UrbGrid;
+
+    ///////////////////////////////////////////////////////////////////
+    // Lever 4: half-volume container grid and per-level active-osite
+    // tables, built from the masks themselves (mask-driven: one code
+    // path for both mask types). Asserts empirically that the mask is
+    // uniform within each SIMD vector word and that exactly half the
+    // osites are active.
+    ///////////////////////////////////////////////////////////////////
+    {
+      const int Nsimd_ = _UGrid->Nsimd();
+      active_tab.resize(this->smearingLevels);
+      std::vector<std::vector<uint64_t> > tabs(this->smearingLevels);
+      use_compressed = true;
+      LatticeComplex mmu(_UGrid);
+      for (unsigned int smr = 0; smr < this->smearingLevels && use_compressed; smr++) {
+	int mu = (smr/2) % Nd;
+	mmu = PeekIndex<LorentzIndex>(masks[smr], mu);
+	std::vector<uint64_t> &tab = tabs[smr];
+	tab.reserve(_UGrid->oSites()/2);
+	autoView(m_v, mmu, CpuRead);
+	for (uint64_t ss = 0; ss < (uint64_t)_UGrid->oSites(); ss++) {
+	  auto s0 = extractLane(0, m_v[ss]);
+	  RealD v0 = real(TensorRemove(s0));
+	  for (int l = 1; l < Nsimd_; l++) {
+	    auto sl = extractLane(l, m_v[ss]);
+	    RealD vl = real(TensorRemove(sl));
+	    if (fabs(vl - v0) > 1e-12) { use_compressed = false; break; }
+	  }
+	  if (!use_compressed) break;
+	  if (v0 > 0.5) tab.push_back(ss);
+	}
+	if (use_compressed && tab.size() != (size_t)(_UGrid->oSites()/2)) use_compressed = false;
+      }
+      if (use_compressed) {
+	Coordinate hlatt = _UGrid->GlobalDimensions(); hlatt[0] /= 2;
+	HalfGrid = new GridCartesian(hlatt, _UGrid->_simd_layout, _UGrid->_processors);
+	assert(HalfGrid->oSites() * 2 == _UGrid->oSites());
+	for (unsigned int smr = 0; smr < this->smearingLevels; smr++) {
+	  active_tab[smr].resize(tabs[smr].size());
+	  acceleratorCopyToDevice(&tabs[smr][0], &active_tab[smr][0], tabs[smr].size()*sizeof(uint64_t));
+	}
+	std::cout << GridLogMessage << "SmearedConfigurationRect: mask is vector-word uniform; compressed (half-volume) sitewise sections ENABLED" << std::endl;
+      } else {
+	std::cout << GridLogMessage << "SmearedConfigurationRect: mask is NOT uniform within SIMD vector words on this layout; compressed sitewise sections DISABLED (full-grid fallback). A local-volume/SIMD layout with lane strides = 0 mod 4 in the directions perpendicular to mu enables them." << std::endl;
+      }
+    }
+  }
+
+  virtual ~SmearedConfigurationRect()
+  {
+    if (HalfGrid) delete HalfGrid;
   }
   
   virtual void smeared_force(GaugeField &SigmaTilde) 
