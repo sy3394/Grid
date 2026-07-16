@@ -219,6 +219,42 @@ accelerator_inline void solve( iVector<type1,N> &x, const iMatrix<type1,N> LU, c
   }
 };
 
+// Site-local real-part inverse, usable inside coalesced accelerator
+// kernels (and the building block of Inverse_RealPart below). Under
+// GRID_SIMT the kernel values are per-thread scalars (T = ComplexD) and no
+// lane handling is needed; on CPU T is a SIMD vector and the
+// data-dependent pivoting forces an internal lane loop — only this
+// section serialises lanes. Reading real() of the complex lane directly
+// avoids the toReal lane-duplication pitfall (toReal copies each complex
+// lane into TWO adjacent real lanes).
+template<class T, int N>
+accelerator_inline void Inverse_RealPartSite(iScalar<iScalar<iMatrix<T,N> > > &out, const iScalar<iScalar<iMatrix<T,N> > > &in)
+{
+  iMatrix<RealD,N>   LU;
+  iVector<Integer,N> P;
+  iVector<RealD,N>   e;
+#ifdef GRID_SIMT
+  for(int i=0;i<N;i++) for(int j=0;j<N;j++) LU(i,j) = real(in()()(i,j));
+  LUdcmp(LU,P);
+  for(int j=0;j<N;j++){
+    for(int i=0;i<N;i++) e(i) = (i==j);
+    solve(e,LU,P);
+    for(int i=0;i<N;i++) out()()(i,j) = ComplexD(e(i),0.0);
+  }
+#else
+  const int nlane = T::Nsimd();
+  for(int lane=0;lane<nlane;lane++){
+    for(int i=0;i<N;i++) for(int j=0;j<N;j++) LU(i,j) = real(in()()(i,j).getlane(lane));
+    LUdcmp(LU,P);
+    for(int j=0;j<N;j++){
+      for(int i=0;i<N;i++) e(i) = (i==j);
+      solve(e,LU,P);
+      for(int i=0;i<N;i++) out()()(i,j).putlane(ComplexD(e(i),0.0),lane);
+    }
+  }
+#endif
+}
+
 template<int N>
 Lattice<iScalar<iScalar<iMatrix<vComplexD, N> > > > Inverse_RealPart(const Lattice<iScalar<iScalar<iMatrix<vComplexD, N> > > > &Umu)
 {
@@ -252,29 +288,12 @@ Lattice<iScalar<iScalar<iMatrix<vComplexD, N> > > > Inverse_RealPart(const Latti
 #else //GPU version
   autoView(Umu_v,Umu,AcceleratorRead);
   autoView(ret_v,ret,AcceleratorWrite);
-  accelerator_for(ss,grid->oSites(),vComplex::Nsimd(),{
-      iMatrix<RealD, N>  LU;
-      iVector<Integer, N> P;
-      iVector<RealD, N> e;
-      // scalar layout won't coalesce
-#ifdef GRID_SIMT
-      {
-	int blane=acceleratorSIMTlane(Nsimd); // buffer lane
-#else
-      for(int blane=0;blane<Nsimd;blane++) {
-#endif
-	
-	for(int i=0;i<N;i++){
-	  for(int j=0;j<N;j++){
-	    LU(i,j) = getlane(toReal(TensorRemove(Umu_v(ss)()()(i,j))),blane);
-	  }}
-	LUdcmp(LU,P);
-	for(int j=0; j<N; j++){
-	  for(int i=0; i<N; i++) e(i) = (i==j);
-	  solve(e,LU,P);
-	  for(int i=0; i<N; i++) putlane(ret_v[ss]()()(i,j),(ComplexD) e(i),blane);
-	}
-      }
+  accelerator_for(ss,grid->oSites(),vComplexD::Nsimd(),{
+      typedef decltype(coalescedRead(Umu_v[0])) mat;
+      mat in_ss  = coalescedRead(Umu_v[ss]);
+      mat out_ss;
+      Inverse_RealPartSite(out_ss,in_ss);
+      coalescedWrite(ret_v[ss],out_ss);
     });
 #endif
  return ret;
