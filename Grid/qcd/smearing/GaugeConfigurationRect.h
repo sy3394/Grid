@@ -15,7 +15,7 @@ NAMESPACE_BEGIN(Grid);
   @brief Smeared configuration masked container for rectagle flow
   Modified for a multi-subset smearing (aka Luscher Flowed HMC)
 */
-#undef DEBUG
+#define DEBUG
 //#define DEBUG
 // With DEBUG defined, the DEFAULT force/Jacobian routines self-check every
 // component against the `int old` reference overloads and print norm diffs
