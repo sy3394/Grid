@@ -67,6 +67,7 @@ int main(int argc, char **argv)
   for (int a = 0; a < Ngen; a++) SU<Nc>::generator(a, ta[a]);
   Complex ci(0.0, 1.0);
 
+  int fail = 0;
   for (int mask_type : {1, 2}) {
     std::vector<Smear_Stout<Gimpl> *> Stouts = {(mask_type == 1) ? &SmearerS : (Smear_Stout<Gimpl> *)&SmearerR};
     std::vector<int> mts = {mask_type};
@@ -128,13 +129,19 @@ int main(int argc, char **argv)
       lndet_num += std::log(J.determinant());
     }
 
+    bool ok = (fabs(lndet_num / lndet_impl - 1.0) < 1.0e-6);
+    if (!ok) fail++;
     std::cout << GridLogMessage << "NUMJAC mask_type=" << mask_type
               << " active=" << nactive
               << " lndet_num=" << lndet_num
               << " lndet_impl=" << lndet_impl
-              << " ratio num/impl=" << lndet_num / lndet_impl << std::endl;
+              << " ratio num/impl=" << lndet_num / lndet_impl
+              << (ok ? "  ok" : "  FAIL") << std::endl;
   }
 
+  if (fail) std::cout << GridLogMessage << "FAIL (" << fail << " kernels)" << std::endl;
+  else      std::cout << GridLogMessage << "PASS" << std::endl;
+
   Grid_finalize();
-  return 0;
+  return fail ? 1 : 0;
 }

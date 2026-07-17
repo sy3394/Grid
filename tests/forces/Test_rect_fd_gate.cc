@@ -120,6 +120,9 @@ int main(int argc, char **argv)
     bool okB = (ratio > 3.0 && ratio < 5.5);
     if (!okB) fail++;
     bool okA = okB;
+    if (!okB && fabs(r1.dS / r1.dSpred - 0.5) < 0.05)
+      std::cout << GridLogMessage << "NOTE: dS/dSpred ~ 1/2 for " << names[c]
+                << " — consistent with the PARKED EXTRA-FACTOR-2 (see FIXME in GaugeConfigurationRect.h); expected until the -1.0 -> -0.5 fix is applied" << std::endl;
 
     std::cout << GridLogMessage << "FDGATE " << names[c]
               << "  eps=" << eps1 << ": dS=" << r1.dS << " dSpred=" << r1.dSpred

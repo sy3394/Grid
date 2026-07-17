@@ -1323,15 +1323,21 @@ public:
     // each also came with an extra factor of -1 from Luscher's convention, which is kept for the moment
     //   This is because InertForce come with extra factor of -1, which can be adjasted
     // The overall minus sign in force is necessary: Trivializing Maps, the Wilson Flow and the HMC Algorithm (Lushcer) Eq. (6.1)
-    // 2026-07-13: -1.0 -> -0.5. FD tests (tests/forces/Test_rect_fd_level0)
-    // showed force = 2x dS/dU for BOTH kernels at -1.0 (the eps-sweep limit
-    // of dS/dSpred was 1/2 for plq and rect alike; the earlier apparent plq
-    // consistency at eps=0.01 was a curvature artifact). The lndet side is
-    // confirmed correct absolutely (tests/forces/Test_rect_numjac vs a
-    // numerical Jacobian of the map), so the 1/2 belongs to the force.
-    // NOTE the same statement applies to GaugeConfigurationMasked.h via the
-    // convention ledger (its net normalisation is identical).
-    force=-0.5*(Fdet1 + Fdet2);
+    //==================================================================
+    // FIXME EXTRA-FACTOR-2 (deliberately PARKED, 2026-07-14):
+    // FD tests prove this force is 2x dS/dU for BOTH kernels
+    // (tests/forces/Test_rect_fd_level0: eps->0 limit of dS/dSpred = 1/2;
+    // the lndet side is absolutely correct per tests/forces/Test_rect_numjac,
+    // so the 1/2 belongs HERE: the correct scale is -0.5).
+    // The factor is RESTORED to -1.0 for now so the force matches the
+    // production normalisation of GaugeConfigurationMasked.h (which carries
+    // the same factor 2) during consistency checking against production.
+    // TO APPLY THE PHYSICS FIX: change -1.0 -> -0.5 at BOTH occurrences of
+    // this comment block (default and int-old overloads), after which
+    // Test_rect_fd_gate passes with quadratic ratios and
+    // Test_rect_vs_masked_plq reports |dF|^2/|F|^2 = 1/4 vs unfixed Masked.
+    //==================================================================
+    force=-1.0*(Fdet1 + Fdet2);
     RealD t1 = usecond();
     std::cout << GridLogMessage << " logDetJacobianForce level took "<<t1-t0<<" us "<<std::endl;
     std::cout << GridLogMessage << " logDetJacobianForce t3-t0 "<<t3a-t0<<" us "<<std::endl;
@@ -2309,9 +2315,12 @@ public:
     InsertForce(Fdet2,Fdet2_mu,mu);
 
     // Sign conventions as in the reference routine above
-    // 2026-07-13: -1.0 -> -0.5, kept in step with the default routine
-    // (see the note there; force was 2x dS/dU for both kernels).
-    force=-0.5*(Fdet1 + Fdet2);
+    //==================================================================
+    // FIXME EXTRA-FACTOR-2 (deliberately PARKED — kept in step with the
+    // default routine; see the full comment block there). The correct
+    // scale is -0.5; -1.0 matches production during consistency checks.
+    //==================================================================
+    force=-1.0*(Fdet1 + Fdet2);
 #ifdef DEBUG
     {
       GaugeField force2(grid);
