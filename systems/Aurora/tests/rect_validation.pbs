@@ -2,10 +2,11 @@
 ##
 ## Rect-FTHMC optimisation validation suite (single node, debug queue).
 ##
-## Submit from the directory holding the test binaries, e.g.
-##     cd build/tests/forces
-##     qsub $GRIDSRC/systems/Aurora/tests/rect_validation.pbs
-## or override BINDIR/GRIDSRC below with qsub -v.
+## Defaults assume the Aurora2 layout: binaries in
+## ~/src/Grid_rect_opt/systems/Aurora2/tests/forces (build them first:
+## make -C tests/forces from the Aurora2 build dir), sourceme.sh and
+## HMC/gpu_tile.sh under the same root. Just:  qsub rect_validation.pbs
+## Logs land in $PBS_O_WORKDIR/rect_validation_logs/.
 ##
 ## Covers, on GPU (GRID_SIMT) and at 1/2/4 ranks:
 ##   Test_inverse_realpart    in-kernel real LU inverse (SIMT smoke test)
@@ -21,15 +22,18 @@
 #PBS -q debug
 #PBS -l select=1
 #PBS -l walltime=00:59:00
-#PBS -A LatticeQCD_aesp_CNDA
+#PBS -l filesystems=flare
+#PBS -k doe
+#PBS -j oe
+#PBS -A 16678
 
 cd $PBS_O_WORKDIR
 
-BINDIR=${BINDIR:-$PBS_O_WORKDIR}
-GRIDSRC=${GRIDSRC:-$PBS_O_WORKDIR/../../..}
-# override for a different work-dir convention, e.g.
-#   qsub -v SOURCEME=$HOME/src/Grid_rect_opt/systems/Aurora2/sourceme.sh,TILE=$HOME/src/Grid_rect_opt/systems/Aurora2/HMC/gpu_tile.sh ...
-SOURCEME=${SOURCEME:-$GRIDSRC/systems/Aurora/sourceme.sh}
+# defaults follow the Aurora2 work-dir convention (~/src/Grid_rect_opt);
+# override any of these with qsub -v NAME=...
+ROOT=${ROOT:-$HOME/src/Grid_rect_opt/systems/Aurora2}
+BINDIR=${BINDIR:-$ROOT/tests/forces}
+SOURCEME=${SOURCEME:-$ROOT/sourceme.sh}
 source $SOURCEME
 
 export OMP_NUM_THREADS=8
@@ -38,7 +42,7 @@ export MPIR_CVAR_CH4_OFI_GPU_PIPELINE_D2H_ENGINE_TYPE=0
 export MPIR_CVAR_CH4_OFI_GPU_PIPELINE_H2D_ENGINE_TYPE=0
 export MPIR_CVAR_GPU_USE_IMMEDIATE_COMMAND_LIST=1
 
-TILE=${TILE:-$GRIDSRC/systems/Aurora/benchmarks/gpu_tile.sh}
+TILE=${TILE:-$ROOT/HMC/gpu_tile.sh}
 GFLAGS="--shm-mpi 0 --shm 2048 --device-mem 4000 --accelerator-threads 8"
 
 LOGDIR=$PBS_O_WORKDIR/rect_validation_logs
