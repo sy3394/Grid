@@ -1,0 +1,87 @@
+#!/bin/bash
+##
+## Rect-FTHMC optimisation validation suite (single node, debug queue).
+##
+## Submit from the directory holding the test binaries, e.g.
+##     cd build/tests/forces
+##     qsub $GRIDSRC/systems/Aurora/tests/rect_validation.pbs
+## or override BINDIR/GRIDSRC below with qsub -v.
+##
+## Covers, on GPU (GRID_SIMT) and at 1/2/4 ranks:
+##   Test_inverse_realpart    in-kernel real LU inverse (SIMT smoke test)
+##   Test_rect_staple_padded  padded Rs staple vs unoptimised
+##   Test_rect_force_level    default vs old, per level + totals
+##   Test_rect_fd_gate        finite-difference force gate (quadratic)
+##   Test_rect_numjac         lndet vs numerical Jacobian (absolute)
+##   Test_rect_vs_masked_plq  cross-class plq check
+## Also grep each log for the constructor line reporting whether the
+## compressed (half-volume) sitewise sections are ENABLED or DISABLED on
+## this SIMD layout — either is correct; report which.
+
+#PBS -q debug
+#PBS -l select=1
+#PBS -l walltime=00:59:00
+#PBS -A LatticeQCD_aesp_CNDA
+
+cd $PBS_O_WORKDIR
+
+BINDIR=${BINDIR:-$PBS_O_WORKDIR}
+GRIDSRC=${GRIDSRC:-$PBS_O_WORKDIR/../../..}
+source $GRIDSRC/systems/Aurora/sourceme.sh
+
+export OMP_NUM_THREADS=8
+export MPIR_CVAR_CH4_OFI_ENABLE_GPU_PIPELINE=1
+export MPIR_CVAR_CH4_OFI_GPU_PIPELINE_D2H_ENGINE_TYPE=0
+export MPIR_CVAR_CH4_OFI_GPU_PIPELINE_H2D_ENGINE_TYPE=0
+export MPIR_CVAR_GPU_USE_IMMEDIATE_COMMAND_LIST=1
+
+TILE=$GRIDSRC/systems/Aurora/benchmarks/gpu_tile.sh
+GFLAGS="--shm-mpi 0 --shm 2048 --device-mem 4000 --accelerator-threads 8"
+
+LOGDIR=$PBS_O_WORKDIR/rect_validation_logs
+mkdir -p $LOGDIR
+SUMMARY=$LOGDIR/SUMMARY.txt
+: > $SUMMARY
+
+run_test () {
+  local tag=$1; local np=$2; local mpi=$3; local bin=$4; local grid=$5; shift 5
+  local log=$LOGDIR/${tag}.log
+  echo "=== $tag : np=$np mpi=$mpi $bin --grid $grid $@" | tee -a $SUMMARY
+  mpiexec -np $np -ppn 12 -envall \
+    $TILE $BINDIR/$bin --mpi $mpi --grid $grid $GFLAGS "$@" > $log 2>&1
+  local rc=$?
+  local verdict=$(grep -E 'Grid : Message.*(PASS|FAIL)' $log | tail -1)
+  local comp=$(grep -m1 -oE 'sitewise sections (ENABLED|DISABLED)' $log)
+  echo "    rc=$rc  ${verdict:-NO-VERDICT}  ${comp}" | tee -a $SUMMARY
+}
+
+########################################################################
+# single rank
+########################################################################
+run_test inv_realpart_1    1 1.1.1.1 Test_inverse_realpart    8.8.8.8
+run_test staple_1          1 1.1.1.1 Test_rect_staple_padded  8.4.12.16
+run_test force_level_1     1 1.1.1.1 Test_rect_force_level    8.8.8.8
+run_test force_level_1a    1 1.1.1.1 Test_rect_force_level    8.4.12.16
+run_test fd_gate_1         1 1.1.1.1 Test_rect_fd_gate        8.8.8.8
+run_test numjac_1          1 1.1.1.1 Test_rect_numjac         4.4.4.4
+run_test xcheck_plq_1      1 1.1.1.1 Test_rect_vs_masked_plq  8.8.8.8
+
+########################################################################
+# multi rank: vary the split direction so the depth-2 halos cross every
+# dimension's rank boundary at least once
+########################################################################
+run_test force_level_2x    2 2.1.1.1 Test_rect_force_level    8.8.8.8
+run_test force_level_2t    2 1.1.1.2 Test_rect_force_level    8.8.8.8
+run_test force_level_4     4 2.2.1.1 Test_rect_force_level    8.8.8.8
+run_test staple_2          2 2.1.1.1 Test_rect_staple_padded  8.4.12.16
+run_test staple_2y         2 1.2.1.1 Test_rect_staple_padded  8.4.12.16
+run_test fd_gate_2         2 1.2.1.1 Test_rect_fd_gate        8.8.8.8
+run_test xcheck_plq_2      2 1.1.2.1 Test_rect_vs_masked_plq  8.8.8.8
+
+echo "--------------------------------------------------------" | tee -a $SUMMARY
+if grep -q 'FAIL' $SUMMARY; then
+  echo "RESULT: FAILURES PRESENT — inspect $LOGDIR" | tee -a $SUMMARY
+else
+  echo "RESULT: ALL PASS" | tee -a $SUMMARY
+fi
+cat $SUMMARY
