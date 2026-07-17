@@ -87,6 +87,10 @@ int main(int argc, char **argv)
   RealD nF = norm2(D), rF = norm2(FM);
   bool okF = (nF <= tolF * rF);
   if (!okF) fail++;
+  if (!okF && fabs(nF / rF - 0.25) < 1.0e-6)
+    std::cout << GridLogMessage << "HINT: |dF|^2/|F|^2 = 1/4 exactly => the force-normalisation "
+              << "fix (-0.5) is applied on ONE side only (Rect fixed, Masked not, or vice versa); "
+              << "see FIXME EXTRA-FACTOR-2 in GaugeConfigurationRect.h" << std::endl;
   RealD SM = CfgM.logDetJacobian();
   RealD SR = CfgR.logDetJacobian();
   bool okS = (fabs(SM - SR) <= 1.0e-9 * fabs(SM));
