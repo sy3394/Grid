@@ -27,7 +27,10 @@ cd $PBS_O_WORKDIR
 
 BINDIR=${BINDIR:-$PBS_O_WORKDIR}
 GRIDSRC=${GRIDSRC:-$PBS_O_WORKDIR/../../..}
-source $GRIDSRC/systems/Aurora/sourceme.sh
+# override for a different work-dir convention, e.g.
+#   qsub -v SOURCEME=$HOME/src/Grid_rect_opt/systems/Aurora2/sourceme.sh,TILE=$HOME/src/Grid_rect_opt/systems/Aurora2/HMC/gpu_tile.sh ...
+SOURCEME=${SOURCEME:-$GRIDSRC/systems/Aurora/sourceme.sh}
+source $SOURCEME
 
 export OMP_NUM_THREADS=8
 export MPIR_CVAR_CH4_OFI_ENABLE_GPU_PIPELINE=1
@@ -35,7 +38,7 @@ export MPIR_CVAR_CH4_OFI_GPU_PIPELINE_D2H_ENGINE_TYPE=0
 export MPIR_CVAR_CH4_OFI_GPU_PIPELINE_H2D_ENGINE_TYPE=0
 export MPIR_CVAR_GPU_USE_IMMEDIATE_COMMAND_LIST=1
 
-TILE=$GRIDSRC/systems/Aurora/benchmarks/gpu_tile.sh
+TILE=${TILE:-$GRIDSRC/systems/Aurora/benchmarks/gpu_tile.sh}
 GFLAGS="--shm-mpi 0 --shm 2048 --device-mem 4000 --accelerator-threads 8"
 
 LOGDIR=$PBS_O_WORKDIR/rect_validation_logs
