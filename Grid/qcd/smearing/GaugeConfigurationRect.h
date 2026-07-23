@@ -1367,18 +1367,9 @@ public:
     //   This is because InertForce come with extra factor of -1, which can be adjasted
     // The overall minus sign in force is necessary: Trivializing Maps, the Wilson Flow and the HMC Algorithm (Lushcer) Eq. (6.1)
     //==================================================================
-    // FIXME EXTRA-FACTOR-2 (deliberately PARKED, 2026-07-14):
-    // FD tests prove this force is 2x dS/dU for BOTH kernels
-    // (tests/forces/Test_rect_fd_level0: eps->0 limit of dS/dSpred = 1/2;
-    // the lndet side is absolutely correct per tests/forces/Test_rect_numjac,
-    // so the 1/2 belongs HERE: the correct scale is -0.5).
-    // The factor is RESTORED to -1.0 for now so the force matches the
-    // production normalisation of GaugeConfigurationMasked.h (which carries
-    // the same factor 2) during consistency checking against production.
-    // TO APPLY THE PHYSICS FIX: change -1.0 -> -0.5 at BOTH occurrences of
-    // this comment block (default and int-old overloads), after which
-    // Test_rect_fd_gate passes with quadratic ratios and
-    // Test_rect_vs_masked_plq reports |dF|^2/|F|^2 = 1/4 vs unfixed Masked.
+    // FIXME EXTRA-FACTOR-2 (deliberately PARKED): this old overload keeps
+    // -1.0 in step with the ACTIVE path. FULL RATIONALE + evidence at the
+    // `fscale` constant above the L5a fused kernel in the default routine.
     //==================================================================
     force=-1.0*(Fdet1 + Fdet2);
     RealD t1 = usecond();
@@ -1693,8 +1684,29 @@ public:
     // its nu components plus the mu-polarisation loop sum.
     ///////////////////////////////////////////////////////////////////
     //==================================================================
-    // FIXME EXTRA-FACTOR-2 (deliberately PARKED; see the old overload):
-    // the correct scale is -0.5.
+    // FIXME EXTRA-FACTOR-2 (deliberately PARKED) — the single scale point
+    // of the ACTIVE force path. Evidence (2026-07-13/14, in check logs and
+    // tests/forces/):
+    //  * Test_rect_fd_level0: the eps->0 (Richardson) limit of dS/dSpred
+    //    is 1/2 for BOTH kernels, at level grain and in the totals, i.e.
+    //    at fscale = -1.0 this force is exactly 2x dS/dU. (The historical
+    //    impression that the plq force was consistent came from a
+    //    curvature coincidence at eps=0.01; Test_rfthmc never swept eps.)
+    //  * Test_rect_numjac: the lndet is correct ABSOLUTELY (brute-force
+    //    numerical Jacobian of the production map), so the 1/2 belongs to
+    //    the force, not the action.
+    //  * The same statement holds for GaugeConfigurationMasked.h
+    //    (identical net normalisation; verified by direct FD there).
+    // THE CORRECT SCALE IS -0.5. It is PARKED at -1.0 so the force
+    // matches the production normalisation during consistency checks
+    // against production. TO APPLY THE FIX: set fscale = -0.5 here and
+    // make the same change at the (to-be-deleted) old overload's
+    // force=-1.0*(...) line so old-vs-default checks stay meaningful.
+    // Afterwards Test_rect_fd_gate passes with quadratic ratios, and
+    // Test_rect_vs_masked_plq reports |dF|^2/|F|^2 = 1/4 vs an unfixed
+    // Masked (it prints a HINT for exactly that signature).
+    // Consequences while parked: ensembles are EXACT (Metropolis absorbs
+    // force errors; the action is right) — only acceptance suffers.
     //==================================================================
     const RealD fscale = -1.0;
 
@@ -2717,8 +2729,8 @@ public:
     // FIXME EXTRA-FACTOR-2 (deliberately PARKED — kept in step with the
     // default routine; see the full comment block there). The correct
     // scale is -0.5; -1.0 matches production during consistency checks.
-    // NB the ACTIVE (L5a fused) path uses the `fscale` constant above the
-    // fused kernel — keep them in step.
+    // FULL RATIONALE at the ACTIVE scale point: the `fscale` constant
+    // above the L5a fused kernel — keep the two in step.
     //==================================================================
     force=-1.0*(Fdet1 + Fdet2);
 #endif // ===== end SUPERSEDED (L5a) region =====
