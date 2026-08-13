@@ -16,6 +16,7 @@ NAMESPACE_BEGIN(Grid);
   Modified for a multi-subset smearing (aka Luscher Flowed HMC)
 */
 #define DEBUG
+#undef DEBUG
 //#define DEBUG
 // With DEBUG defined, the DEFAULT force/Jacobian routines self-check every
 // component against the `int old` reference overloads and print norm diffs
