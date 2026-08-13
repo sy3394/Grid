@@ -71,6 +71,12 @@ private:
   std::vector<GeneralLocalStencil> gStencils_plqforce;  //  6 per (mu,nu) pair, 3-4 entries
   std::vector<GeneralLocalStencil> gStencils_rectforce; // 10 per (mu,nu) pair, 6 entries
   std::vector<GeneralLocalStencil> gStencils_plqsmear;  //  1 per mu, 6 entries per nu!=mu (plq staple)
+  // L5a fused nu-loop stencils: one per mu covering all nu and all terms.
+  // Uniform per-term stride (plq 5, rect 7); the LAST entry of each term is
+  // the dJdXe/MpInvJx offset that replaced the former Cshift. Entry order
+  // must match the fused kernels in logDetJacobianForceLevel.
+  std::vector<GeneralLocalStencil> gStencilFusedPlq;  // base = (nuc*6+term)*5
+  std::vector<GeneralLocalStencil> gStencilFusedRect; // base = (nuc*10+term)*7
 
   // Lever 4: compression of the sitewise-dense sections. Half-volume
   // container grid (pure storage — no stencil/Cshift ever runs on
@@ -540,6 +546,43 @@ private:
   // The site-local real-part inverse used inside the fused force kernel
   // lives in Lattice_trace.h (Inverse_RealPartSite), next to LUdcmp/solve
   // and Inverse_RealPart, which is now implemented on top of it.
+
+  // L5a site-local helpers for the fused nu kernel. Per-site ComputeNxy IS
+  // the two-argument SU3::LieAlgebraProject. This is the per-site
+  // Compute_MpInvJx_dNxxdSy (same conventions: ta = i t^a of this class,
+  // T'^c = 2i t^c internal to the one-argument LieAlgebraProject):
+  template<class cmat, class amat, class avec>
+  static accelerator_inline void MpInvJxdNxxdSySite(avec &out, const cmat &L, const cmat &R, const amat &MJ)
+  {
+    Complex ci(0,1);
+    ColourMatrix ta;
+    amat Dbc;
+    for(int a=0;a<8;a++){
+      SU3::generator(a, ta);
+      ta = ci * ta;
+      auto UtaU = adj(L)*ta*R;
+      SU3::LieAlgebraProject(Dbc,UtaU);
+      out()()(a) = traceProduct(MJ,Dbc)()()();
+    }
+  }
+  // Per-site InsertForce: adjoint vector -> colour matrix polarisation.
+  // (componentwise: a raw simd scalar times a scalar tensor has no Grid
+  // operator, so multiply entries explicitly)
+  template<class cmat, class avec>
+  static accelerator_inline void InsertForceSite(cmat &out, const avec &F)
+  {
+    Complex ci(0,1);
+    ColourMatrix te;
+    out = Zero();
+    for(int e=0;e<8;e++){
+      SU3::generator(e, te);
+      te = ci*te;
+      auto fe = F()()(e);
+      for(int i=0;i<Nc;i++)
+	for(int j=0;j<Nc;j++)
+	  out()()(i,j) = out()()(i,j) + fe*te()()(i,j);
+    }
+  }
 
   void linkTracer(const std::vector<GaugeLinkField> &Umu, const GaugeLinkField &Umskd, const std::vector<int> dirs0, int ind, Real rho, GaugeLinkField &rect){
     // dir in dirs is 1+mu where mu=0,..3 to put sign on dir
@@ -1325,18 +1368,9 @@ public:
     //   This is because InertForce come with extra factor of -1, which can be adjasted
     // The overall minus sign in force is necessary: Trivializing Maps, the Wilson Flow and the HMC Algorithm (Lushcer) Eq. (6.1)
     //==================================================================
-    // FIXME EXTRA-FACTOR-2 (deliberately PARKED, 2026-07-14):
-    // FD tests prove this force is 2x dS/dU for BOTH kernels
-    // (tests/forces/Test_rect_fd_level0: eps->0 limit of dS/dSpred = 1/2;
-    // the lndet side is absolutely correct per tests/forces/Test_rect_numjac,
-    // so the 1/2 belongs HERE: the correct scale is -0.5).
-    // The factor is RESTORED to -1.0 for now so the force matches the
-    // production normalisation of GaugeConfigurationMasked.h (which carries
-    // the same factor 2) during consistency checking against production.
-    // TO APPLY THE PHYSICS FIX: change -1.0 -> -0.5 at BOTH occurrences of
-    // this comment block (default and int-old overloads), after which
-    // Test_rect_fd_gate passes with quadratic ratios and
-    // Test_rect_vs_masked_plq reports |dF|^2/|F|^2 = 1/4 vs unfixed Masked.
+    // FIXME EXTRA-FACTOR-2 (deliberately PARKED): this old overload keeps
+    // -1.0 in step with the ACTIVE path. FULL RATIONALE + evidence at the
+    // `fscale` constant above the L5a fused kernel in the default routine.
     //==================================================================
     force=-1.0*(Fdet1 + Fdet2);
     RealD t1 = usecond();
@@ -1641,6 +1675,382 @@ public:
     // (the old "mask it off" of dJdXe_nMpInv is now performed by the
     // zero-filled setActive scatter above)
 
+    ///////////////////////////////////////////////////////////////////
+    // L5a: the whole nu loop as ONE fused kernel per kernel type.
+    // dJdXe_nMpInv and MpInvJx are exchanged into the depth-2 padded
+    // cell once; every former Cshift is an in-kernel offset read (the
+    // last stencil entry of each term). Each thread accumulates all
+    // terms of its own site in registers (gather form -> no races,
+    // deterministic term order) and writes the FINAL scaled force for
+    // its nu components plus the mu-polarisation loop sum.
+    ///////////////////////////////////////////////////////////////////
+    //==================================================================
+    // FIXME EXTRA-FACTOR-2 (deliberately PARKED) — the single scale point
+    // of the ACTIVE force path. Evidence (2026-07-13/14, in check logs and
+    // tests/forces/):
+    //  * Test_rect_fd_level0: the eps->0 (Richardson) limit of dS/dSpred
+    //    is 1/2 for BOTH kernels, at level grain and in the totals, i.e.
+    //    at fscale = -1.0 this force is exactly 2x dS/dU. (The historical
+    //    impression that the plq force was consistent came from a
+    //    curvature coincidence at eps=0.01; Test_rfthmc never swept eps.)
+    //  * Test_rect_numjac: the lndet is correct ABSOLUTELY (brute-force
+    //    numerical Jacobian of the production map), so the 1/2 belongs to
+    //    the force, not the action.
+    //  * The same statement holds for GaugeConfigurationMasked.h
+    //    (identical net normalisation; verified by direct FD there).
+    // THE CORRECT SCALE IS -0.5. It is PARKED at -1.0 so the force
+    // matches the production normalisation during consistency checks
+    // against production. TO APPLY THE FIX: set fscale = -0.5 here and
+    // make the same change at the (to-be-deleted) old overload's
+    // force=-1.0*(...) line so old-vs-default checks stay meaningful.
+    // Afterwards Test_rect_fd_gate passes with quadratic ratios, and
+    // Test_rect_vs_masked_plq reports |dF|^2/|F|^2 = 1/4 vs an unfixed
+    // Masked (it prints a HINT for exactly that signature).
+    // Consequences while parked: ensembles are EXACT (Metropolis absorbs
+    // force errors; the action is right) — only acceptance suffers.
+    //==================================================================
+    const RealD fscale = -1.0;
+
+    RealD t4 = usecond();
+    AdjVectorField gdJdXe(grid);
+    AdjMatrixField gMpInvJx(grid);
+    {
+      GRID_TRACE("ExchangeAdjointRect");
+      gdJdXe   = GhostRect.ExchangePeriodic(dJdXe_nMpInv);
+      gMpInvJx = GhostRect.ExchangePeriodic(MpInvJx);
+    }
+    GaugeField      gForce(ggrid);
+    AdjVectorField  gFmu_loop(ggrid);
+    {
+      GRID_TRACE("NuLoopFused");
+      autoView(gF_v,   gForce,    AcceleratorWrite);
+      autoView(gFmu_v, gFmu_loop, AcceleratorWrite);
+      autoView(gdJ_v,  gdJdXe,    AcceleratorRead);
+      autoView(gMJ_v,  gMpInvJx,  AcceleratorRead);
+      autoView(gMsk_v, gUtmp,     AcceleratorRead);
+      autoView(gV0_v,  gUmu[0],   AcceleratorRead);
+      autoView(gV1_v,  gUmu[1],   AcceleratorRead);
+      autoView(gV2_v,  gUmu[2],   AcceleratorRead);
+      autoView(gV3_v,  gUmu[3],   AcceleratorRead);
+
+      if (flw_knl==1) {
+	autoView(gSt_v, gStencilFusedPlq[mu], AcceleratorRead);
+	accelerator_for(ss, ggrid->oSites(), ggrid->Nsimd(), {
+	    typedef decltype(coalescedRead(gdJ_v[0]))  adj_vec;
+	    typedef decltype(coalescedRead(gMJ_v[0]))  adj_mat;
+	    typedef decltype(coalescedRead(gMsk_v[0])) cmat;
+	    typedef decltype(coalescedRead(gF_v[0]))   lorentz_cm;
+
+	    const auto &gVm_v = (mu==0)?gV0_v:(mu==1)?gV1_v:(mu==2)?gV2_v:gV3_v;
+	    cmat One; One = ComplexD(1.0);
+	    lorentz_cm Fout; Fout = Zero();
+	    adj_vec Fmu_loop; Fmu_loop = Zero();
+	    adj_vec Fnu, dj, f2;
+	    adj_mat Nxy, mj;
+	    cmat PlaqL, PlaqR, pol;
+	    GeneralStencilEntry const *e;
+	    int nuc = 0;
+	    for(int nu=0;nu<Nd;nu++){
+	      if (nu==mu) continue;
+	      const auto &gVn_v = (nu==0)?gV0_v:(nu==1)?gV1_v:(nu==2)?gV2_v:gV3_v;
+	      int b;
+	      // ---- P1: R = -rho U_nu(x) U_mu(x+nu) U_nu^d(x+mu) msk^d(x); L = 1
+	      b = (nuc*6+0)*5;
+	      e=gSt_v.GetEntry(b+0,ss); auto p1a0 =     coalescedReadGeneralPermute(gVn_v[e->_offset],e->_permute,Nd);
+	      e=gSt_v.GetEntry(b+1,ss); auto p1a1 =     coalescedReadGeneralPermute(gVm_v[e->_offset],e->_permute,Nd);
+	      e=gSt_v.GetEntry(b+2,ss); auto p1a2 = adj(coalescedReadGeneralPermute(gVn_v[e->_offset],e->_permute,Nd));
+	      e=gSt_v.GetEntry(b+3,ss); auto p1a3 = adj(coalescedReadGeneralPermute(gMsk_v[e->_offset],e->_permute,Nd));
+	      e=gSt_v.GetEntry(b+4,ss); dj =           coalescedReadGeneralPermute(gdJ_v[e->_offset],e->_permute,Nd);
+	      mj =                                     coalescedReadGeneralPermute(gMJ_v[e->_offset],e->_permute,Nd);
+	      PlaqR = (-rho)*p1a0*p1a1*p1a2*p1a3;
+	      SU3::LieAlgebraProject(Nxy, One, PlaqR);
+	      Fnu = transpose(Nxy)*dj;
+	      PlaqL = (-1.0)*PlaqR;
+	      MpInvJxdNxxdSySite(f2, One, PlaqL, mj);
+	      Fnu = Fnu + f2;
+	      // ---- P2: R = rho U_nu(x) U_mu^d(x-mu+nu) U_nu^d(x-mu); L = msk^d(x-mu)
+	      b = (nuc*6+1)*5;
+	      e=gSt_v.GetEntry(b+0,ss); auto p2a0 =     coalescedReadGeneralPermute(gVn_v[e->_offset],e->_permute,Nd);
+	      e=gSt_v.GetEntry(b+1,ss); auto p2a1 = adj(coalescedReadGeneralPermute(gVm_v[e->_offset],e->_permute,Nd));
+	      e=gSt_v.GetEntry(b+2,ss); auto p2a2 = adj(coalescedReadGeneralPermute(gVn_v[e->_offset],e->_permute,Nd));
+	      e=gSt_v.GetEntry(b+3,ss); auto p2a3 = adj(coalescedReadGeneralPermute(gMsk_v[e->_offset],e->_permute,Nd));
+	      e=gSt_v.GetEntry(b+4,ss); dj =           coalescedReadGeneralPermute(gdJ_v[e->_offset],e->_permute,Nd);
+	      mj =                                     coalescedReadGeneralPermute(gMJ_v[e->_offset],e->_permute,Nd);
+	      PlaqR = (rho)*p2a0*p2a1*p2a2;
+	      PlaqL = p2a3;
+	      SU3::LieAlgebraProject(Nxy, PlaqL, PlaqR);
+	      Fnu = Fnu + transpose(Nxy)*dj;
+	      MpInvJxdNxxdSySite(f2, PlaqL, PlaqR, mj);
+	      Fnu = Fnu + f2;
+	      // ---- P3: L = rho U_mu(x) U_nu(x+mu) msk^d(x+nu); R = U_nu(x)
+	      b = (nuc*6+2)*5;
+	      e=gSt_v.GetEntry(b+0,ss); auto p3a0 =     coalescedReadGeneralPermute(gVm_v[e->_offset],e->_permute,Nd);
+	      PlaqR =                                   coalescedReadGeneralPermute(gVn_v[e->_offset],e->_permute,Nd);
+	      e=gSt_v.GetEntry(b+1,ss); auto p3a1 =     coalescedReadGeneralPermute(gVn_v[e->_offset],e->_permute,Nd);
+	      e=gSt_v.GetEntry(b+2,ss); auto p3a2 = adj(coalescedReadGeneralPermute(gMsk_v[e->_offset],e->_permute,Nd));
+	      e=gSt_v.GetEntry(b+4,ss); dj =           coalescedReadGeneralPermute(gdJ_v[e->_offset],e->_permute,Nd);
+	      mj =                                     coalescedReadGeneralPermute(gMJ_v[e->_offset],e->_permute,Nd);
+	      PlaqL = (rho)*p3a0*p3a1*p3a2;
+	      SU3::LieAlgebraProject(Nxy, PlaqL, PlaqR);
+	      Fnu = Fnu + transpose(Nxy)*dj;
+	      MpInvJxdNxxdSySite(f2, PlaqL, PlaqR, mj);
+	      Fnu = Fnu + f2;
+	      // ---- P4: L = -rho U_nu(x) msk^d(x-mu+nu); R = U_mu^d(x-mu) U_nu(x-mu)
+	      b = (nuc*6+3)*5;
+	      e=gSt_v.GetEntry(b+0,ss); auto p4a0 =     coalescedReadGeneralPermute(gVn_v[e->_offset],e->_permute,Nd);
+	      e=gSt_v.GetEntry(b+1,ss); auto p4a1 = adj(coalescedReadGeneralPermute(gMsk_v[e->_offset],e->_permute,Nd));
+	      e=gSt_v.GetEntry(b+2,ss); auto p4a2 = adj(coalescedReadGeneralPermute(gVm_v[e->_offset],e->_permute,Nd));
+	      e=gSt_v.GetEntry(b+3,ss); auto p4a3 =     coalescedReadGeneralPermute(gVn_v[e->_offset],e->_permute,Nd);
+	      e=gSt_v.GetEntry(b+4,ss); dj =           coalescedReadGeneralPermute(gdJ_v[e->_offset],e->_permute,Nd);
+	      mj =                                     coalescedReadGeneralPermute(gMJ_v[e->_offset],e->_permute,Nd);
+	      PlaqL = (-rho)*p4a0*p4a1;
+	      PlaqR = p4a2*p4a3;
+	      SU3::LieAlgebraProject(Nxy, PlaqL, PlaqR);
+	      Fnu = Fnu + transpose(Nxy)*dj;
+	      MpInvJxdNxxdSySite(f2, PlaqL, PlaqR, mj);
+	      Fnu = Fnu + f2;
+	      // ---- P5 (mu pol): L = -rho U_mu(x) U_nu^d(x+mu-nu) msk^d(x-nu); R = U_nu^d(x-nu)
+	      b = (nuc*6+4)*5;
+	      e=gSt_v.GetEntry(b+0,ss); auto p5a0 =     coalescedReadGeneralPermute(gVm_v[e->_offset],e->_permute,Nd);
+	      e=gSt_v.GetEntry(b+1,ss); auto p5a1 = adj(coalescedReadGeneralPermute(gVn_v[e->_offset],e->_permute,Nd));
+	      e=gSt_v.GetEntry(b+2,ss); auto p5a2 = adj(coalescedReadGeneralPermute(gMsk_v[e->_offset],e->_permute,Nd));
+	      e=gSt_v.GetEntry(b+3,ss); auto p5a3 = adj(coalescedReadGeneralPermute(gVn_v[e->_offset],e->_permute,Nd));
+	      e=gSt_v.GetEntry(b+4,ss); dj =           coalescedReadGeneralPermute(gdJ_v[e->_offset],e->_permute,Nd);
+	      mj =                                     coalescedReadGeneralPermute(gMJ_v[e->_offset],e->_permute,Nd);
+	      PlaqL = (-rho)*p5a0*p5a1*p5a2;
+	      PlaqR = p5a3;
+	      SU3::LieAlgebraProject(Nxy, PlaqL, PlaqR);
+	      Fmu_loop = Fmu_loop + transpose(Nxy)*dj;
+	      MpInvJxdNxxdSySite(f2, PlaqL, PlaqR, mj);
+	      Fmu_loop = Fmu_loop + f2;
+	      // ---- P6 (mu pol): L = -rho U_mu(x) U_nu(x+mu) msk^d(x+nu); R = U_nu(x)
+	      b = (nuc*6+5)*5;
+	      e=gSt_v.GetEntry(b+0,ss); auto p6a0 =     coalescedReadGeneralPermute(gVm_v[e->_offset],e->_permute,Nd);
+	      PlaqR =                                   coalescedReadGeneralPermute(gVn_v[e->_offset],e->_permute,Nd);
+	      e=gSt_v.GetEntry(b+1,ss); auto p6a1 =     coalescedReadGeneralPermute(gVn_v[e->_offset],e->_permute,Nd);
+	      e=gSt_v.GetEntry(b+2,ss); auto p6a2 = adj(coalescedReadGeneralPermute(gMsk_v[e->_offset],e->_permute,Nd));
+	      e=gSt_v.GetEntry(b+4,ss); dj =           coalescedReadGeneralPermute(gdJ_v[e->_offset],e->_permute,Nd);
+	      mj =                                     coalescedReadGeneralPermute(gMJ_v[e->_offset],e->_permute,Nd);
+	      PlaqL = (-rho)*p6a0*p6a1*p6a2;
+	      SU3::LieAlgebraProject(Nxy, PlaqL, PlaqR);
+	      Fmu_loop = Fmu_loop + transpose(Nxy)*dj;
+	      MpInvJxdNxxdSySite(f2, PlaqL, PlaqR, mj);
+	      Fmu_loop = Fmu_loop + f2;
+
+	      InsertForceSite(pol, Fnu);
+	      Fout(nu) = fscale*pol(); // peel one iScalar: Lorentz component depth
+	      nuc++;
+	    }
+	    coalescedWrite(gF_v[ss], Fout);
+	    coalescedWrite(gFmu_v[ss], Fmu_loop);
+	  });
+      } else {
+	autoView(gSt_v, gStencilFusedRect[mu], AcceleratorRead);
+	accelerator_for(ss, ggrid->oSites(), ggrid->Nsimd(), {
+	    typedef decltype(coalescedRead(gdJ_v[0]))  adj_vec;
+	    typedef decltype(coalescedRead(gMJ_v[0]))  adj_mat;
+	    typedef decltype(coalescedRead(gMsk_v[0])) cmat;
+	    typedef decltype(coalescedRead(gF_v[0]))   lorentz_cm;
+
+	    const auto &gVm_v = (mu==0)?gV0_v:(mu==1)?gV1_v:(mu==2)?gV2_v:gV3_v;
+	    cmat One; One = ComplexD(1.0);
+	    lorentz_cm Fout; Fout = Zero();
+	    adj_vec Fmu_loop; Fmu_loop = Zero();
+	    adj_vec Fnu, dj, f2;
+	    adj_mat Nxy, mj;
+	    cmat PlaqL, PlaqR, pol;
+	    GeneralStencilEntry const *e;
+	    int nuc = 0;
+	    for(int nu=0;nu<Nd;nu++){
+	      if (nu==mu) continue;
+	      const auto &gVn_v = (nu==0)?gV0_v:(nu==1)?gV1_v:(nu==2)?gV2_v:gV3_v;
+	      int b;
+	      // ---- R1: R = -rho U_nu(0,0) U_nu(0,1) U_mu(0,2) U_nu^d(1,1) U_nu^d(1,0) msk^d(0,0); L = 1; SWAPPED Fdet2
+	      b = (nuc*10+0)*7;
+	      e=gSt_v.GetEntry(b+0,ss); auto r1a0 =     coalescedReadGeneralPermute(gVn_v[e->_offset],e->_permute,Nd);
+	      e=gSt_v.GetEntry(b+1,ss); auto r1a1 =     coalescedReadGeneralPermute(gVn_v[e->_offset],e->_permute,Nd);
+	      e=gSt_v.GetEntry(b+2,ss); auto r1a2 =     coalescedReadGeneralPermute(gVm_v[e->_offset],e->_permute,Nd);
+	      e=gSt_v.GetEntry(b+3,ss); auto r1a3 = adj(coalescedReadGeneralPermute(gVn_v[e->_offset],e->_permute,Nd));
+	      e=gSt_v.GetEntry(b+4,ss); auto r1a4 = adj(coalescedReadGeneralPermute(gVn_v[e->_offset],e->_permute,Nd));
+	      e=gSt_v.GetEntry(b+5,ss); auto r1a5 = adj(coalescedReadGeneralPermute(gMsk_v[e->_offset],e->_permute,Nd));
+	      e=gSt_v.GetEntry(b+6,ss); dj =           coalescedReadGeneralPermute(gdJ_v[e->_offset],e->_permute,Nd);
+	      mj =                                     coalescedReadGeneralPermute(gMJ_v[e->_offset],e->_permute,Nd);
+	      PlaqR = (-rho)*r1a0*r1a1*r1a2*r1a3*r1a4*r1a5;
+	      SU3::LieAlgebraProject(Nxy, One, PlaqR);
+	      Fnu = transpose(Nxy)*dj;
+	      MpInvJxdNxxdSySite(f2, PlaqR, One, mj);
+	      Fnu = Fnu + f2;
+	      // ---- R2: R = rho U_nu(0,0) U_nu(0,1) U_mu^d(-1,2) U_nu^d(-1,1) U_nu^d(-1,0); L = msk^d(-1,0)
+	      b = (nuc*10+1)*7;
+	      e=gSt_v.GetEntry(b+0,ss); auto r2a0 =     coalescedReadGeneralPermute(gVn_v[e->_offset],e->_permute,Nd);
+	      e=gSt_v.GetEntry(b+1,ss); auto r2a1 =     coalescedReadGeneralPermute(gVn_v[e->_offset],e->_permute,Nd);
+	      e=gSt_v.GetEntry(b+2,ss); auto r2a2 = adj(coalescedReadGeneralPermute(gVm_v[e->_offset],e->_permute,Nd));
+	      e=gSt_v.GetEntry(b+3,ss); auto r2a3 = adj(coalescedReadGeneralPermute(gVn_v[e->_offset],e->_permute,Nd));
+	      e=gSt_v.GetEntry(b+4,ss); auto r2a4 = adj(coalescedReadGeneralPermute(gVn_v[e->_offset],e->_permute,Nd));
+	      e=gSt_v.GetEntry(b+5,ss); auto r2a5 = adj(coalescedReadGeneralPermute(gMsk_v[e->_offset],e->_permute,Nd));
+	      e=gSt_v.GetEntry(b+6,ss); dj =           coalescedReadGeneralPermute(gdJ_v[e->_offset],e->_permute,Nd);
+	      mj =                                     coalescedReadGeneralPermute(gMJ_v[e->_offset],e->_permute,Nd);
+	      PlaqR = (rho)*r2a0*r2a1*r2a2*r2a3*r2a4;
+	      PlaqL = r2a5;
+	      SU3::LieAlgebraProject(Nxy, PlaqL, PlaqR);
+	      Fnu = Fnu + transpose(Nxy)*dj;
+	      MpInvJxdNxxdSySite(f2, PlaqL, PlaqR, mj);
+	      Fnu = Fnu + f2;
+	      // ---- R3: R = -rho U_nu(0,0) U_mu(0,1) U_nu^d(1,0) U_nu^d(1,-1) msk^d(0,-1); L = U_nu^d(0,-1); SWAPPED Fdet2
+	      b = (nuc*10+2)*7;
+	      e=gSt_v.GetEntry(b+0,ss); auto r3a0 =     coalescedReadGeneralPermute(gVn_v[e->_offset],e->_permute,Nd);
+	      e=gSt_v.GetEntry(b+1,ss); auto r3a1 =     coalescedReadGeneralPermute(gVm_v[e->_offset],e->_permute,Nd);
+	      e=gSt_v.GetEntry(b+2,ss); auto r3a2 = adj(coalescedReadGeneralPermute(gVn_v[e->_offset],e->_permute,Nd));
+	      e=gSt_v.GetEntry(b+3,ss); auto r3a3 = adj(coalescedReadGeneralPermute(gVn_v[e->_offset],e->_permute,Nd));
+	      e=gSt_v.GetEntry(b+4,ss); auto r3a4 = adj(coalescedReadGeneralPermute(gMsk_v[e->_offset],e->_permute,Nd));
+	      e=gSt_v.GetEntry(b+5,ss); auto r3a5 = adj(coalescedReadGeneralPermute(gVn_v[e->_offset],e->_permute,Nd));
+	      e=gSt_v.GetEntry(b+6,ss); dj =           coalescedReadGeneralPermute(gdJ_v[e->_offset],e->_permute,Nd);
+	      mj =                                     coalescedReadGeneralPermute(gMJ_v[e->_offset],e->_permute,Nd);
+	      PlaqR = (-rho)*r3a0*r3a1*r3a2*r3a3*r3a4;
+	      PlaqL = r3a5;
+	      SU3::LieAlgebraProject(Nxy, PlaqL, PlaqR);
+	      Fnu = Fnu + transpose(Nxy)*dj;
+	      MpInvJxdNxxdSySite(f2, PlaqR, PlaqL, mj);
+	      Fnu = Fnu + f2;
+	      // ---- R4: R = rho U_nu(0,0) U_mu^d(-1,1) U_nu^d(-1,0) U_nu^d(-1,-1); L = U_nu^d(0,-1) msk^d(-1,-1)
+	      b = (nuc*10+3)*7;
+	      e=gSt_v.GetEntry(b+0,ss); auto r4a0 =     coalescedReadGeneralPermute(gVn_v[e->_offset],e->_permute,Nd);
+	      e=gSt_v.GetEntry(b+1,ss); auto r4a1 = adj(coalescedReadGeneralPermute(gVm_v[e->_offset],e->_permute,Nd));
+	      e=gSt_v.GetEntry(b+2,ss); auto r4a2 = adj(coalescedReadGeneralPermute(gVn_v[e->_offset],e->_permute,Nd));
+	      e=gSt_v.GetEntry(b+3,ss); auto r4a3 = adj(coalescedReadGeneralPermute(gVn_v[e->_offset],e->_permute,Nd));
+	      e=gSt_v.GetEntry(b+4,ss); auto r4a4 = adj(coalescedReadGeneralPermute(gVn_v[e->_offset],e->_permute,Nd));
+	      e=gSt_v.GetEntry(b+5,ss); auto r4a5 = adj(coalescedReadGeneralPermute(gMsk_v[e->_offset],e->_permute,Nd));
+	      e=gSt_v.GetEntry(b+6,ss); dj =           coalescedReadGeneralPermute(gdJ_v[e->_offset],e->_permute,Nd);
+	      mj =                                     coalescedReadGeneralPermute(gMJ_v[e->_offset],e->_permute,Nd);
+	      PlaqR = (rho)*r4a0*r4a1*r4a2*r4a3;
+	      PlaqL = r4a4*r4a5;
+	      SU3::LieAlgebraProject(Nxy, PlaqL, PlaqR);
+	      Fnu = Fnu + transpose(Nxy)*dj;
+	      MpInvJxdNxxdSySite(f2, PlaqL, PlaqR, mj);
+	      Fnu = Fnu + f2;
+	      // ---- R5: L = rho U_nu^d(0,-1) U_mu(0,-1) U_nu(1,-1) U_nu(1,0) msk^d(0,1); R = U_nu(0,0)
+	      b = (nuc*10+4)*7;
+	      e=gSt_v.GetEntry(b+0,ss); auto r5a0 = adj(coalescedReadGeneralPermute(gVn_v[e->_offset],e->_permute,Nd));
+	      e=gSt_v.GetEntry(b+1,ss); auto r5a1 =     coalescedReadGeneralPermute(gVm_v[e->_offset],e->_permute,Nd);
+	      e=gSt_v.GetEntry(b+2,ss); auto r5a2 =     coalescedReadGeneralPermute(gVn_v[e->_offset],e->_permute,Nd);
+	      e=gSt_v.GetEntry(b+3,ss); auto r5a3 =     coalescedReadGeneralPermute(gVn_v[e->_offset],e->_permute,Nd);
+	      e=gSt_v.GetEntry(b+4,ss); auto r5a4 = adj(coalescedReadGeneralPermute(gMsk_v[e->_offset],e->_permute,Nd));
+	      e=gSt_v.GetEntry(b+5,ss); PlaqR =        coalescedReadGeneralPermute(gVn_v[e->_offset],e->_permute,Nd);
+	      e=gSt_v.GetEntry(b+6,ss); dj =           coalescedReadGeneralPermute(gdJ_v[e->_offset],e->_permute,Nd);
+	      mj =                                     coalescedReadGeneralPermute(gMJ_v[e->_offset],e->_permute,Nd);
+	      PlaqL = (rho)*r5a0*r5a1*r5a2*r5a3*r5a4;
+	      SU3::LieAlgebraProject(Nxy, PlaqL, PlaqR);
+	      Fnu = Fnu + transpose(Nxy)*dj;
+	      MpInvJxdNxxdSySite(f2, PlaqL, PlaqR, mj);
+	      Fnu = Fnu + f2;
+	      // ---- R6: L = -rho U_nu^d(0,-1) U_mu^d(-1,-1) U_nu(-1,-1) U_nu(-1,0); R = U_nu(0,0) msk^d(-1,1); SWAPPED Fdet2
+	      b = (nuc*10+5)*7;
+	      e=gSt_v.GetEntry(b+0,ss); auto r6a0 = adj(coalescedReadGeneralPermute(gVn_v[e->_offset],e->_permute,Nd));
+	      e=gSt_v.GetEntry(b+1,ss); auto r6a1 = adj(coalescedReadGeneralPermute(gVm_v[e->_offset],e->_permute,Nd));
+	      e=gSt_v.GetEntry(b+2,ss); auto r6a2 =     coalescedReadGeneralPermute(gVn_v[e->_offset],e->_permute,Nd);
+	      e=gSt_v.GetEntry(b+3,ss); auto r6a3 =     coalescedReadGeneralPermute(gVn_v[e->_offset],e->_permute,Nd);
+	      e=gSt_v.GetEntry(b+4,ss); auto r6a4 =     coalescedReadGeneralPermute(gVn_v[e->_offset],e->_permute,Nd);
+	      e=gSt_v.GetEntry(b+5,ss); auto r6a5 = adj(coalescedReadGeneralPermute(gMsk_v[e->_offset],e->_permute,Nd));
+	      e=gSt_v.GetEntry(b+6,ss); dj =           coalescedReadGeneralPermute(gdJ_v[e->_offset],e->_permute,Nd);
+	      mj =                                     coalescedReadGeneralPermute(gMJ_v[e->_offset],e->_permute,Nd);
+	      PlaqL = (-rho)*r6a0*r6a1*r6a2*r6a3;
+	      PlaqR = r6a4*r6a5;
+	      SU3::LieAlgebraProject(Nxy, PlaqL, PlaqR);
+	      Fnu = Fnu + transpose(Nxy)*dj;
+	      MpInvJxdNxxdSySite(f2, PlaqR, PlaqL, mj);
+	      Fnu = Fnu + f2;
+	      // ---- R7: L = U_mu(0,0) U_nu(1,0) U_nu(1,1) msk^d(0,2); R = rho U_nu(0,0) U_nu(0,1)
+	      b = (nuc*10+6)*7;
+	      e=gSt_v.GetEntry(b+0,ss); auto r7a0 =     coalescedReadGeneralPermute(gVm_v[e->_offset],e->_permute,Nd);
+	      e=gSt_v.GetEntry(b+1,ss); auto r7a1 =     coalescedReadGeneralPermute(gVn_v[e->_offset],e->_permute,Nd);
+	      e=gSt_v.GetEntry(b+2,ss); auto r7a2 =     coalescedReadGeneralPermute(gVn_v[e->_offset],e->_permute,Nd);
+	      e=gSt_v.GetEntry(b+3,ss); auto r7a3 = adj(coalescedReadGeneralPermute(gMsk_v[e->_offset],e->_permute,Nd));
+	      e=gSt_v.GetEntry(b+4,ss); auto r7a4 =     coalescedReadGeneralPermute(gVn_v[e->_offset],e->_permute,Nd);
+	      e=gSt_v.GetEntry(b+5,ss); auto r7a5 =     coalescedReadGeneralPermute(gVn_v[e->_offset],e->_permute,Nd);
+	      e=gSt_v.GetEntry(b+6,ss); dj =           coalescedReadGeneralPermute(gdJ_v[e->_offset],e->_permute,Nd);
+	      mj =                                     coalescedReadGeneralPermute(gMJ_v[e->_offset],e->_permute,Nd);
+	      PlaqL = r7a0*r7a1*r7a2*r7a3;
+	      PlaqR = (rho)*r7a4*r7a5;
+	      SU3::LieAlgebraProject(Nxy, PlaqL, PlaqR);
+	      Fnu = Fnu + transpose(Nxy)*dj;
+	      MpInvJxdNxxdSySite(f2, PlaqL, PlaqR, mj);
+	      Fnu = Fnu + f2;
+	      // ---- R8: L = U_mu^d(-1,0) U_nu(-1,0) U_nu(-1,1); R = -rho U_nu(0,0) U_nu(0,1) msk^d(-1,2); SWAPPED Fdet2
+	      b = (nuc*10+7)*7;
+	      e=gSt_v.GetEntry(b+0,ss); auto r8a0 = adj(coalescedReadGeneralPermute(gVm_v[e->_offset],e->_permute,Nd));
+	      e=gSt_v.GetEntry(b+1,ss); auto r8a1 =     coalescedReadGeneralPermute(gVn_v[e->_offset],e->_permute,Nd);
+	      e=gSt_v.GetEntry(b+2,ss); auto r8a2 =     coalescedReadGeneralPermute(gVn_v[e->_offset],e->_permute,Nd);
+	      e=gSt_v.GetEntry(b+3,ss); auto r8a3 =     coalescedReadGeneralPermute(gVn_v[e->_offset],e->_permute,Nd);
+	      e=gSt_v.GetEntry(b+4,ss); auto r8a4 =     coalescedReadGeneralPermute(gVn_v[e->_offset],e->_permute,Nd);
+	      e=gSt_v.GetEntry(b+5,ss); auto r8a5 = adj(coalescedReadGeneralPermute(gMsk_v[e->_offset],e->_permute,Nd));
+	      e=gSt_v.GetEntry(b+6,ss); dj =           coalescedReadGeneralPermute(gdJ_v[e->_offset],e->_permute,Nd);
+	      mj =                                     coalescedReadGeneralPermute(gMJ_v[e->_offset],e->_permute,Nd);
+	      PlaqL = r8a0*r8a1*r8a2;
+	      PlaqR = (-rho)*r8a3*r8a4*r8a5;
+	      SU3::LieAlgebraProject(Nxy, PlaqL, PlaqR);
+	      Fnu = Fnu + transpose(Nxy)*dj;
+	      MpInvJxdNxxdSySite(f2, PlaqR, PlaqL, mj);
+	      Fnu = Fnu + f2;
+	      // ---- R9 (mu pol): L = U_nu^d(0,-1) U_nu^d(0,-2); R = -rho U_mu(0,0) U_nu^d(1,-1) U_nu^d(1,-2) msk^d(0,-2); SWAPPED Fdet2
+	      b = (nuc*10+8)*7;
+	      e=gSt_v.GetEntry(b+0,ss); auto r9a0 = adj(coalescedReadGeneralPermute(gVn_v[e->_offset],e->_permute,Nd));
+	      e=gSt_v.GetEntry(b+1,ss); auto r9a1 = adj(coalescedReadGeneralPermute(gVn_v[e->_offset],e->_permute,Nd));
+	      e=gSt_v.GetEntry(b+2,ss); auto r9a2 =     coalescedReadGeneralPermute(gVm_v[e->_offset],e->_permute,Nd);
+	      e=gSt_v.GetEntry(b+3,ss); auto r9a3 = adj(coalescedReadGeneralPermute(gVn_v[e->_offset],e->_permute,Nd));
+	      e=gSt_v.GetEntry(b+4,ss); auto r9a4 = adj(coalescedReadGeneralPermute(gVn_v[e->_offset],e->_permute,Nd));
+	      e=gSt_v.GetEntry(b+5,ss); auto r9a5 = adj(coalescedReadGeneralPermute(gMsk_v[e->_offset],e->_permute,Nd));
+	      e=gSt_v.GetEntry(b+6,ss); dj =           coalescedReadGeneralPermute(gdJ_v[e->_offset],e->_permute,Nd);
+	      mj =                                     coalescedReadGeneralPermute(gMJ_v[e->_offset],e->_permute,Nd);
+	      PlaqL = r9a0*r9a1;
+	      PlaqR = (-rho)*r9a2*r9a3*r9a4*r9a5;
+	      SU3::LieAlgebraProject(Nxy, PlaqL, PlaqR);
+	      Fmu_loop = Fmu_loop + transpose(Nxy)*dj;
+	      MpInvJxdNxxdSySite(f2, PlaqR, PlaqL, mj);
+	      Fmu_loop = Fmu_loop + f2;
+	      // ---- R10 (mu pol): L = U_nu(0,0) U_nu(0,1); R = -rho U_mu(0,0) U_nu(1,0) U_nu(1,1) msk^d(0,2); SWAPPED Fdet2
+	      b = (nuc*10+9)*7;
+	      e=gSt_v.GetEntry(b+0,ss); auto rAa0 =     coalescedReadGeneralPermute(gVn_v[e->_offset],e->_permute,Nd);
+	      e=gSt_v.GetEntry(b+1,ss); auto rAa1 =     coalescedReadGeneralPermute(gVn_v[e->_offset],e->_permute,Nd);
+	      e=gSt_v.GetEntry(b+2,ss); auto rAa2 =     coalescedReadGeneralPermute(gVm_v[e->_offset],e->_permute,Nd);
+	      e=gSt_v.GetEntry(b+3,ss); auto rAa3 =     coalescedReadGeneralPermute(gVn_v[e->_offset],e->_permute,Nd);
+	      e=gSt_v.GetEntry(b+4,ss); auto rAa4 =     coalescedReadGeneralPermute(gVn_v[e->_offset],e->_permute,Nd);
+	      e=gSt_v.GetEntry(b+5,ss); auto rAa5 = adj(coalescedReadGeneralPermute(gMsk_v[e->_offset],e->_permute,Nd));
+	      e=gSt_v.GetEntry(b+6,ss); dj =           coalescedReadGeneralPermute(gdJ_v[e->_offset],e->_permute,Nd);
+	      mj =                                     coalescedReadGeneralPermute(gMJ_v[e->_offset],e->_permute,Nd);
+	      PlaqL = rAa0*rAa1;
+	      PlaqR = (-rho)*rAa2*rAa3*rAa4*rAa5;
+	      SU3::LieAlgebraProject(Nxy, PlaqL, PlaqR);
+	      Fmu_loop = Fmu_loop + transpose(Nxy)*dj;
+	      MpInvJxdNxxdSySite(f2, PlaqR, PlaqL, mj);
+	      Fmu_loop = Fmu_loop + f2;
+
+	      InsertForceSite(pol, Fnu);
+	      Fout(nu) = fscale*pol(); // peel one iScalar: Lorentz component depth
+	      nuc++;
+	    }
+	    coalescedWrite(gF_v[ss], Fout);
+	    coalescedWrite(gFmu_v[ss], Fmu_loop);
+	  });
+      }
+    }
+    RealD t5 = usecond();
+    force = GhostRect.Extract(gForce);
+    {
+      GRID_TRACE("MuPolAssemble");
+      // mu component: the Fdet2 seed + the diagonal + the loop sum, one
+      // InsertForce, scaled by fscale (nu components were scaled in-kernel)
+      AdjVectorField Fmu_all(grid);
+      Fmu_all = Fdet2_mu + transpose(NxxAd)*dJdXe_nMpInv;
+      Fmu_all = Fmu_all + GhostRect.Extract(gFmu_loop);
+      GaugeLinkField mupol(grid); mupol = Zero();
+      for(int e8=0;e8<8;e8++){
+	ColourMatrix te; SU3::generator(e8,te);
+	mupol = mupol + ci*peekColour(Fmu_all,e8)*te;
+      }
+      pokeLorentz(force, (GaugeLinkField)(fscale*mupol), mu);
+    }
+
+#if 0 // ===== SUPERSEDED by the L5a fused nu kernel above — delete after review =====
     //    dJdXe_nMpInv needs to multiply:
     //       Nxx_mu (site local)                           (1)
     //       Nxy_mu one site forward  in each nu direction (3)
@@ -2320,8 +2730,11 @@ public:
     // FIXME EXTRA-FACTOR-2 (deliberately PARKED — kept in step with the
     // default routine; see the full comment block there). The correct
     // scale is -0.5; -1.0 matches production during consistency checks.
+    // FULL RATIONALE at the ACTIVE scale point: the `fscale` constant
+    // above the L5a fused kernel — keep the two in step.
     //==================================================================
     force=-1.0*(Fdet1 + Fdet2);
+#endif // ===== end SUPERSEDED (L5a) region =====
 #ifdef DEBUG
     {
       GaugeField force2(grid);
@@ -2935,6 +3348,8 @@ public:
       }
 
       for(int mu=0;mu<Nd;mu++){
+	std::vector<Coordinate> fused_plq_shifts;
+	std::vector<Coordinate> fused_rect_shifts;
 	for(int nu=0;nu<Nd;nu++){
 	  if (nu==mu) continue;
 	  auto S = [mu,nu](int amu,int anu){ Coordinate c(Nd,0); c[mu]=amu; c[nu]=anu; return c; };
@@ -2964,6 +3379,50 @@ public:
 	    shifts.clear();
 	    shifts.push_back(S(0,0)); shifts.push_back(S(1,0)); shifts.push_back(S(0,1));
 	    gStencils_plqforce.push_back(GeneralLocalStencil(ggrid,shifts));
+	  }
+	  if (has_plq) {
+	    // Fused plq stencil entries for this (mu,nu): 6 terms x 5
+	    // (4 link reads, P3/P6 padded with a dummy, + adjoint offset).
+	    // Field selection (U_mu / U_nu / msk / adjoint) is in the kernel.
+	    std::vector<Coordinate> &fp = fused_plq_shifts;
+	    // P1: U_nu(0,0) U_mu(0,1) U_nu^d(1,0) msk^d(0,0) | adj (0,0)
+	    fp.push_back(S(0,0)); fp.push_back(S(0,1)); fp.push_back(S(1,0)); fp.push_back(S(0,0)); fp.push_back(S(0,0));
+	    // P2: U_nu(0,0) U_mu^d(-1,1) U_nu^d(-1,0) msk^d(-1,0) | adj (-1,0)
+	    fp.push_back(S(0,0)); fp.push_back(S(-1,1)); fp.push_back(S(-1,0)); fp.push_back(S(-1,0)); fp.push_back(S(-1,0));
+	    // P3: U_mu(0,0) U_nu(1,0) msk^d(0,1) dummy | adj (0,1)   [PlaqR = U_nu(0,0)]
+	    fp.push_back(S(0,0)); fp.push_back(S(1,0)); fp.push_back(S(0,1)); fp.push_back(S(0,0)); fp.push_back(S(0,1));
+	    // P4: U_nu(0,0) msk^d(-1,1) U_mu^d(-1,0) U_nu(-1,0) | adj (-1,1)
+	    fp.push_back(S(0,0)); fp.push_back(S(-1,1)); fp.push_back(S(-1,0)); fp.push_back(S(-1,0)); fp.push_back(S(-1,1));
+	    // P5: U_mu(0,0) U_nu^d(1,-1) msk^d(0,-1) U_nu^d(0,-1) | adj (0,-1)
+	    fp.push_back(S(0,0)); fp.push_back(S(1,-1)); fp.push_back(S(0,-1)); fp.push_back(S(0,-1)); fp.push_back(S(0,-1));
+	    // P6: U_mu(0,0) U_nu(1,0) msk^d(0,1) dummy | adj (0,1)   [PlaqR = U_nu(0,0)]
+	    fp.push_back(S(0,0)); fp.push_back(S(1,0)); fp.push_back(S(0,1)); fp.push_back(S(0,0)); fp.push_back(S(0,1));
+	  }
+	  if (has_rect) {
+	    // Fused rect stencil entries for this (mu,nu): 10 terms x 7
+	    // (6 link reads + adjoint offset), same link order as the
+	    // per-term tables below.
+	    std::vector<Coordinate> &fr = fused_rect_shifts;
+	    // R1
+	    fr.push_back(S(0,0)); fr.push_back(S(0,1)); fr.push_back(S(0,2)); fr.push_back(S(1,1)); fr.push_back(S(1,0)); fr.push_back(S(0,0)); fr.push_back(S(0,0));
+	    // R2
+	    fr.push_back(S(0,0)); fr.push_back(S(0,1)); fr.push_back(S(-1,2)); fr.push_back(S(-1,1)); fr.push_back(S(-1,0)); fr.push_back(S(-1,0)); fr.push_back(S(-1,0));
+	    // R3
+	    fr.push_back(S(0,0)); fr.push_back(S(0,1)); fr.push_back(S(1,0)); fr.push_back(S(1,-1)); fr.push_back(S(0,-1)); fr.push_back(S(0,-1)); fr.push_back(S(0,-1));
+	    // R4
+	    fr.push_back(S(0,0)); fr.push_back(S(-1,1)); fr.push_back(S(-1,0)); fr.push_back(S(-1,-1)); fr.push_back(S(0,-1)); fr.push_back(S(-1,-1)); fr.push_back(S(-1,-1));
+	    // R5
+	    fr.push_back(S(0,-1)); fr.push_back(S(0,-1)); fr.push_back(S(1,-1)); fr.push_back(S(1,0)); fr.push_back(S(0,1)); fr.push_back(S(0,0)); fr.push_back(S(0,1));
+	    // R6
+	    fr.push_back(S(0,-1)); fr.push_back(S(-1,-1)); fr.push_back(S(-1,-1)); fr.push_back(S(-1,0)); fr.push_back(S(0,0)); fr.push_back(S(-1,1)); fr.push_back(S(-1,1));
+	    // R7
+	    fr.push_back(S(0,0)); fr.push_back(S(1,0)); fr.push_back(S(1,1)); fr.push_back(S(0,2)); fr.push_back(S(0,0)); fr.push_back(S(0,1)); fr.push_back(S(0,2));
+	    // R8
+	    fr.push_back(S(-1,0)); fr.push_back(S(-1,0)); fr.push_back(S(-1,1)); fr.push_back(S(0,0)); fr.push_back(S(0,1)); fr.push_back(S(-1,2)); fr.push_back(S(-1,2));
+	    // R9
+	    fr.push_back(S(0,-1)); fr.push_back(S(0,-2)); fr.push_back(S(0,0)); fr.push_back(S(1,-1)); fr.push_back(S(1,-2)); fr.push_back(S(0,-2)); fr.push_back(S(0,-2));
+	    // R10
+	    fr.push_back(S(0,0)); fr.push_back(S(0,1)); fr.push_back(S(0,0)); fr.push_back(S(1,0)); fr.push_back(S(1,1)); fr.push_back(S(0,2)); fr.push_back(S(0,2));
 	  }
 	  if (has_rect) {
 	    // R1 (+nu, x=y): R: U_nu(x) U_nu(x+nu) U_mu(x+2nu) U_nu^d(x+mu+nu) U_nu^d(x+mu) msk^d(x); L=1
@@ -3018,6 +3477,9 @@ public:
 	    gStencils_rectforce.push_back(GeneralLocalStencil(ggrid,shifts));
 	  }
 	}
+	// one fused stencil per mu, covering all nu and all terms (L5a)
+	if (has_plq)  gStencilFusedPlq.push_back (GeneralLocalStencil(ggrid,fused_plq_shifts));
+	if (has_rect) gStencilFusedRect.push_back(GeneralLocalStencil(ggrid,fused_rect_shifts));
       }
     }
 

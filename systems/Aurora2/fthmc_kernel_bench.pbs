@@ -1,0 +1,150 @@
+#!/bin/bash
+##
+## FTHMC kernel benchmark: optimised vs non-optimised rect-FTHMC paths,
+## ONE binary (Lattice 2026 "Code Optimization" backup slide).
+##
+## Benchmark_fthmc_kernels times the optimised defaults against the
+## `int old` reference overloads of SmearedConfigurationRect inside a
+## single process, interleaved opt,old,opt,old per sample — no second
+## build, no cross-job variance.  DEBUG must be #undef in
+## GaugeConfigurationRect.h (the driver refuses to compile otherwise).
+##
+## Defaults follow the Aurora2 work-dir convention (override with
+## qsub -v NAME=...):  24^3x40 quenched, kernels p r pp pr rp rr,
+## rho=0.12, 1 node / 12 tiles, NREP=2 passes (drift check; the
+## comparison itself is within-run).  Optional:
+## CONFIG=/path/to/ckpoint.scidac for a fixed configuration (needs
+## commit c5fb9a59 if the file was written by an Aurora GPU build);
+## without CONFIG a fixed-seed hot start is used.
+##
+## Output: logs + per-kernel component x impl tables (median wall time
+## per call, speedup old/opt) in $PBS_O_WORKDIR/fthmc_kernel_bench_logs/.
+
+#PBS -q prod
+#PBS -l select=1
+#PBS -l walltime=02:00:00
+#PBS -l filesystems=flare
+#PBS -k doe
+#PBS -j oe
+#PBS -A 16678
+
+cd $PBS_O_WORKDIR
+
+ROOT=${ROOT:-$HOME/src/Grid_rect_opt/systems/Aurora2}
+BIN=${BIN:-$ROOT/HMC/Benchmark_fthmc_kernels}
+SOURCEME=${SOURCEME:-$ROOT/sourceme.sh}
+TILE=${TILE:-$ROOT/HMC/gpu_tile.sh}
+source $SOURCEME
+
+export OMP_NUM_THREADS=8
+export MPIR_CVAR_CH4_OFI_ENABLE_GPU_PIPELINE=1
+export MPIR_CVAR_CH4_OFI_GPU_PIPELINE_D2H_ENGINE_TYPE=0
+export MPIR_CVAR_CH4_OFI_GPU_PIPELINE_H2D_ENGINE_TYPE=0
+export MPIR_CVAR_GPU_USE_IMMEDIATE_COMMAND_LIST=1
+
+GRID=${GRID:-24.24.24.40}
+MPI=${MPI:-2.2.3.1}
+NP=${NP:-12}
+PPN=${PPN:-12}
+KERNELS=${KERNELS:-"p r pp pr rp rr"}
+RHO=${RHO:-0.12}
+NWARM=${NWARM:-5}
+NMEAS=${NMEAS:-20}
+NREP=${NREP:-2}
+DEVMEM=${DEVMEM:-8000}
+CONFIG=${CONFIG:-}
+
+GFLAGS="--shm-mpi 0 --shm 2048 --device-mem $DEVMEM --accelerator-threads 8"
+BFLAGS="--rho $RHO --nwarm $NWARM --nmeas $NMEAS"
+[ -n "$CONFIG" ] && BFLAGS="$BFLAGS --config $CONFIG"
+
+LOGDIR=$PBS_O_WORKDIR/fthmc_kernel_bench_logs
+mkdir -p $LOGDIR
+RAW=$LOGDIR/bench_raw.dat
+SUMMARY=$LOGDIR/SUMMARY.txt
+: > $RAW
+: > $SUMMARY
+
+echo "Binary:" | tee -a $SUMMARY
+ls -l $BIN | tee -a $SUMMARY
+
+########################################################################
+# one driver invocation per (kernel, rep): each SmearedConfigurationRect
+# instance holds/leaks its full smeared tower, and per-kernel logs keep
+# the tables tidy
+########################################################################
+for rep in $(seq 1 $NREP); do
+  for K in $KERNELS; do
+    tag=${K}_rep${rep}
+    log=$LOGDIR/${tag}.log
+    echo "=== $tag" | tee -a $SUMMARY
+    mpiexec -np $NP -ppn $PPN -envall \
+      $TILE $BIN --mpi $MPI --grid $GRID $GFLAGS $BFLAGS --kernels $K \
+      > $log 2>&1
+    rc=$?
+    # flatten result lines: rep kernel comp impl median q16 q84 min max extras...
+    grep 'FTHMCBENCH kernel=.*comp=' $log | \
+      awk -v r=$rep '{
+        k=c=im=m=q1=q2=mn=mx=""; extra="";
+        for(i=1;i<=NF;i++){
+          n=split($i,a,"=");
+          if(a[1]=="kernel")k=a[2]; else if(a[1]=="comp")c=a[2];
+          else if(a[1]=="impl")im=a[2];
+          else if(a[1]=="median_ms")m=a[2]; else if(a[1]=="q16_ms")q1=a[2];
+          else if(a[1]=="q84_ms")q2=a[2]; else if(a[1]=="min_ms")mn=a[2];
+          else if(a[1]=="max_ms")mx=a[2];
+          else if(n==2 && index(a[1],"fp_")==1) extra=extra" "$i;
+        }
+        if(m!="") print r, k, c, im, m, q1, q2, mn, mx, extra;
+      }' >> $RAW
+    warn=$(grep -cE 'FTHMCBENCH WARNING|Assertion|SIGSEGV|Backtrace' $log)
+    echo "    rc=$rc warnings=$warn" | tee -a $SUMMARY
+    grep -E 'FTHMCBENCH (inverse|lndet|jacforce) check' $log | tee -a $SUMMARY
+    # the driver's own per-kernel table
+    grep 'FTHMCBENCH-TABLE' $log | sed 's/^.*FTHMCBENCH-TABLE /    /' | tee -a $SUMMARY
+  done
+done
+
+########################################################################
+# aggregate across reps: per (kernel, component, impl) take the MEDIAN
+# of the per-run medians; speedup = old/opt
+########################################################################
+{
+echo ""
+echo "== FTHMC kernel benchmark: wall time per call [ms], median over $NMEAS calls,"
+echo "   median across $NREP passes.  non-opt = int-old reference paths, same binary."
+echo "   grid $GRID  mpi $MPI  rho $RHO  config ${CONFIG:-<fixed-seed hot start>}"
+echo ""
+awk '
+  { v[$2,$3,$4] = v[$2,$3,$4] " " $5; seenk[$2]=1;
+    if ($3=="inverse" && $10!="") fpit[$2]=$10" "$11; }
+  function med(s,  a,n) { n=split(s,a," "); asort_n(a,n);
+    return (n%2) ? a[(n+1)/2] : (a[n/2]+a[n/2+1])/2; }
+  function asort_n(a,n,  i,j,t){ for(i=2;i<=n;i++){t=a[i];j=i-1;
+    while(j>=1 && a[j]>t){a[j+1]=a[j];j--} a[j+1]=t}}
+  END {
+    nc=split("forward inverse lndet jacforce xformforce rawderiv",comps," ");
+    nk=split("p r pp pr rp rr",korder," ");
+    printf "%-6s %-11s %12s %12s %9s\n","kernel","component","non-opt[ms]","opt[ms]","speedup";
+    for(ki=1;ki<=nk;ki++){ k=korder[ki]; if(!(k in seenk)) continue;
+      for(ci=1;ci<=nc;ci++){ c=comps[ci];
+        has2 = ((k SUBSEP c SUBSEP "old") in v);
+        has1 = ((k SUBSEP c SUBSEP "opt") in v) || ((k SUBSEP c SUBSEP "single") in v);
+        if(!has1 && !has2) continue;
+        b = has2 ? med(v[k,c,"opt"]) : med(v[k,c,"single"]);
+        if (has2) {
+          a=med(v[k,c,"old"]);
+          printf "%-6s %-11s %12.3f %12.3f %8.2fx", k, c, a, b, (b>0)?a/b:0;
+        } else {
+          printf "%-6s %-11s %12s %12.3f %9s", k, c, "-", b, "-";
+        }
+        if (c=="inverse" && (k in fpit)) printf "   [%s]", fpit[k];
+        if (c=="rawderiv") printf "   (gauge deriv on smeared field; not FTHMC cost)";
+        printf "\n";
+      }
+      printf "\n";
+    }
+  }' $RAW
+} | tee -a $SUMMARY
+
+echo "raw per-run medians in $RAW; full logs in $LOGDIR" | tee -a $SUMMARY
