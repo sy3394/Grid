@@ -361,8 +361,10 @@ int main(int argc, char* argv[])
   //   label    : output file suffix and table key (e.g. "sign", "mgap", "mext")
   //   is_sign  : true  => w = sign(mu_n)  (exact ±1; label keyword "sign")
   //   mgap_val : used when !is_sign:
-  //              = 0   => w = m_gap_auto/mu_n  (auto = min_n|mu_n| from --evals)
-  //              ≠ 0   => w = mgap_val/mu_n    (user-supplied literal)
+  //              = 0   => w = m_gap_auto/|mu_n|  (auto = min_n|mu_n| from --evals)
+  //              > 0   => w = mgap_val/|mu_n|    (user-supplied literal)
+  //              < 0   => band-pass window w = exp(-mu_n^2/(2 lc^2)), lc = -mgap_val
+  //              With --signed_mgap the two m_gap tracks use mu_n in place of |mu_n|.
   // --weights <token>[,<token>,...] controls which tracks are active (default: sign,mgap).
   //   token = "sign"       => sign track
   //   token = "mgap"       => auto-mgap track
@@ -383,7 +385,7 @@ int main(int argc, char* argv[])
   struct WeightSpec {
     std::string label;
     bool        is_sign;   // true  => w = sign(mu_n)
-    double      mgap_val;  // false => w = mgap_val/mu_n  (0 = auto: min|mu_n|, >0 = literal)
+    double      mgap_val;  // false => w = mgap_val/|mu_n|  (0 = auto: min|mu_n|, >0 = literal, <0 = band-pass)
   };
   // Two distinct fermion masses are needed (see comment above on q_naive vs Sigma_low):
   //   mass_f  : MUST match the m_f used in Compute_DWF_G5R5 to generate the
@@ -513,7 +515,7 @@ int main(int argc, char* argv[])
         std::cout << GridLogMessage << "--weights: track 'sign' (w=sign(mu_n))" << std::endl;
       } else if(tok == "mgap"){
         weight_specs.push_back({"mgap", false, 0.0});
-        std::cout << GridLogMessage << "--weights: track 'mgap' (w=m_gap_auto/mu_n)" << std::endl;
+        std::cout << GridLogMessage << "--weights: track 'mgap' (w=m_gap_auto/|mu_n|, mu_n with --signed_mgap)" << std::endl;
       } else {
         std::cerr << "WARNING: unknown --weights token '" << tok << "' — ignored" << std::endl;
       }
@@ -758,30 +760,33 @@ int main(int argc, char* argv[])
     // -----------------------------------------------------------------------
     // FORMULA B:  eps_code(s)-chirality density   (Bulk form)
     // -----------------------------------------------------------------------
-    //   q_B(x) = -sum_n (m_gap/mu_n) * sum_s eps_code(s) * rho_n(x,s)
-    //
-    //   Derivation:
-    //     q^exact = -sum_n (m_f/mu_n) chi_n^B,   chi_n^B = sum_s Gamma5_Blum(s)|psi_n|^2
-    //     eps_code(s) = -Gamma5_Blum(s),  so chi_n^B = -sum_s eps_code(s)|psi_n|^2
-    //     replacing m_f/mu_n -> m_gap/mu_n:
-    //       q_B = -sum_n (m_gap/mu_n)*(-sum_s eps_code(s)|psi_n|^2)
-    //           = -sum_n (m_gap/mu_n) * sum_s eps_code(s)|psi_n|^2  (with overall minus)
-    //   Near-zero modes localized at one wall contribute ~+-1; bulk symmetric modes
-    //   cancel because eps_code sums to zero over a uniformly distributed mode.
+    //   q_B(x) = -sum_n w(mu_n) * sum_s eps_code(s) * rho_n(x,s)
+    //          =  sum_n w(mu_n) * chi_n^B(x),   chi_n^B = sum_s Gamma5_Blum(s)|psi_n|^2,
+    //   since eps_code(s) = -Gamma5_Blum(s).  Weights: 'mgap' w = m_gap/|mu_n| with
+    //   m_gap = min_n|mu_n| (m_gap/mu_n with --signed_mgap), 'sign' w = sgn(mu_n),
+    //   band-pass w = exp(-mu_n^2/(2 lc^2)).
+    //   chi_n^B is not an exact spectral form of <J_5q> or <j_5>.  It obeys the exact
+    //   sum rule  mu_n int chi_n^B = -(int chi_n^A + m_f int chi_n^C),  so
+    //   sgn(mu_n) = -sgn(int chi_n^B) for every mode (topo_charge.tex sec. 6.1).
+    //   A wall-bound zero mode gives int chi_0^B ~ -sgn(mu_0) = Q.  The retained bulk
+    //   modes cancel in the integral only where they pair (Approximation 1, sec. 6.3);
+    //   over the complete spectrum sum_n chi_n^B(x) = 0 exactly.
     //
     // -----------------------------------------------------------------------
     // FORMULA C:  boundary projection density      (Boundary form)
     // -----------------------------------------------------------------------
-    //   q_C(x) = -sum_n (m_gap/mu_n) * [rho_n(x,Ls-1) - rho_n(x,0)]
+    //   q_C(x) = -sum_n w(mu_n) * [rho_n(x,Ls-1) - rho_n(x,0)]
     //
-    //   Derivation:
-    //     q_top(x) = -m_f * tr[gamma5 * S^{4D}(x,x)]
-    //              = -m_f * sum_n (1/mu_n) * [psi_n†(x,Ls-1) P_R psi_n(x,Ls-1)
-    //                                        + psi_n†(x,0)   P_L psi_n(x,0)]
-    //   where P_R = (1+gamma5)/2, P_L = (1-gamma5)/2  with the STANDARD 4D gamma5.
-    //   Replacing m_f/mu_n -> m_gap/mu_n and spinor projections by scalar proxy:
-    //     psi†(x,Ls-1) P_R psi(x,Ls-1) ~ rho(x,Ls-1)  [right-wall mode: P_R ~ 1]
-    //     psi†(x,0)    P_L psi(x,0)    ~ rho(x,0)      [left-wall mode:  P_L ~ 1]
+    //   Derivation (topo_charge.tex secs. 5.2, 6.5): the exact boundary density is
+    //     q_5(x) = m_f <j_5(x)> = -m_f * tr[gamma5 * S^{4D}(x,x)]
+    //            = -m_f * sum_n (1/mu_n) * [psi_n†(x,Ls-1) P_R psi_n(x,Ls-1)
+    //                                       + psi_n†(x,0)   P_L psi_n(x,0)]
+    //   where P_R = (1+gamma5)/2, P_L = (1-gamma5)/2  with the 4D gamma5.
+    //   For a wall-bound mode the scalar difference rho(Ls-1) - rho(0) is sgn(mu_n)
+    //   times the projected density, so dropping the projectors and replacing
+    //   1/mu_n by 1/|mu_n| is one step; the weight m_gap/|mu_n| gives the zero mode
+    //   unit weight.  The integral is then w_0 Q, with w_0 = int chi_0^C < 1 the wall
+    //   weight of the zero mode (0.455 on 702 at tau_WF = 4); no 1/w_0 is applied.
     //   The relative minus sign in (rho(Ls-1) - rho(0)) encodes the eps_code
     //   convention (eps(Ls-1)=+1, eps(0)=-1).
     //
@@ -790,7 +795,7 @@ int main(int argc, char* argv[])
     // -----------------------------------------------------------------------
     //   q_A(x) = -sum_n w(mu_n) * 0.5 * [rho_n(x,Ls/2) - rho_n(x,Ls/2-1)]
     //
-    //   Empirical behaviour (conf 702, Ls=12, low-mode truncation N_conv=16):
+    //   Empirical behaviour (conf 702, Ls=48, m_f=0, low-mode truncation N_conv=16):
     //     - Q_evec = integral of q_A over all x is ~ 1e-8 for BOTH weight tracks.
     //       I.e. q_A carries NO index content: topological near-zero modes have
     //       amplitude ~ e^{-alpha*Ls/2} at the midplane and are invisible to
@@ -802,15 +807,17 @@ int main(int argc, char* argv[])
     //       asymmetry between s=Ls/2 and s=Ls/2-1 from retained bulk modes.  This
     //       residue has nontrivial spatial structure (can correlate with
     //       Wilson-flowed q_gluon when the gauge is smoothed) but integrates to
-    //       zero. See topo_charge.tex App. B.3 (bulk modes vs near-zero modes
+    //       zero. See topo_charge.tex App. C.3 (bulk modes vs near-zero modes
     //       in J_5q vs j_5).
     //
-    //   Historical note: an earlier version of this comment claimed
-    //     m_f/mu_n ~ e^{+alpha*Ls} compensates the midpoint suppression.
-    //   That claim is WRONG at finite Ls with physical m_f: near-zero
-    //   |mu_n| ~= m_gap = m_f + m_res (not m_res), so m_gap/mu_n ~= +-1,
-    //   not e^{+alpha*Ls}.  Numerical check: Q_evec(q_A_sign) = Q_evec(q_A_mgap)
-    //   ~ 1e-8 (identical up to rounding), confirming no compensation occurs.
+    //   Weights: both tracks give the zero mode |w| = 1 (m_gap = min_n|mu_n| = |mu_0|),
+    //   so its term is of the order of its midplane weight, int chi_0^A =
+    //   |mu_0| |int chi_0^B| - m_f w_0 by the sum rule (3.8e-7 on 702 at tau_WF = 4,
+    //   m_f = 0), and Q_evec(q_A_sign) = Q_evec(q_A_mgap) ~ 1e-8.  q_A is a scalar
+    //   slice difference with weight w(mu_n); it is not the exact midplane density
+    //   chi_n^A = |P_L psi_n(Ls/2)|^2 + |P_R psi_n(Ls/2-1)|^2 with weight 1/mu_n
+    //   (topo_charge.tex eq. spectral_J), whose zero-mode term is O(1) at m_f = 0
+    //   (sec. 6.4).
     // ===========================================================================
     if(compute_topo) {
       // Eigenvalue of H_DWF = gamma5*R5*D_DWF (includes m_f).
@@ -1018,7 +1025,8 @@ int main(int argc, char* argv[])
   // Output file naming: pass --topo_out with a {def} placeholder, e.g.
   //   --topo_out /path/Top_dnsty_q_{def}_0_smr.702
   // C++ replaces {def} with A, B, Bp, C to produce the four output files.
-  // q_A, q_B, q_C all use m_gap/mu_n weight (requires --evals for m_gap).
+  // q_A, q_B, q_C use the weight tracks of --weights (default 'sign' and 'mgap',
+  // w = m_gap/|mu_n|; requires --evals for m_gap = min_n|mu_n|).
   bool have_evals = !evals.empty() || !evals_embedded.empty();
   if(compute_topo && have_evals && do_topo_out){
     // Lambda: substitute {def} placeholder in topo_out template string.
@@ -1092,7 +1100,7 @@ int main(int argc, char* argv[])
   // Output per line (pure numeric): TD_tau  tau  conf  Corr  IP
   //   where TD_tau is the index i of files1[i], tau comes from --conf_id context,
   //   and the label "Topo_PCF: q_X" is printed to stderr for diagnostics only.
-  // q_A, q_B, q_C all use m_gap/mu_n weight.
+  // q_A, q_B, q_C use the weight tracks of --weights (default 'sign' and 'mgap', w = m_gap/|mu_n|).
   // The 3 output blocks (one per q_def) are labelled by a comment line "# q_X"
   // so the shell can split them into 4 per-def files via grep.
   int conf_id = -1;
